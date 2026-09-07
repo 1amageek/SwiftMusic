@@ -48,6 +48,70 @@ final class CompletionEditorTests: XCTestCase {
         editor.acceptSelectedCompletion()
         XCTAssertEqual(editor.string, "value.pan")
     }
+
+    func testControlSpaceRequestsCompletionOnce() throws {
+        let editor = CompletionTextView()
+        var requests = 0
+        editor.onCompletionRequest = { requests += 1 }
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.control],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: " ",
+            charactersIgnoringModifiers: " ",
+            isARepeat: false,
+            keyCode: 49
+        ))
+
+        editor.keyDown(with: event)
+
+        XCTAssertEqual(requests, 1)
+    }
+
+    func testTabAcceptsSelectedCompletionAsOneUndoableEdit() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        let editor = CompletionTextView(frame: window.contentView!.bounds)
+        editor.isRichText = false
+        editor.allowsUndo = true
+        let observer = EditObserver()
+        editor.delegate = observer
+        window.contentView = editor
+        window.makeFirstResponder(editor)
+        let original = "Sample(\"kick\").ga"
+        editor.string = original
+        editor.setSelectedRange(NSRange(location: original.utf16.count, length: 0))
+        let range = (original as NSString).range(of: "ga", options: .backwards)
+        let item = SwiftCompletion(label: "gain(value: Double)", detail: nil,
+            insertion: "gain(0.5)", replacementRange: range,
+            selectionRange: NSRange(location: 5, length: 3))
+        editor.presentCompletions([item], source: original, selection: editor.selectedRange())
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "\t",
+            charactersIgnoringModifiers: "\t",
+            isARepeat: false,
+            keyCode: 48
+        ))
+
+        editor.keyDown(with: event)
+
+        XCTAssertEqual(editor.string, "Sample(\"kick\").gain(0.5)")
+        XCTAssertEqual(observer.changes, 1)
+        let undo = try XCTUnwrap(editor.undoManager)
+        XCTAssertTrue(undo.canUndo)
+        undo.undo()
+        XCTAssertEqual(editor.string, original)
+    }
+
     @MainActor private final class EditObserver: NSObject, NSTextViewDelegate {
         var changes = 0
         var ranges: [NSRange] = []
