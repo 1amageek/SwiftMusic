@@ -73,7 +73,7 @@ public struct LoopRenderer: Sendable {
             }
         }
         let bars = max(1, Int(ceil(extent / Double(beatsPerBar))))
-        let beatCount = Double(bars * beatsPerBar)
+        var beatCount = Double(bars * beatsPerBar)
         guard beatCount <= PreparedLoop.maximumBeatCount else {
             throw LoopRenderingError.extentTooLong(beatCount)
         }
@@ -86,7 +86,7 @@ public struct LoopRenderer: Sendable {
         guard duration.isFinite, duration <= PreparedLoop.maximumDurationSeconds else {
             throw LoopRenderingError.durationTooLong(duration)
         }
-        let frameCount = try frameCount(for: duration)
+        var frameCount = try frameCount(for: duration)
 
         var context = try RenderContext(
             sound: sound,
@@ -96,6 +96,10 @@ public struct LoopRenderer: Sendable {
             preparedSamples: preparedSamples,
             sampleFrames: sampleFrames
         )
+        let sourceBeatCount = beatCount
+        try context.prepareEffects(beatsPerBar: beatsPerBar)
+        beatCount = context.beatCount
+        frameCount = context.frameCount
         var output = try context.renderRoots()
         output.clamp(to: -1...1)
 
@@ -126,7 +130,7 @@ public struct LoopRenderer: Sendable {
             } else {
                 audibleDuration = min(
                     fullDuration,
-                    max(0, beatCount - startBeat)
+                    max(0, sourceBeatCount - startBeat)
                 )
                 wrapsLoopBoundary = false
             }
@@ -283,11 +287,15 @@ internal struct StereoBuffer: Sendable {
     }
 }
 
-private struct RenderContext: Sendable {
+private struct RenderContext {
     let sound: CompiledSound
     let bpm: Double
-    let beatCount: Double
-    let frameCount: Int
+    var beatCount: Double
+    var frameCount: Int
+    let sourceBeatCount: Double
+    let sourceFrameCount: Int
+    var nodeHorizons: [Int] = []
+    var convolver: FFTConvolver?
     let secondsPerBeat: Double
     var nodeStates: [UInt8]
     var sourcePeakEnvelopes: [[Float]]
@@ -301,6 +309,8 @@ private struct RenderContext: Sendable {
         self.sampleFrames = sampleFrames
         self.sound = sound
         self.bpm = bpm
+        self.sourceBeatCount = beatCount
+        self.sourceFrameCount = frameCount
         self.beatCount = beatCount
         self.frameCount = frameCount
         self.secondsPerBeat = 60 / bpm
@@ -345,6 +355,62 @@ private struct RenderContext: Sendable {
             case .synthesizer, .fileSample, .sampleBank:
                 break
             }
+        }
+    }
+
+    mutating func prepareEffects(beatsPerBar: Int) throws {
+        guard sound.renderNodes.contains(where: { if case .effect = $0 { true } else { false } }) else { return }
+        let seamless = sound.playbackMode == .seamlessLoop
+        var sources = [Int](repeating: 0, count: sound.sources.count)
+        for index in sound.events.indices {
+            let voice = try makeVoice(index)
+            sources[sound.events[index].sourceID] = max(sources[sound.events[index].sourceID], voice.startFrame + voice.eventFrames)
+        }
+        var maximumImpulse = 0
+        for (index, node) in sound.renderNodes.enumerated() {
+            func horizon(_ input: Int) throws -> Int {
+                guard input >= 0, input < index else { throw LoopRenderingError.invalidSound("render nodes must be dependency ordered") }
+                return nodeHorizons[input]
+            }
+            let value: Int
+            switch node {
+            case .source(let source):
+                guard sources.indices.contains(source) else { throw LoopRenderingError.invalidSound("source node ID is out of range") }
+                value = sources[source]
+            case .mix(let inputs): value = try inputs.reduce(0) { max($0, try horizon($1)) }
+            case .gain(let input, _), .pan(let input, _), .mute(let input): value = try horizon(input)
+            case .effect(let input, let effect):
+                let tail = try EffectProcessor.tailFrames(effect, bpm: bpm, node: index)
+                value = try horizon(input) + tail
+                switch effect {
+                case .reverb(_, let wet), .delay(_, _, let wet):
+                    if wet != 0 { maximumImpulse = max(maximumImpulse, tail + 1) }
+                default: break
+                }
+            case .send, .output: throw LoopRenderingError.unsupportedRenderNode(index: index, operation: "routing")
+            }
+            if !seamless, value > EffectProcessor.maximumTailFrames {
+                throw LoopRenderingError.durationTooLong(Double(value) / PreparedLoop.requiredSampleRate)
+            }
+            nodeHorizons.append(seamless ? sourceFrameCount : value)
+        }
+        if !seamless {
+            var end = sourceFrameCount
+            for root in sound.rootNodeIDs {
+                guard nodeHorizons.indices.contains(root) else { throw LoopRenderingError.invalidSound("root node ID is out of range") }
+                end = max(end, nodeHorizons[root])
+            }
+            if end > sourceFrameCount {
+                let beats = Double(end) / PreparedLoop.requiredSampleRate / secondsPerBeat
+                beatCount = ceil(beats / Double(beatsPerBar)) * Double(beatsPerBar)
+            }
+            guard beatCount <= PreparedLoop.maximumBeatCount else { throw LoopRenderingError.extentTooLong(beatCount) }
+            let seconds = beatCount * secondsPerBeat
+            guard seconds <= PreparedLoop.maximumDurationSeconds else { throw LoopRenderingError.durationTooLong(seconds) }
+            frameCount = Int((seconds * PreparedLoop.requiredSampleRate).rounded(.up))
+        }
+        if maximumImpulse > 0 {
+            convolver = try FFTConvolver(maximumLinearFrameCount: frameCount + maximumImpulse - 1)
         }
     }
 
@@ -411,9 +477,12 @@ private struct RenderContext: Sendable {
             var output = try renderNode(input)
             output.mute()
             return output
-        // FIXME(INCOMPLETE_IMPLEMENTATION): effect processing is unavailable in editor evaluation; require DSP/routing behavior tests before enabling it.
-        case .effect:
-            throw LoopRenderingError.unsupportedRenderNode(index: nodeID, operation: "effect")
+        case .effect(let input, let effect):
+            var output = try renderNode(input)
+            try EffectProcessor.apply(effect, to: &output, inputHorizon: nodeHorizons[input],
+                                      bpm: bpm, seamless: sound.playbackMode == .seamlessLoop,
+                                      node: nodeID, convolver: convolver)
+            return output
         // FIXME(INCOMPLETE_IMPLEMENTATION): send processing is unavailable in editor evaluation; require DSP/routing behavior tests before enabling it.
         case .send:
             throw LoopRenderingError.unsupportedRenderNode(index: nodeID, operation: "send")
@@ -473,12 +542,12 @@ private struct RenderContext: Sendable {
         }
         let seamless = sound.playbackMode == .seamlessLoop
         guard startBeat >= 0,
-              seamless ? startBeat < beatCount : startBeat < beatCount + 1e-9 else {
+              seamless ? startBeat < sourceBeatCount : startBeat < sourceBeatCount + 1e-9 else {
             throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "start is outside loop")
         }
-        let startFrame = max(0, min(frameCount, Int((startBeat * secondsPerBeat * PreparedLoop.requiredSampleRate).rounded(.down))))
+        let startFrame = max(0, min(sourceFrameCount, Int((startBeat * secondsPerBeat * PreparedLoop.requiredSampleRate).rounded(.down))))
         if seamless {
-            guard startFrame < frameCount else {
+            guard startFrame < sourceFrameCount else {
                 throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "start is outside loop frames")
             }
         }
@@ -490,7 +559,7 @@ private struct RenderContext: Sendable {
             ?? amplitudeEnvelope?.duration ?? naturalDuration * event.gate
         let eventFrames: Int
         if let count = sampleFrames[eventIndex] {
-            guard count > 0, count <= (seamless ? frameCount : frameCount - startFrame) else {
+            guard count > 0, count <= (seamless ? sourceFrameCount : sourceFrameCount - startFrame) else {
                 throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "sample frames exceed loop")
             }
             eventFrames = count
@@ -498,14 +567,14 @@ private struct RenderContext: Sendable {
             let fullGatedDuration = fullDuration
             guard fullGatedDuration.isFinite,
                   fullGatedDuration > 0,
-                  fullGatedDuration <= beatCount * secondsPerBeat else {
+                  fullGatedDuration <= sourceBeatCount * secondsPerBeat else {
                 throw LoopRenderingError.invalidEvent(
                     index: eventIndex,
                     reason: "seamless event duration exceeds loop window"
                 )
             }
             let renderedFrames = max(1, Int((fullGatedDuration * PreparedLoop.requiredSampleRate).rounded(.up)))
-            guard renderedFrames <= frameCount else {
+            guard renderedFrames <= sourceFrameCount else {
                 throw LoopRenderingError.invalidEvent(
                     index: eventIndex,
                     reason: "seamless event duration exceeds loop frame count"
@@ -515,10 +584,10 @@ private struct RenderContext: Sendable {
         } else {
             let gatedDuration = min(
                 fullDuration,
-                max(0, beatCount * secondsPerBeat - startBeat * secondsPerBeat)
+                max(0, sourceBeatCount * secondsPerBeat - startBeat * secondsPerBeat)
             )
             eventFrames = min(
-                frameCount - startFrame,
+                sourceFrameCount - startFrame,
                 max(1, Int((gatedDuration * PreparedLoop.requiredSampleRate).rounded(.up)))
             )
         }

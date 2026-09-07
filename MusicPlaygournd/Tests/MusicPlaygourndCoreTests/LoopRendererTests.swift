@@ -81,7 +81,7 @@ struct LoopRendererTests {
     @Test(.timeLimit(.minutes(3)))
     func testUnsupportedSourcesEffectsAndRoutingFailExplicitly() throws {
         let delayed = try SoundCompiler().compile(
-            Synthesizer(.sine).effect(.delay(time: .eighth, feedback: 0.2, wet: 0.3))
+            Synthesizer(.sine).effect(.chorus(rateHz: 1, depth: 0.2, wet: 0.3))
         )
         #expect {
             try renderer.render(delayed, bpm: 120, beatsPerBar: 4)
