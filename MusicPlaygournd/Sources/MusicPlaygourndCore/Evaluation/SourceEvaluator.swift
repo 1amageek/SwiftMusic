@@ -53,6 +53,10 @@ public actor SourceEvaluator {
         }
         let output = workspace.appending(path: "prepared.plist")
         if manager.fileExists(atPath: output.path) { try manager.removeItem(at: output) }
+        let maximumLiveBeats = Int(min(
+            PreparedLoop.maximumBeatCount,
+            (PreparedLoop.maximumDurationSeconds * bpm / 60).rounded(.down)
+        ))
         let wrapper = """
         import Foundation
         import SwiftMusic
@@ -65,7 +69,11 @@ public actor SourceEvaluator {
             static func main() {
               do {
                 let bounds = try SoundCompiler.Limits(maximumEvents: 1024, maximumSources: 32, maximumRenderNodes: 256)
-                let sound = try SoundCompiler(limits: bounds).compile(Session())
+                let policy = try LiveLoopPolicy(
+                    beatsPerBar: \(beatsPerBar),
+                    maximumBeats: MusicalTime(numerator: \(maximumLiveBeats), denominator: 1)
+                )
+                let sound = try SoundCompiler(limits: bounds).compile(Session(), liveLoop: policy)
                 let loop = try LoopRenderer().render(sound, bpm: \(bpm), beatsPerBar: \(beatsPerBar))
                 let encoder = PropertyListEncoder()
                 encoder.outputFormat = .binary

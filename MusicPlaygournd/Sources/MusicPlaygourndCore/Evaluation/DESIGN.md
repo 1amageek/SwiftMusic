@@ -24,6 +24,8 @@ After a successful compile, SourceEvaluator asks the same Swift 6.4 toolchain to
 
 Only the latest source/cursor request may be delivered. Cancellation and bounded timeout cancel the request; protocol failure or server exit returns a typed diagnostic and permits one clean lazy restart. Message size, candidate count, source size, and process lifetime are bounded. Completion never calls SourceEvaluator, allocates an audio revision, submits a loop, or touches adopted audio. Toolchain-specific `sourcekit-lsp` absence is explicit rather than silently switching toolchains.
 
+Evaluation requests `SoundCompiler.compile(_:liveLoop:)` with the current `beatsPerBar`. Its maximum whole-beat horizon is the lesser of `PreparedLoop.maximumBeatCount` and the floor of `PreparedLoop.maximumDurationSeconds * bpm / 60`; the existing validated tempo keeps conversion bounded. The compiler owns exact recurrence and whole-bar selection. Evaluation neither stretches sibling patterns nor truncates events to satisfy the renderer. [Rendering](../Rendering/DESIGN.md) owns PCM window limits and circular voice playback. A common period beyond those limits is a preparation failure and leaves the adopted loop intact. The real evaluation test covers a four-beat pattern with a three-beat bar: twelve beats and three occurrences of the original event template.
+
 ## Failure, Concurrency, and Constraints
 Failure is reported as a diagnostic or typed error; the last adopted loop survives edit failures. Mutable host state is MainActor- or Mutex-isolated.
 

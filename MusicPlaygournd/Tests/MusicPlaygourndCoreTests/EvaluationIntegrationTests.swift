@@ -62,6 +62,12 @@ extension NativeHostTests {
                 Issue.record("Invalid music must fail")
             } catch { #expect(error.localizedDescription.contains("invalidRhythm")) }
             #expect(engine.snapshot().revision == 1)
+            do {
+                _ = try await evaluator.evaluate(source: source, bpm: 40, beatsPerBar: 3)
+                Issue.record("A common period beyond the native duration bound must fail")
+            } catch { #expect(error.localizedDescription.contains("liveWindowExceeded")) }
+            #expect(engine.snapshot().revision == 1)
+            #expect(engine.snapshot().isPlaying)
 
             let stuck = """
             func stuck() -> Sample { while true {} }
@@ -92,10 +98,11 @@ extension NativeHostTests {
             let logSize = try FileManager.default.attributesOfItem(atPath: workspace.appending(path: "process.log").path)[.size] as? NSNumber
             #expect(logSize?.intValue ?? Int.max <= 1_048_576)
             let recovered = try await evaluator.evaluate(source: source, bpm: 60, beatsPerBar: 3)
-            #expect(recovered.events.count == first.events.count)
+            #expect(recovered.events.count == first.events.count * 3)
             #expect(recovered.bpm == 60)
             #expect(recovered.beatsPerBar == 3)
-            #expect(recovered.beatCount == 6)
+            #expect(recovered.beatCount == 12)
+            #expect(recovered.events.filter { $0.sourceID == 0 }.map(\.startBeat) == [0, 2, 4, 6, 8, 10])
             engine.stop()
             engine.beginUpdate(revision: 3)
             try engine.submit(loop: recovered, revision: 3)
