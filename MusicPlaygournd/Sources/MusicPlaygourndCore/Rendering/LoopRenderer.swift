@@ -296,6 +296,8 @@ private struct RenderContext {
     let sourceFrameCount: Int
     var nodeHorizons: [Int] = []
     var convolver: FFTConvolver?
+    var audibleTracks: [Bool] = []
+    var admittedSources: [Bool] = []
     let secondsPerBeat: Double
     var nodeStates: [UInt8]
     var sourcePeakEnvelopes: [[Float]]
@@ -319,6 +321,8 @@ private struct RenderContext {
             repeating: [Float](repeating: 0, count: 1),
             count: sound.sources.count
         )
+
+        try prepareTracks()
 
         for event in sound.events {
             let source = sound.sources[event.sourceID]
@@ -358,6 +362,68 @@ private struct RenderContext {
         }
     }
 
+    private mutating func prepareTracks() throws {
+        let hasSolo = sound.tracks.contains { $0.isSoloed }
+        audibleTracks = [Bool](repeating: !hasSolo, count: sound.tracks.count)
+        admittedSources = [Bool](repeating: true, count: sound.sources.count)
+        for (index, track) in sound.tracks.enumerated() {
+            guard track.id == index, track.level.isFinite, track.level >= 0,
+                  track.pan.map({ $0.isFinite && (-1...1).contains($0) }) ?? true else {
+                throw LoopRenderingError.invalidSound("invalid track metadata")
+            }
+            if let parent = track.parentID, parent < 0 || parent >= index {
+                throw LoopRenderingError.invalidSound("track ancestry must be dependency ordered")
+            }
+            if let node = track.renderNodeID {
+                guard sound.renderNodes.indices.contains(node),
+                      case .track(_, let id) = sound.renderNodes[node], id == index else {
+                    throw LoopRenderingError.invalidSound("track metadata and node disagree")
+                }
+            }
+        }
+        // Compiler track IDs are nonnegative; -2 is unseen and -1 is untracked.
+        var sourceOwners = [Int](repeating: -2, count: sound.sources.count)
+        for event in sound.events {
+            let owner = event.trackID ?? -1
+            guard event.trackID == nil || sound.tracks.indices.contains(owner) else {
+                throw LoopRenderingError.invalidSound("event track ID is invalid")
+            }
+            guard sourceOwners[event.sourceID] == -2 || sourceOwners[event.sourceID] == owner else {
+                throw LoopRenderingError.invalidSound("source has conflicting track owners")
+            }
+            sourceOwners[event.sourceID] = owner
+        }
+        if hasSolo {
+            for track in sound.tracks {
+                var ancestor: Int? = track.id
+                while let id = ancestor {
+                    if sound.tracks[id].isSoloed { audibleTracks[track.id] = true; break }
+                    ancestor = sound.tracks[id].parentID
+                }
+            }
+            // Source admission excludes ancestors that merely carry a soloed child.
+            for source in sourceOwners.indices {
+                let owner = sourceOwners[source]
+                admittedSources[source] = owner >= 0 && audibleTracks[owner]
+            }
+            for track in sound.tracks where track.isSoloed {
+                var ancestor: Int? = track.parentID
+                while let id = ancestor {
+                    audibleTracks[id] = true
+                    ancestor = sound.tracks[id].parentID
+                }
+            }
+        }
+        for (node, value) in sound.renderNodes.enumerated() {
+            if case .track(let input, let id) = value {
+                guard sound.tracks.indices.contains(id), sound.tracks[id].renderNodeID == node,
+                      input >= 0, input < node else {
+                    throw LoopRenderingError.invalidSound("invalid track node")
+                }
+            }
+        }
+    }
+
     mutating func prepareEffects(beatsPerBar: Int) throws {
         guard sound.renderNodes.contains(where: { if case .effect = $0 { true } else { false } }) else { return }
         let seamless = sound.playbackMode == .seamlessLoop
@@ -378,7 +444,7 @@ private struct RenderContext {
                 guard sources.indices.contains(source) else { throw LoopRenderingError.invalidSound("source node ID is out of range") }
                 value = sources[source]
             case .mix(let inputs): value = try inputs.reduce(0) { max($0, try horizon($1)) }
-            case .gain(let input, _), .pan(let input, _), .mute(let input): value = try horizon(input)
+            case .gain(let input, _), .pan(let input, _), .mute(let input), .track(let input, _): value = try horizon(input)
             case .effect(let input, let effect):
                 let tail = try EffectProcessor.tailFrames(effect, bpm: bpm, node: index)
                 value = try horizon(input) + tail
@@ -417,7 +483,10 @@ private struct RenderContext {
     mutating func renderRoots() throws -> StereoBuffer {
         if sound.sources.contains(where: { $0.voicePolicy != nil || $0.chokeGroup != nil }) {
             scheduledSources = try VoiceScheduler.render(
-                templates: sound.events.indices.map { try makeVoice($0) },
+                templates: sound.events.indices.compactMap { index in
+                    let voice = try makeVoice(index)
+                    return admittedSources[voice.source.id] ? voice : nil
+                },
                 sourceCount: sound.sources.count, frameCount: frameCount,
                 seamless: sound.playbackMode == .seamlessLoop)
         }
@@ -477,6 +546,25 @@ private struct RenderContext {
             var output = try renderNode(input)
             output.mute()
             return output
+        case .track(let input, let id):
+            var output = try renderNode(input)
+            let track = sound.tracks[id]
+            if track.level != 1 {
+                for index in output.left.indices {
+                    let left = Double(output.left[index]) * track.level
+                    let right = Double(output.right[index]) * track.level
+                    guard left.isFinite, right.isFinite,
+                          abs(left) <= Double(Float.greatestFiniteMagnitude),
+                          abs(right) <= Double(Float.greatestFiniteMagnitude) else {
+                        throw LoopRenderingError.invalidSound("track level exceeds finite PCM range")
+                    }
+                    output.left[index] = Float(left)
+                    output.right[index] = Float(right)
+                }
+            }
+            if let pan = track.pan { output.applyPan(pan) }
+            if track.isMuted || !audibleTracks[id] { output.mute() }
+            return output
         case .effect(let input, let effect):
             var output = try renderNode(input)
             try EffectProcessor.apply(effect, to: &output, inputHorizon: nodeHorizons[input],
@@ -493,6 +581,7 @@ private struct RenderContext {
     }
 
     private mutating func renderSource(_ sourceID: Int) throws -> StereoBuffer {
+        if !admittedSources[sourceID] { return StereoBuffer(frameCount: frameCount) }
         if let scheduledSources {
             let output = scheduledSources[sourceID]
             sourcePeakEnvelopes[sourceID] = peakEnvelope(for: output)

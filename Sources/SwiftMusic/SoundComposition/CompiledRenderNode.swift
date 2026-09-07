@@ -6,6 +6,7 @@ public enum CompiledRenderNode: Sendable, Equatable {
     case gain(input: Int, value: Double)
     case pan(input: Int, value: Double)
     case mute(input: Int)
+    case track(input: Int, trackID: Int)
     case send(input: Int, bus: String, level: Double)
     case output(input: Int, bus: String)
 }

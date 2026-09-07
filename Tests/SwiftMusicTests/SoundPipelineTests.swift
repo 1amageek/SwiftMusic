@@ -63,19 +63,20 @@ struct SoundPipelineTests {
             .effect(input: 0, effect: .distortion(drive: 0.6)),
             .source(sourceID: 1),
             .mix(inputs: [1, 2]),
-            .effect(input: 3, effect: reverb),
-            .gain(input: 4, value: 0.8),
-            .pan(input: 5, value: -0.25),
-            .send(input: 6, bus: "room", level: 0.3),
-            .output(input: 7, bus: "main")
+            .track(input: 3, trackID: 0),
+            .effect(input: 4, effect: reverb),
+            .gain(input: 5, value: 0.8),
+            .pan(input: 6, value: -0.25),
+            .send(input: 7, bus: "room", level: 0.3),
+            .output(input: 8, bus: "main")
         ])
-        #expect(result.rootNodeIDs == [8])
+        #expect(result.rootNodeIDs == [9])
         #expect(result.events.map(\.trackID) == [0, 0])
         #expect(result.events.map(\.sourceID) == [0, 1])
     }
 
     @Test(.timeLimit(.minutes(3)))
-    func testTrackIsTransparentAndSourceSettingsStayInTheirSubtree() throws {
+    func testTrackBoundaryPreservesSourceSettingsInTheirSubtree() throws {
         struct Pair: Sound {
             var body: some Sound {
                 Sample("kick")
@@ -85,7 +86,13 @@ struct SoundPipelineTests {
         let compiler = SoundCompiler()
         let plain = try compiler.compile(Pair())
         let grouped = try compiler.compile(Track("group") { Pair() })
-        #expect(plain.renderNodes == grouped.renderNodes)
+        #expect(grouped.renderNodes == [
+            .source(sourceID: 0),
+            .source(sourceID: 1),
+            .mix(inputs: [0, 1]),
+            .track(input: 2, trackID: 0)
+        ])
+        #expect(grouped.rootNodeIDs == [3])
         #expect(plain.events.map(\.start) == grouped.events.map(\.start))
         #expect(plain.events.map(\.duration) == grouped.events.map(\.duration))
         #expect(plain.extent == grouped.extent)
@@ -171,9 +178,10 @@ struct SoundPipelineTests {
         let compiled = try compiler.compile(sound)
         #expect(compiled.renderNodes == [
             .source(sourceID: 0), .output(input: 0, bus: "bus"),
-            .source(sourceID: 1), .source(sourceID: 2), .mix(inputs: [2, 3])
+            .source(sourceID: 1), .source(sourceID: 2), .mix(inputs: [2, 3]),
+            .track(input: 4, trackID: 0)
         ])
-        #expect(compiled.rootNodeIDs == [1, 4])
+        #expect(compiled.rootNodeIDs == [1, 5])
         for modified in [sound.gain(1), sound.pan(0), sound.muted(),
                          sound.send(to: "room", level: 1), sound.output("main"),
                          sound.effect(.distortion(drive: 1))] {

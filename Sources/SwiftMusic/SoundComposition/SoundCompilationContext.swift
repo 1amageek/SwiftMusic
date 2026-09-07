@@ -42,16 +42,61 @@ internal struct _SoundCompilationContext {
             result.roots = try mixedRoots(result.roots)
             if capturesLiveProgram { result.liveProgram = try .group(programs) }
             return result
-        case .track(let name, let content):
+        case .track(let track):
             guard tracks.count < limits.maximumTracks else {
                 throw SoundCompilationError.maximumTracksExceeded(limit: limits.maximumTracks)
             }
+            try validate(track)
             let id = tracks.count
-            tracks.append(CompiledTrack(id: id, name: name, parentID: currentTrackID))
+            tracks.append(CompiledTrack(
+                id: id,
+                name: track.name,
+                parentID: currentTrackID,
+                level: track.level,
+                pan: track.pan,
+                isMuted: track.isMuted,
+                isSoloed: track.isSoloed
+            ))
             let previous = currentTrackID
             currentTrackID = id
-            defer { currentTrackID = previous }
-            return try visit(content, depth: childDepth(depth))
+            let fragment: _SoundFragment
+            do {
+                fragment = try visit(track.content, depth: childDepth(depth))
+            } catch {
+                currentTrackID = previous
+                throw error
+            }
+            currentTrackID = previous
+
+            let outputRoots = fragment.roots.filter { root in
+                if case .output = nodes[root] { return true }
+                return false
+            }
+            let mainRoots = fragment.roots.filter { root in
+                if case .output = nodes[root] { return false }
+                return true
+            }
+            let hasNondefaultSettings = track.level != 1
+                || track.pan != nil
+                || track.isMuted
+                || track.isSoloed
+            if hasNondefaultSettings, !outputRoots.isEmpty {
+                throw invalid("Audio processing must precede output routing")
+            }
+            guard !mainRoots.isEmpty else {
+                return fragment
+            }
+            let mainRoot: Int
+            if mainRoots.count == 1 {
+                mainRoot = mainRoots[0]
+            } else {
+                mainRoot = try appendNode(.mix(inputs: mainRoots))
+            }
+            let trackRoot = try appendNode(.track(input: mainRoot, trackID: id))
+            tracks[id].renderNodeID = trackRoot
+            var result = fragment
+            result.roots = outputRoots + [trackRoot]
+            return result
         case .modified(let content, let modifier):
             let firstSource = sources.count
             var fragment = try visit(content, depth: childDepth(depth))
@@ -604,6 +649,17 @@ internal struct _SoundCompilationContext {
         guard case .polyphonic(let limit, _) = policy else { return }
         guard (1...limits.maximumEvents).contains(limit) else {
             throw SoundParameterError.invalidVoices
+        }
+    }
+
+    private func validate(_ track: Track) throws {
+        guard track.level.isFinite, track.level >= 0 else {
+            throw invalid("Track level must be finite and nonnegative")
+        }
+        if let pan = track.pan {
+            guard pan.isFinite, (-1...1).contains(pan) else {
+                throw invalid("Track pan must be finite and in -1...1")
+            }
         }
     }
 

@@ -6,6 +6,6 @@ internal indirect enum _SoundNode: Sendable {
     case fileSample(fileURL: URL, rootPitch: Pitch)
     case sampleBank(SampleBank)
     case synthesizer(Waveform)
-    case track(String, any Sound)
+    case track(Track)
     case modified(any Sound, _SoundModifier)
 }
