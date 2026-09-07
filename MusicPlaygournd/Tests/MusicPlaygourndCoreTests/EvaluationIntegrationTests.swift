@@ -44,16 +44,24 @@ extension NativeHostTests {
                     depth = try Semitones(value: 1)
                 }
                 var body: some Sound {
-                    Sample(bank: bank)
-                        .notes("C4 D4 C4 D4")
-                        .sampleSelection("<a b>")
-                        .transpose(PitchPattern("0.5 -0.5"))
-                        .tuning(tuning)
-                        .pitchEnvelope(envelope, depth: depth)
-                        .lowPass("800 1600")
-                        .gate(1.2)
-                        .envelope(envelope)
-                        .voicePolicy(.monophonic)
+                    Track("Bank voices") {
+                        Sample(bank: bank)
+                            .notes("C4 D4 C4 D4")
+                            .sampleSelection("<a b>")
+                            .transpose(PitchPattern("0.5 -0.5"))
+                            .tuning(tuning)
+                            .pitchEnvelope(envelope, depth: depth)
+                            .lowPass("800 1600")
+                            .gate(1.2)
+                            .envelope(envelope)
+                            .voicePolicy(.monophonic)
+                    }
+                    .trackLevel(0.8)
+                    .trackPan(-0.25)
+                    .effect(.equalizer(frequencyHz: 1_200, gainDecibels: 3, q: 0.7))
+                    .effect(.saturation(drive: 0.3))
+                    .effect(.delay(time: .quarter, feedback: 0.2, wet: 0.1))
+                    .effect(.reverb(roomSize: 0.2, wet: 0.15))
                 }
             }
             """
@@ -65,6 +73,7 @@ extension NativeHostTests {
                 #expect(loop.events.compactMap(\.midiNote) == [60, 62, 60, 62, 60, 62, 60, 62])
                 #expect(loop.samples.contains { abs($0) > 0.01 })
                 #expect(loop.samples.allSatisfy { $0.isFinite })
+                #expect(loop.events.allSatisfy { $0.label == "Bank voices" })
                 let half = loop.samples.count / 2
                 var selectionDifference: Float = 0
                 for index in 0..<half {
@@ -79,6 +88,15 @@ extension NativeHostTests {
                 try engine.play()
                 try await Task.sleep(for: .milliseconds(350))
                 #expect(engine.outputMeter().interleavedSamples.contains { abs($0) > 0.0001 })
+                try engine.setPlaybackRate(1.1)
+                try engine.setLowPass(cutoff: 1_400)
+                try engine.setDelay(mix: 0.2)
+                try engine.setReverb(mix: 0.25)
+                try await Task.sleep(for: .milliseconds(50))
+                #expect(engine.snapshot().revision == 51)
+                #expect(engine.snapshot().isPlaying)
+                #expect(engine.outputMeter().interleavedSamples.allSatisfy { $0.isFinite })
+                #expect(engine.outputMeter().interleavedSamples.contains { abs($0) > 0.0001 })
                 engine.beginUpdate(revision: 52)
                 do {
                     _ = try await evaluator.evaluate(source: source.replacingOccurrences(of: url.path,
@@ -87,6 +105,26 @@ extension NativeHostTests {
                 } catch { #expect(error.localizedDescription.contains("unreadableFile")) }
                 #expect(engine.snapshot().revision == 51)
                 #expect(engine.snapshot().isPlaying)
+                do {
+                    try engine.submit(loop: loop, revision: 50)
+                    Issue.record("A stale native submission must fail")
+                } catch let error as PlaybackError {
+                    #expect(error == .staleRevision(50))
+                } catch {
+                    Issue.record("Expected staleRevision, got \(error)")
+                }
+                let recovered = try await evaluator.evaluate(source: source, bpm: 120, beatsPerBar: 4)
+                #expect(recovered.beatCount == 8)
+                engine.beginUpdate(revision: 53)
+                try engine.submit(loop: recovered, revision: 53)
+                try engine.setPlaybackRate(1.25)
+                let deadline = ContinuousClock.now.advanced(by: .seconds(6))
+                while engine.snapshot().revision != 53, ContinuousClock.now < deadline {
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                #expect(engine.snapshot().revision == 53)
+                #expect(engine.snapshot().isPlaying)
+                #expect(engine.outputMeter().interleavedSamples.contains { abs($0) > 0.0001 })
                 try await evaluator.shutdown()
             } catch {
                 try await evaluator.shutdown()
