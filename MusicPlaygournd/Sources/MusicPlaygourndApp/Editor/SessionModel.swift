@@ -6,7 +6,36 @@ import UniformTypeIdentifiers
 @MainActor @Observable
 final class SessionModel {
     var source = SessionModel.initialSource
-    var bpm = 120.0
+    var bpm = 120.0 {
+        didSet {
+            guard bpm.isFinite, (40...240).contains(bpm) else {
+                bpm = oldValue
+                diagnostic = "Tempo must be between 40 and 240 BPM."
+                return
+            }
+            do { try engine?.setPlaybackRate(Float(bpm / 120)) }
+            catch { bpm = oldValue; diagnostic = error.localizedDescription }
+        }
+    }
+    var lowPass = 20_000.0 {
+        didSet {
+            do { try engine?.setLowPass(cutoff: lowPass >= 19_999 ? nil : Float(lowPass)) }
+            catch { lowPass = oldValue; diagnostic = error.localizedDescription }
+        }
+    }
+    var delayMix = 0.0 {
+        didSet {
+            do { try engine?.setDelay(mix: Float(delayMix)) }
+            catch { delayMix = oldValue; diagnostic = error.localizedDescription }
+        }
+    }
+    var reverbMix = 0.0 {
+        didSet {
+            do { try engine?.setReverb(mix: Float(reverbMix)) }
+            catch { reverbMix = oldValue; diagnostic = error.localizedDescription }
+        }
+    }
+    var outputSamples = [Float](repeating: 0, count: 4096)
     var beatsPerBar = 4
     var diagnostic = ""
     var status = "Ready to play"
@@ -63,7 +92,7 @@ final class SessionModel {
         lineMaps = lineMaps.filter { $0.key == currentRevision }
         engine?.beginUpdate(revision: requested)
         let text = source
-        let tempo = bpm
+        let tempo = 120.0
         let meter = beatsPerBar
         diagnostic = ""
         isPreparing = true
@@ -119,8 +148,12 @@ final class SessionModel {
             lineMaps = lineMaps.filter { $0.key == currentRevision || $0.key == revision }
             updateRowLines()
         }
-        if let loop, let analyzer {
-            spectrum = analyzer.analyze(loop: loop, beat: beatPosition, isPlaying: isPlaying)
+        if let capture = engine?.outputMeter() {
+            outputSamples = capture.interleavedSamples
+            if let analyzer {
+                spectrum = analyzer.analyze(interleavedSamples: outputSamples,
+                    sampleRate: capture.sampleRate, isPlaying: isPlaying)
+            }
         }
         if !isPreparing, diagnostic.isEmpty, snapshot.revision == revision {
             status = isPlaying ? "Live · edit freely" : "Paused"

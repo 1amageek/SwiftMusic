@@ -1,6 +1,6 @@
 # MusicPlaygournd
 
-A native macOS editor for making music with SwiftMusic. Write a `Session: Music`, press Play, and keep editing while the last valid loop plays. Swift is compiled automatically after a short typing pause. The editor highlights playing pattern literals and aligns source waveforms to their Swift lines. A stereo waveform and spectrum monitor follow the adopted audio transport.
+A native macOS editor for making music with SwiftMusic. Write a `Session: Music`, press Play, and keep editing while the last valid loop plays. Swift is compiled automatically after a short typing pause. The editor highlights playing pattern literals and aligns source waveforms to their Swift lines. A stereo waveform and spectrum monitor capture the actual output after the live master effects.
 
 ```text
 Swift editor -> prepare -> next bar -> audio + rhythm
@@ -21,7 +21,8 @@ The app bundle includes its evaluation package sources. It retains the installed
 ## Use
 
 - Play/Pause: Command–Return. Apply immediately: Command–R. Otherwise edits apply automatically after 650 ms without typing.
-- Change BPM (40–240) and quarter-note meter (2/4–7/4) independently of source. Prepared changes switch at a bar boundary.
+- Change BPM (40–240), low-pass cutoff, delay mix and reverb mix live with the master sliders. These controls do not compile code or create a new loop revision. Tempo changes preserve pitch.
+- Code and quarter-note meter (2/4–7/4) changes prepare a new loop and switch at a bar boundary.
 - Open/Save UTF-8 Swift sessions: Command–O / Command–S. Keep the entry type named `Session` and conform it to `Music`.
 - Click the diagnostic heading to select a reported Swift source line. Direct pattern literals glow while their compiled source events play. The attached timeline scrolls with the code; scroll over either pane.
 - Use the lower-right layout button to put the rhythm view below the code.
@@ -44,12 +45,13 @@ Brackets subdivide one parent slot. Gain patterns repeat over their cycle and se
 | `Synthesizer(.sine/.square/.saw/.triangle/.noise)` | Basic oscillator voices |
 | Nested `[]` rhythm/notes, per-event gain patterns, transpose, chords, velocity, gate | Compiled by SwiftMusic, rendered as events |
 | Gain, pan, mute | Applied in render-plan order |
-| Other source settings, effects, buses | Explicit unsupported-feature diagnostic; current audio survives |
+| Live master tempo, low-pass, delay, reverb | Native AVFAudio processing while playing |
+| Other source settings, code-declared effects, buses | Explicit unsupported-feature diagnostic; current audio survives |
 
-This first version prepares finite PCM loops offline. Loops are padded to whole bars, bounded to 32 beats and 16 seconds. Source, event and graph limits bound preparation work. Synth voices use short edge fades; sustained effect tails and arbitrary sample files are not implemented. The callback is synchronized and bounded, without a hard real-time latency guarantee. Line anchors come from the Swift compiler. Deleted anchors become unmapped until a new successful evaluation. Escaped, multiline, ambiguous or nonliteral pattern expressions are not assigned guessed text highlights. Only the individual token identified by the currently playing compiled event glows; repeated and shifted events preserve that token association. Source waves are pre-mix (before gain/pan/mute); the bottom stereo waveform and spectrum use the prepared master PCM at the transport cursor, not microphone or hardware loopback.
+This first version prepares finite PCM loops offline. Loops are padded to whole bars, bounded to 32 beats and 16 seconds. Source, event and graph limits bound preparation work. Synth voices use short edge fades. Master delay/reverb continue across loop changes; Pause stops output and clears monitoring. Arbitrary sample files are not implemented. The callback is synchronized and bounded, without a hard real-time latency guarantee. Line anchors come from the Swift compiler. Deleted anchors become unmapped until a new successful evaluation. Escaped, multiline, ambiguous or nonliteral pattern expressions are not assigned guessed text highlights. Only the individual token identified by the currently playing compiled event glows; repeated and shifted events preserve that token association. Source waves are pre-mix (including per-event gain, before scalar gain/pan/mute). The bottom stereo waveform and spectrum use a bounded 2,048-frame capture after master effects, before hardware volume; they are not microphone or hardware loopback. Playback cursor latency compensation uses AVFAudio presentation metadata; this is not sample-accurate device loopback synchronization.
 
 See [DESIGN.md](DESIGN.md) for ownership and failure contracts. This development app uses the adjacent SwiftMusic workspace for source provenance, which is not yet in the published 0.1.0 release. The app bundles both source packages so it can evaluate sessions when moved. No new library release is created by this change.
 
 ## Verification
 
-On macOS 27.0 arm64 with Swift 6.4 snapshot 2026-08-14, 34 SwiftMusic tests and 14 editor-runtime tests passed. These cover compiler token provenance, transformed event timing, PCM peak data, literal ranges, Unicode edit anchors, FFT frequency/amplitude/stereo behavior and native AVAudioEngine playback while real Swift evaluations fail, time out, are cancelled, exceed diagnostic limits and recover. The initial combined app run exceeded its 120-second outer budget; the focused runtime integration passed in 49 seconds. Release builds pass with development-toolchain object verification warnings. This does not claim tested macOS 15 runtime behavior or hard real-time scheduling.
+On macOS 27.0 arm64 with Swift 6.4 snapshot 2026-08-14, 40 SwiftMusic tests, 24 focused editor/runtime tests, and a native hardware-output tap test passed. Native DSP tests verify tempo/pitch, neutral gain, filter attenuation and delay/reverb tails; model tests verify controls allocate no evaluation revision. The unchanged evaluator's real compilation/failure/cancellation/timeout/recovery test passed in 54 seconds for the nested-pattern change. Repeating that long test during active editor compilations reached its 120-second outer budget while still building; its previous evidence is retained, and the changed hardware-output path was verified separately. Release builds pass with development-toolchain object verification warnings. Visible checks cover nested leaf highlighting, aligned scrolling, post-FX monitoring, live controls and open/save. This does not claim tested macOS 15 runtime behavior or hard real-time scheduling.

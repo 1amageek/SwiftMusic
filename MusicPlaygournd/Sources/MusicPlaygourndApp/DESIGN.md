@@ -15,7 +15,7 @@ Editor -> SourceEvaluator -> AudioLoopEngine -> Editor snapshot
 ```
 
 ## Contracts and Invariants
-App uses the same adopted metadata and transport cursor for compiler-anchored player rows, waveforms, and spectrum. Native editor geometry and one shared vertical scroll position align both panes; the App never infers provenance from source text. Controls own BPM/meter, transport and documents. Swift 6.4 toolchain required.
+App uses the same adopted metadata and latency-adjusted transport cursor for compiler-anchored player rows and active tokens. Native editor geometry and one shared vertical scroll position align both panes; the App never infers provenance from source text. Session evaluation renders at a fixed 120 BPM base. BPM and master low-pass/delay/reverb controls update playback live without starting evaluation or changing edit revision. Master waveform and spectrum consume actual bounded post-FX samples. Controls also own meter, transport, and documents. Swift 6.4 toolchain required.
 
 ## Failure, Concurrency, and Constraints
 Failure is reported as a diagnostic or typed error; the last adopted loop survives edit failures. Mutable host state is MainActor- or Mutex-isolated.

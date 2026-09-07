@@ -36,6 +36,22 @@ final class VisualFeedbackTests: XCTestCase {
     }
 
     @MainActor
+    func testCapturedSpectrumUsesDeviceSampleRateAndPausedSilence() throws {
+        let analyzer = try SpectrumAnalyzer()
+        let rate = 48_000.0
+        let frequency = rate * 64 / Double(SpectrumAnalyzer.size)
+        let samples = (0..<SpectrumAnalyzer.size).flatMap { frame -> [Float] in
+            let value = Float(sin(Double(frame) * 2 * .pi * frequency / rate)) * 0.25
+            return [value, -value]
+        }
+        let bands = analyzer.analyze(interleavedSamples: samples, sampleRate: rate, isPlaying: true)
+        let peak = try XCTUnwrap(bands.indices.max { bands[$0] < bands[$1] })
+        XCTAssertEqual(peak, Int(log(frequency / 20) / log(1000) * Double(SpectrumAnalyzer.bandCount)))
+        XCTAssertEqual(bands[peak], -12.0412, accuracy: 0.1)
+        XCTAssertTrue(analyzer.analyze(interleavedSamples: samples, sampleRate: rate, isPlaying: false).allSatisfy { $0 == -90 })
+    }
+
+    @MainActor
     func testSpectrumMeasuresPCMFrequencyLevelStereoAndSilence() throws {
         let analyzer = try SpectrumAnalyzer()
         let sampleRate = PreparedLoop.requiredSampleRate

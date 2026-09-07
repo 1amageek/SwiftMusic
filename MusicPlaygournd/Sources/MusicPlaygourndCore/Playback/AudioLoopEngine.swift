@@ -6,7 +6,13 @@ import Synchronization
 public final class AudioLoopEngine {
     private let audioEngine: AVAudioEngine
     private let sourceNode: AVAudioSourceNode
+    private let timePitch: AVAudioUnitTimePitch
+    private let equalizer: AVAudioUnitEQ
+    private let delay: AVAudioUnitDelay
+    private let reverb: AVAudioUnitReverb
     private let transport: AudioTransport
+    private let meterStore: OutputMeterStore
+    private let audioFormat: AVAudioFormat
     private var retainedLoops: [UInt64: PreparedLoop] = [:]
     private var latestRequestedRevision: UInt64?
 
@@ -19,6 +25,23 @@ public final class AudioLoopEngine {
         }
 
         let transport = AudioTransport()
+        let timePitch = AVAudioUnitTimePitch()
+        let equalizer = AVAudioUnitEQ(numberOfBands: 1)
+        let delay = AVAudioUnitDelay()
+        let reverb = AVAudioUnitReverb()
+        let meterStore = OutputMeterStore()
+
+        let filter = equalizer.bands[0]
+        filter.filterType = .lowPass
+        filter.frequency = 1_000
+        filter.bypass = true
+        timePitch.rate = 1
+        delay.delayTime = 0.25
+        delay.feedback = 30
+        delay.wetDryMix = 0
+        reverb.loadFactoryPreset(.mediumRoom)
+        reverb.wetDryMix = 0
+
         let sourceNode = AVAudioSourceNode(format: format) { @Sendable [transport] isSilence, _, frameCount, audioBufferList in
             let status = transport.render(frameCount: Int(frameCount), audioBufferList: audioBufferList)
             isSilence.pointee = ObjCBool(status != noErr)
@@ -26,12 +49,31 @@ public final class AudioLoopEngine {
         }
         let audioEngine = AVAudioEngine()
         audioEngine.attach(sourceNode)
-        audioEngine.connect(sourceNode, to: audioEngine.mainMixerNode, format: format)
+        audioEngine.attach(timePitch)
+        audioEngine.attach(equalizer)
+        audioEngine.attach(delay)
+        audioEngine.attach(reverb)
+        audioEngine.connect(sourceNode, to: timePitch, format: format)
+        audioEngine.connect(timePitch, to: equalizer, format: format)
+        audioEngine.connect(equalizer, to: delay, format: format)
+        audioEngine.connect(delay, to: reverb, format: format)
+        audioEngine.connect(reverb, to: audioEngine.mainMixerNode, format: format)
         audioEngine.mainMixerNode.outputVolume = 1
-        audioEngine.prepare()
-
+        audioEngine.mainMixerNode.installTap(
+            onBus: 0,
+            bufferSize: AVAudioFrameCount(OutputMeterStore.frameCapacity),
+            format: nil
+        ) { @Sendable [meterStore] buffer, _ in
+            meterStore.capture(buffer)
+        }
         self.transport = transport
         self.sourceNode = sourceNode
+        self.timePitch = timePitch
+        self.equalizer = equalizer
+        self.delay = delay
+        self.reverb = reverb
+        self.meterStore = meterStore
+        self.audioFormat = format
         self.audioEngine = audioEngine
     }
 
@@ -55,13 +97,18 @@ public final class AudioLoopEngine {
 
     public func play() throws {
         try transport.startPlayback()
+        meterStore.activate()
         do {
             if !audioEngine.isRunning {
+                if !audioEngine.isInManualRenderingMode {
+                    audioEngine.prepare()
+                }
                 try audioEngine.start()
             }
         } catch {
             transport.stopPlayback()
             audioEngine.stop()
+            meterStore.clear()
             throw PlaybackError.audioStartFailed(String(describing: error))
         }
     }
@@ -69,13 +116,149 @@ public final class AudioLoopEngine {
     public func stop() {
         transport.stopPlayback()
         audioEngine.stop()
+        meterStore.clear()
         pruneRetainedLoops()
     }
 
     public func snapshot() -> PlaybackSnapshot {
-        let snapshot = transport.snapshot()
-        pruneRetainedLoops(currentRevision: snapshot.revision)
-        return snapshot
+        let position = transport.positionSnapshot()
+        let rawSnapshot = position.playback
+        pruneRetainedLoops(currentRevision: rawSnapshot.revision)
+        guard rawSnapshot.isPlaying,
+              let loop = rawSnapshot.loop else {
+            return rawSnapshot
+        }
+
+        // The source node reports the complete downstream presentation latency.
+        // Do not add individual effect latencies a second time. Unknown or invalid
+        // metadata is excluded explicitly and leaves the transport position intact.
+        let latency = sourceNode.outputPresentationLatency
+        guard latency.isFinite, latency > 0 else { return rawSnapshot }
+        let correction = latency * loop.bpm / 60 * Double(timePitch.rate)
+        guard correction.isFinite, correction >= 0 else { return rawSnapshot }
+        return PlaybackSnapshot(
+            loop: rawSnapshot.loop,
+            revision: rawSnapshot.revision,
+            beatPosition: AudioTransport.correctedLocalBeatPosition(
+                accumulatedBeatPosition: position.accumulatedBeatPosition,
+                loopBeatCount: loop.beatCount,
+                correction: correction
+            ),
+            isPlaying: rawSnapshot.isPlaying
+        )
+    }
+
+    public func setPlaybackRate(_ rate: Float) throws {
+        guard rate.isFinite, (1.0 / 32.0...32.0).contains(rate) else {
+            throw PlaybackError.invalidPlaybackRate(rate)
+        }
+        timePitch.rate = rate
+    }
+
+    public func setLowPass(cutoff: Float?) throws {
+        if let cutoff {
+            guard cutoff.isFinite, (20...20_000).contains(cutoff) else {
+                throw PlaybackError.invalidLowPassCutoff(cutoff)
+            }
+            let filter = equalizer.bands[0]
+            filter.filterType = .lowPass
+            filter.frequency = cutoff
+            filter.bypass = false
+        } else {
+            equalizer.bands[0].bypass = true
+        }
+    }
+
+    public func setDelay(mix: Float) throws {
+        guard mix.isFinite, (0...1).contains(mix) else {
+            throw PlaybackError.invalidDelayMix(mix)
+        }
+        delay.wetDryMix = mix * 100
+    }
+
+    public func setReverb(mix: Float) throws {
+        guard mix.isFinite, (0...1).contains(mix) else {
+            throw PlaybackError.invalidReverbMix(mix)
+        }
+        reverb.wetDryMix = mix * 100
+    }
+
+    public func outputMeter() -> OutputMeterSnapshot {
+        if !transport.snapshot().isPlaying {
+            meterStore.clear()
+        }
+        return meterStore.snapshot()
+    }
+
+    /// Enables native offline rendering for focused Core tests without changing the public app API.
+    internal func prepareOfflineRenderingForTests() throws {
+        guard !audioEngine.isInManualRenderingMode else { return }
+        guard !audioEngine.isRunning else {
+            throw PlaybackError.offlineRenderingFailed("The engine must be stopped before manual rendering setup.")
+        }
+        do {
+            try audioEngine.enableManualRenderingMode(
+                .offline,
+                format: audioFormat,
+                maximumFrameCount: AVAudioFrameCount(OutputMeterStore.frameCapacity * 2)
+            )
+        } catch {
+            throw PlaybackError.offlineRenderingFailed(String(describing: error))
+        }
+    }
+
+    /// Renders the native effect graph into a test-owned interleaved buffer.
+    internal func renderOfflineForTests(frameCount: Int) throws -> [Float] {
+        guard (1...(OutputMeterStore.frameCapacity * 2)).contains(frameCount) else {
+            throw PlaybackError.offlineRenderingFailed("Offline frame count is outside the bounded test range.")
+        }
+        try prepareOfflineRenderingForTests()
+        if !audioEngine.isRunning {
+            do {
+                try audioEngine.start()
+            } catch {
+                throw PlaybackError.offlineRenderingFailed(String(describing: error))
+            }
+        }
+        guard let buffer = AVAudioPCMBuffer(
+            pcmFormat: audioFormat,
+            frameCapacity: AVAudioFrameCount(frameCount)
+        ) else {
+            throw PlaybackError.offlineRenderingFailed("Unable to allocate the offline render buffer.")
+        }
+        do {
+            let status = try audioEngine.renderOffline(AVAudioFrameCount(frameCount), to: buffer)
+            guard status == .success else {
+                throw PlaybackError.offlineRenderingFailed("Native renderer returned \(status).")
+            }
+        } catch let error as PlaybackError {
+            throw error
+        } catch {
+            throw PlaybackError.offlineRenderingFailed(String(describing: error))
+        }
+
+        // AVAudioEngine does not invoke mixer taps for every offline configuration. The
+        // returned buffer is the post-mixer render output, so use it to keep the test-only
+        // monitor path tied to the same native effect graph when the tap is silent offline.
+        meterStore.capture(buffer)
+
+        let renderedFrames = min(Int(buffer.frameLength), frameCount)
+        var output = [Float](repeating: 0, count: renderedFrames * 2)
+        if audioFormat.isInterleaved {
+            if let data = buffer.audioBufferList.pointee.mBuffers.mData {
+                let samples = data.assumingMemoryBound(to: Float.self)
+                for frame in 0..<renderedFrames {
+                    output[frame * 2] = samples[frame * 2]
+                    output[frame * 2 + 1] = samples[frame * 2 + 1]
+                }
+            }
+        } else if let channels = buffer.floatChannelData {
+            for frame in 0..<renderedFrames {
+                output[frame * 2] = channels[0][frame]
+                output[frame * 2 + 1] = channels[1][frame]
+            }
+        }
+        return output
     }
 
     private func pruneRetainedLoops(currentRevision: UInt64? = nil) {
@@ -83,11 +266,21 @@ public final class AudioLoopEngine {
         let retained = Set([activeRevision, latestRequestedRevision].compactMap { $0 })
         retainedLoops = retainedLoops.filter { retained.contains($0.key) }
     }
+
+    deinit {
+        audioEngine.mainMixerNode.removeTap(onBus: 0)
+        audioEngine.stop()
+    }
 }
 
 // The callback crosses AVFAudio's render thread. Its only mutable field is Mutex-protected,
 // and callback-local buffer borrows never escape this method.
 final class AudioTransport: Sendable {
+    struct PositionSnapshot {
+        let playback: PlaybackSnapshot
+        let accumulatedBeatPosition: Double
+    }
+
     private struct Candidate: Sendable {
         let loop: PreparedLoop
         let revision: UInt64
@@ -161,6 +354,10 @@ final class AudioTransport: Sendable {
     }
 
     func snapshot() -> PlaybackSnapshot {
+        positionSnapshot().playback
+    }
+
+    func positionSnapshot() -> PositionSnapshot {
         state.withLock { state in
             let beatPosition: Double
             if let current = state.current {
@@ -169,13 +366,32 @@ final class AudioTransport: Sendable {
             } else {
                 beatPosition = 0
             }
-            return PlaybackSnapshot(
-                loop: state.current,
-                revision: state.currentRevision,
-                beatPosition: beatPosition,
-                isPlaying: state.isPlaying
+            return PositionSnapshot(
+                playback: PlaybackSnapshot(
+                    loop: state.current,
+                    revision: state.currentRevision,
+                    beatPosition: beatPosition,
+                    isPlaying: state.isPlaying
+                ),
+                accumulatedBeatPosition: state.beatPosition
             )
         }
+    }
+
+    static func correctedLocalBeatPosition(
+        accumulatedBeatPosition: Double,
+        loopBeatCount: Double,
+        correction: Double
+    ) -> Double {
+        guard accumulatedBeatPosition.isFinite,
+              loopBeatCount.isFinite, loopBeatCount > 0,
+              correction.isFinite, correction >= 0 else {
+            return 0
+        }
+        let corrected = accumulatedBeatPosition - correction
+        guard corrected > 0 else { return 0 }
+        let local = corrected.truncatingRemainder(dividingBy: loopBeatCount)
+        return local >= 0 ? local : local + loopBeatCount
     }
 
     func render(frameCount: Int, audioBufferList: UnsafeMutablePointer<AudioBufferList>) -> OSStatus {

@@ -22,6 +22,6 @@ let package = Package(
             dependencies: ["MusicPlaygourndCore", .product(name: "SwiftMusic", package: "SwiftMusic")],
             exclude: ["DESIGN.md", "Editor/DESIGN.md"]
         ),
-        .testTarget(name: "MusicPlaygourndCoreTests", dependencies: ["MusicPlaygourndCore"])
+        .testTarget(name: "MusicPlaygourndCoreTests", dependencies: ["MusicPlaygourndCore", "MusicPlaygourndApp"])
     ]
 )

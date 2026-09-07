@@ -1,7 +1,7 @@
 import Accelerate
 import Foundation
 
-/// Analyzes prepared stereo PCM at the transport cursor, outside the audio callback.
+/// Analyzes stereo PCM outside the audio callback.
 @MainActor
 public final class SpectrumAnalyzer {
     public enum Failure: Error { case unavailable }
@@ -29,16 +29,28 @@ public final class SpectrumAnalyzer {
 
     /// Returns peak-amplitude dBFS for logarithmic bands, with silence at -90 dBFS.
     public func analyze(loop: PreparedLoop, beat: Double, isPlaying: Bool) -> [Float] {
-        var bands = [Float](repeating: -90, count: Self.bandCount)
         let frames = loop.samples.count / 2
-        guard isPlaying, frames > 0, beat.isFinite, loop.beatCount > 0 else { return bands }
-        let phase = max(0, min(1, beat / loop.beatCount))
-        let cursor = Int(phase * Double(frames)) % frames
+        let phase = beat.isFinite && loop.beatCount > 0 ? max(0, min(1, beat / loop.beatCount)) : 0
+        return analyze(samples: loop.samples, sampleRate: loop.sampleRate,
+            cursor: Int(phase * Double(frames)), isPlaying: isPlaying && beat.isFinite)
+    }
+
+    /// Analyzes the latest owned post-effect capture, using its actual device sample rate.
+    public func analyze(interleavedSamples: [Float], sampleRate: Double, isPlaying: Bool) -> [Float] {
+        analyze(samples: interleavedSamples, sampleRate: sampleRate,
+            cursor: interleavedSamples.count / 2, isPlaying: isPlaying)
+    }
+
+    private func analyze(samples: [Float], sampleRate: Double, cursor: Int, isPlaying: Bool) -> [Float] {
+        var bands = [Float](repeating: -90, count: Self.bandCount)
+        let frames = samples.count / 2
+        guard isPlaying, frames > 0, samples.count.isMultiple(of: 2),
+              sampleRate.isFinite, sampleRate > 0 else { return bands }
         for index in power.indices { power[index] = 0 }
         for channel in 0..<2 {
             for index in 0..<Self.size {
                 let frame = ((cursor - Self.size + index) % frames + frames) % frames
-                input[index] = loop.samples[frame * 2 + channel] * window[index]
+                input[index] = samples[frame * 2 + channel] * window[index]
             }
             // Accelerate borrows these arrays only for this call; the setup owns no sample pointers.
             vDSP_DFT_Execute(setup, input, imaginary, &realOutput, &imaginaryOutput)
@@ -49,8 +61,8 @@ public final class SpectrumAnalyzer {
         for band in bands.indices {
             let low = 20 * pow(1000.0, Double(band) / Double(Self.bandCount))
             let high = 20 * pow(1000.0, Double(band + 1) / Double(Self.bandCount))
-            let first = max(1, Int(ceil(low * Double(Self.size) / loop.sampleRate)))
-            let last = min(Self.size / 2, Int(ceil(high * Double(Self.size) / loop.sampleRate)))
+            let first = max(1, Int(ceil(low * Double(Self.size) / sampleRate)))
+            let last = min(Self.size / 2, Int(ceil(high * Double(Self.size) / sampleRate)))
             guard first < last else { continue }
             var maximum: Float = 0
             for index in first..<last { maximum = max(maximum, power[index]) }

@@ -3,8 +3,7 @@ import MusicPlaygourndCore
 
 struct SpectrumView: View {
     let bands: [Float]
-    let loop: PreparedLoop?
-    let beatPosition: Double
+    let samples: [Float]
     let isPlaying: Bool
 
     var body: some View {
@@ -21,14 +20,13 @@ struct SpectrumView: View {
                 for channel in 0..<2 {
                     let center = size.height * (channel == 0 ? 0.3 : 0.7)
                     var wave = Path()
-                    let frames = (loop?.samples.count ?? 0) / 2
-                    let cursor = loop.map { Int(beatPosition / $0.beatCount * Double(frames)) } ?? 0
+                    let frames = samples.count / 2
                     for point in 0..<256 {
                         let x = Double(point) / 255 * size.width
                         var sample = 0.0
-                        if isPlaying, let loop, frames > 0 {
-                            let index = ((cursor - 2048 + point * 8) % frames + frames) % frames
-                            sample = Double(loop.samples[index * 2 + channel])
+                        if isPlaying, frames > 0 {
+                            let index = min(frames - 1, point * frames / 256)
+                            sample = Double(samples[index * 2 + channel])
                         }
                         let position = CGPoint(x: x, y: center - sample * size.height * 0.24)
                         if point == 0 { wave.move(to: position) } else { wave.addLine(to: position) }

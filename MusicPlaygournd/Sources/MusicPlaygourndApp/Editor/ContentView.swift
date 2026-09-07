@@ -17,10 +17,8 @@ struct ContentView: View {
                     Text("BPM").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
                     TextField("BPM", value: $model.bpm, format: .number.precision(.fractionLength(0)))
                         .frame(width: 44).textFieldStyle(.roundedBorder)
-                        .onSubmit { model.scheduleEvaluation(immediate: true) }
                         .accessibilityIdentifier("tempo-field")
                     Stepper("Tempo", value: $model.bpm, in: 40...240, step: 1).labelsHidden()
-                        .onChange(of: model.bpm) { _, _ in model.scheduleEvaluation() }
                 }
                 Picker("Meter", selection: $model.beatsPerBar) {
                     ForEach(2...7, id: \.self) { Text("\($0)/4").tag($0) }
@@ -34,6 +32,8 @@ struct ContentView: View {
                     .accessibilityIdentifier("play-toggle")
             }.padding(.horizontal, 22).padding(.vertical, 15)
             Divider()
+            liveControls
+            Divider()
             if model.bottomLayout {
                 VSplitView { editor; rhythm }
             } else {
@@ -44,7 +44,7 @@ struct ContentView: View {
                 }
             }
             Divider()
-            SpectrumView(bands: model.spectrum, loop: model.loop, beatPosition: model.beatPosition, isPlaying: model.isPlaying)
+            SpectrumView(bands: model.spectrum, samples: model.outputSamples, isPlaying: model.isPlaying)
             Divider()
             HStack(spacing: 10) {
                 if model.isPreparing { ProgressView().controlSize(.mini) }
@@ -68,6 +68,35 @@ struct ContentView: View {
                 do { try await Task.sleep(for: .milliseconds(33)) }
                 catch { break }
             }
+        }
+    }
+
+    private var liveControls: some View {
+        HStack(spacing: 21) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("LIVE MASTER").font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(1)
+                Text("\(Int(model.bpm.rounded())) BPM").font(.system(size: 10, design: .monospaced)).foregroundStyle(.mint)
+            }.frame(width: 100, alignment: .leading)
+            control("TEMPO", value: $model.bpm, in: 40...240, label: "\(Int(model.bpm.rounded())) BPM")
+            control("FILTER", value: Binding(
+                get: { log10(model.lowPass) }, set: { model.lowPass = pow(10, $0) }),
+                in: log10(20)...log10(20_000),
+                label: model.lowPass >= 19_999 ? "OPEN" : "\(Int(model.lowPass)) Hz")
+            control("DELAY", value: $model.delayMix, in: 0...1, label: "\(Int(model.delayMix * 100))%")
+            control("REVERB", value: $model.reverbMix, in: 0...1, label: "\(Int(model.reverbMix * 100))%")
+        }.padding(.horizontal, 21).padding(.vertical, 10)
+            .background(.white.opacity(0.025))
+    }
+
+    private func control(_ title: String, value: Binding<Double>, in range: ClosedRange<Double>, label: String) -> some View {
+        VStack(spacing: 4) {
+            HStack {
+                Text(title).foregroundStyle(.secondary)
+                Spacer()
+                Text(label).foregroundStyle(.mint)
+            }.font(.system(size: 9, weight: .medium, design: .monospaced))
+            Slider(value: value, in: range).tint(.mint)
+                .accessibilityLabel(title).accessibilityValue(label)
         }
     }
 
