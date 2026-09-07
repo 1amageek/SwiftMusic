@@ -14,6 +14,11 @@ public struct CompiledSoundEvent: Sendable, Equatable {
     public internal(set) var cutoffHz: Double?
     public internal(set) var envelope: Envelope?
     public internal(set) var patternStepIndex: Int?
+    public internal(set) var harmonyGroupID: Int? = nil
+    public internal(set) var harmonyOccurrenceID: Int? = nil
+    public internal(set) var harmonyVoiceIndex: Int? = nil
+    public internal(set) var portamentoStartMIDINote: Double? = nil
+    internal var legato: Legato? = nil
     internal var pendingEventDucks: [_PendingEventDuck]
 
     internal init(

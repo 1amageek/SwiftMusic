@@ -8,6 +8,7 @@ internal enum _RhythmEventProcessing {
         do {
             var output: [CompiledSoundEvent] = []
             var end = extent
+            var harmonyCopies = _HarmonyCopies(events)
             switch modifier {
             case .euclidean(let rhythm):
                 try budget(events, copies: rhythm.pulses, maximum: maximumOutputEvents, limits: limits)
@@ -17,7 +18,7 @@ internal enum _RhythmEventProcessing {
                 for step in hits.indices where hits[step] {
                     let offset = try duration.multiplied(by: UInt64(step))
                     for original in events {
-                        var event = original
+                        var event = harmonyCopies.copy(original, iteration: step)
                         event.start = try original.start.adding(offset)
                         event.duration = duration
                         output.append(event)
@@ -28,7 +29,7 @@ internal enum _RhythmEventProcessing {
                 guard (1...1_024).contains(count) else { throw RhythmTransformError.invalidRatchet }
                 try budget(events, copies: count, maximum: maximumOutputEvents, limits: limits)
                 output.reserveCapacity(events.count * count)
-                for event in events { try ratchet(event, count: count, into: &output) }
+                for event in events { try ratchet(event, count: count, into: &output, copies: &harmonyCopies) }
             case .probability(let value):
                 if value.chance == 1 { output = events }
                 else if value.chance != 0 {
@@ -102,7 +103,7 @@ internal enum _RhythmEventProcessing {
                     case .rotated(let offset):
                         event.start = try origin.adding(_patternTimeRemainder(local.adding(offset), divisor: value.cycle))
                         output.append(event)
-                    case .ratcheted(let count): try ratchet(event, count: count, into: &output)
+                    case .ratcheted(let count): try ratchet(event, count: count, into: &output, copies: &harmonyCopies)
                     }
                 }
             default: preconditionFailure("Only rhythm event modifiers enter this processor")
@@ -130,10 +131,10 @@ internal enum _RhythmEventProcessing {
     }
 
     private static func ratchet(_ original: CompiledSoundEvent, count: Int,
-                                into output: inout [CompiledSoundEvent]) throws {
+                                into output: inout [CompiledSoundEvent], copies: inout _HarmonyCopies) throws {
         let duration = try original.duration.divided(by: UInt64(count))
         for index in 0..<count {
-            var event = original
+            var event = copies.copy(original, iteration: index)
             event.start = try original.start.adding(duration.multiplied(by: UInt64(index)))
             event.duration = duration
             output.append(event)

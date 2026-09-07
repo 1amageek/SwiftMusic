@@ -351,7 +351,7 @@ private struct RenderContext {
         }
         for source in sound.sources {
             if case .synthesizer(.noise) = source.kind,
-               source.tuning != nil || source.pitchEnvelope != nil || source.pitchAutomation != nil || sound.events.contains(where: {
+               source.portamento != nil || source.tuning != nil || source.pitchEnvelope != nil || source.pitchAutomation != nil || sound.events.contains(where: {
                    $0.sourceID == source.id && $0.pitchOffsetSemitones != 0
                }) {
                 throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "white noise has no pitched oscillator")
@@ -361,7 +361,7 @@ private struct RenderContext {
             }
             // Procedural samples have no decoded asset or root pitch; rooted file/bank sources support pitch traversal.
             if case .sample = source.kind,
-               source.tuning != nil || source.pitchEnvelope != nil || source.pitchAutomation != nil || sound.events.contains(where: {
+               source.portamento != nil || source.tuning != nil || source.pitchEnvelope != nil || source.pitchAutomation != nil || sound.events.contains(where: {
                    $0.sourceID == source.id && $0.pitchOffsetSemitones != 0
                }) {
                 throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "sample pitch traversal")

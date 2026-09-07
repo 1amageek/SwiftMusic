@@ -221,11 +221,12 @@ internal struct _SoundCompilationContext {
                 try replaceEventCount(fragment.events.count, with: count)
                 var events: [CompiledSoundEvent] = []
                 events.reserveCapacity(count)
-                for leaf in leaves where leaf.token == "x" {
+                var harmonyCopies = _HarmonyCopies(fragment.events)
+                for (leafOrdinal, leaf) in leaves.enumerated() where leaf.token == "x" {
                     let start = try _scalePatternTime(period, by: leaf.start)
                     let duration = try _scalePatternTime(period, by: leaf.duration)
                     for original in fragment.events {
-                        var event = original
+                        var event = harmonyCopies.copy(original, iteration: leafOrdinal)
                         event.start = try original.start.adding(start)
                         event.duration = duration
                         event.patternStepIndex = leaf.index
@@ -253,15 +254,24 @@ internal struct _SoundCompilationContext {
                 try replaceEventCount(fragment.events.count, with: count)
                 var events: [CompiledSoundEvent] = []
                 events.reserveCapacity(count)
+                var nextHarmonyGroup = (fragment.events.lazy.compactMap(\.harmonyGroupID).max() ?? -1) + 1
+                var noteCopies = _HarmonyCopies(fragment.events)
                 for (leafIndex, leaf) in leaves.enumerated() where leaf.token != "~" {
                     let start = try _scalePatternTime(period, by: leaf.start)
                     let duration = try _scalePatternTime(period, by: leaf.duration)
-                    for pitch in pitches[leafIndex] {
-                        for original in fragment.events {
-                            var event = original
+                    let groupBase = nextHarmonyGroup
+                    nextHarmonyGroup += fragment.events.count
+                    for (voice, pitch) in pitches[leafIndex].enumerated() {
+                        for (originalIndex, original) in fragment.events.enumerated() {
+                            var event = noteCopies.copy(original, iteration: leafIndex)
                             event.start = try original.start.adding(start)
                             event.duration = duration
                             event.pitch = pitch
+                            if pitches[leafIndex].count > 1 {
+                                event.harmonyGroupID = groupBase + originalIndex
+                                event.harmonyOccurrenceID = groupBase + originalIndex
+                                event.harmonyVoiceIndex = voice
+                            }
                             try validateEffectivePitch(event)
                             event.patternStepIndex = leaf.index
                             events.append(event)
@@ -286,11 +296,12 @@ internal struct _SoundCompilationContext {
             try replaceEventCount(fragment.events.count, with: count)
             var events: [CompiledSoundEvent] = []
             events.reserveCapacity(count)
+            var harmonyCopies = _HarmonyCopies(fragment.events)
             if !fragment.events.isEmpty {
                 for iteration in 0..<repetitions {
                     let offset = try fragment.extent.multiplied(by: UInt64(iteration))
                     for original in fragment.events {
-                        var event = original
+                        var event = harmonyCopies.copy(original, iteration: iteration)
                         event.start = try original.start.adding(offset)
                         events.append(event)
                     }
@@ -431,19 +442,47 @@ internal struct _SoundCompilationContext {
                 }
                 fragment.events[index].sampleKey = keys[leafPosition]
             }
+        case .scaleNotes, .voicing, .inversion, .arpeggio:
+            if case .scaleNotes(_, _, let anchor) = modifier {
+                applyPatternProvenance(anchor, text: nil, to: sourceRange)
+            }
+            let result = try _HarmonyEventProcessing.apply(modifier, events: fragment.events,
+                extent: fragment.extent, maximumEvents: limits.maximumEvents - eventCount + fragment.events.count)
+            try replaceEventCount(fragment.events.count, with: result.events.count)
+            fragment.events = result.events
+            fragment.extent = result.extent
+        case .legato(let value):
+            for index in fragment.events.indices { fragment.events[index].legato = value }
+        case .portamento(let value):
+            guard !sourceRange.isEmpty else { throw invalid("Portamento requires a source") }
+            for index in sourceRange {
+                switch sources[index].kind {
+                case .sample, .synthesizer(.noise): throw invalid("Portamento requires a pitched source")
+                default: break
+                }
+                sources[index].portamento = value
+            }
         case .chord(let chord):
             let count = try expandedCount(fragment.events.count, multiplier: chord.intervals.count)
             try Self.validateEventDuckRuleBudget(fragment.events, copies: chord.intervals.count)
             try replaceEventCount(fragment.events.count, with: count)
             var events: [CompiledSoundEvent] = []
             events.reserveCapacity(count)
+            var group = (fragment.events.lazy.compactMap(\.harmonyGroupID).max() ?? -1) + 1
             for original in fragment.events {
-                for interval in chord.intervals {
+                for (voice, interval) in chord.intervals.enumerated() {
                     var event = original
-                    event.pitch = try transposed(original.pitch, by: interval)
+                    let integral = interval.value.rounded(.towardZero)
+                    guard (-127...127).contains(integral) else { throw SoundCompilationError.pitchOutOfRange }
+                    event.pitch = try transposed(original.pitch, by: Int(integral))
+                    event.pitchOffsetSemitones += interval.value - integral
+                    event.harmonyGroupID = group
+                    event.harmonyOccurrenceID = group
+                    event.harmonyVoiceIndex = voice
                     try validateEffectivePitch(event)
                     events.append(event)
                 }
+                group += 1
             }
             fragment.events = events
         case .dynamic(let dynamic):
@@ -679,7 +718,7 @@ internal struct _SoundCompilationContext {
                 throw SoundCompilationError.invalidParameter("Live event starts outside its window")
             }
         }
-        var result = try finish(rendered)
+        var result = try finish(rendered, recurringSources: program.recurringSourceIDs)
         result.playbackMode = .seamlessLoop
         return result
     }
@@ -1283,13 +1322,22 @@ internal struct _SoundCompilationContext {
         }
     }
 
-    func finish(_ fragment: _SoundFragment) throws -> CompiledSound {
+    func finish(_ fragment: _SoundFragment, recurringSources: Set<Int> = []) throws -> CompiledSound {
         var events = fragment.events.enumerated().sorted {
             if $0.element.start != $1.element.start { return $0.element.start < $1.element.start }
             return $0.offset < $1.offset
         }.map(\.element)
-        for event in events {
+        try _HarmonyEventProcessing.connect(&events, sources: sources, extent: fragment.extent,
+                                            recurringSources: recurringSources)
+        for (index, event) in events.enumerated() {
             try validateRetainedPitchAutomation(event)
+            if recurringSources.contains(event.sourceID) {
+                let duration = Double(event.duration.numerator) / Double(event.duration.denominator) * event.gate
+                let window = Double(fragment.extent.numerator) / Double(fragment.extent.denominator)
+                guard duration.isFinite, duration > 0, duration <= window else {
+                    throw SoundCompilationError.liveEventDurationExceeded(index: index)
+                }
+            }
         }
         var eventDucks: [CompiledEventDuck] = []
         for index in events.indices {

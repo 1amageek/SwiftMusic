@@ -11,6 +11,10 @@ public extension Sound {
         ModifiedSound(base: self, modifier: .gate(value))
     }
 
+    func legato(_ value: Legato = Legato()) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .legato(value))
+    }
+
     func staccato() -> ModifiedSound {
         ModifiedSound(base: self, modifier: .staccato)
     }

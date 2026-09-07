@@ -43,7 +43,7 @@ internal struct RenderedVoice {
         self.sampleVoice = sampleVoice; self.amplitudeEnvelope = amplitudeEnvelope
         self.amplitude = amplitude; self.leftGain = leftGain; self.rightGain = rightGain
         self.edgeFrames = edgeFrames
-        legacy = amplitudeEnvelope == nil && source.tuning == nil && source.pitchEnvelope == nil
+        legacy = source.portamento == nil && amplitudeEnvelope == nil && source.tuning == nil && source.pitchEnvelope == nil
             && source.pitchAutomation == nil && source.cutoffAutomation == nil
             && source.filter == nil && source.filterEnvelope == nil && event.pitchOffsetSemitones == 0 && sampleVoice == nil
         let naturalDuration = Double(event.duration.numerator) / Double(event.duration.denominator) * secondsPerBeat
@@ -63,6 +63,24 @@ internal struct RenderedVoice {
                 }
             } else {
                 try validateFrequency(frequency, depth: source.pitchEnvelope?.depth.value ?? 0, eventIndex: eventIndex)
+            }
+        }
+        if source.portamento != nil {
+            guard event.pitch != nil else {
+                throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "portamento requires pitch")
+            }
+            let start = try PitchGlide.midi(event: event, source: source, time: 0, secondsPerBeat: secondsPerBeat)
+            for base in [start, midi] {
+                for offset in [source.pitchAutomation?.from.value ?? 0, source.pitchAutomation?.to.value ?? 0] {
+                    let effective = base + offset
+                    let depth = source.pitchEnvelope?.depth.value ?? 0
+                    guard effective.isFinite, (0...127).contains(effective), (0...127).contains(effective + depth) else {
+                        throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "portamento exceeds MIDI range")
+                    }
+                    let hz = (source.tuning?.frequencyHz ?? 440)
+                        * pow(2, (effective - Double(source.tuning?.referencePitch.midiNote ?? 69)) / 12)
+                    try validateFrequency(hz, depth: depth, eventIndex: eventIndex)
+                }
             }
         }
         if source.filter != nil {
@@ -95,8 +113,12 @@ internal struct RenderedVoice {
                     try AutomationEvaluator.mapped($0.signal, from: $0.from.value, to: $0.to.value,
                         frame: transportFrame, secondsPerBeat: automationSecondsPerBeat)
                 } ?? 0
-                let currentFrequency = frequency * pow(2, (automatedPitch + pitchDepth * (pitchContour?.value(at: time) ?? 0)) / 12)
-                let currentPhase = pitchContour == nil && source.pitchAutomation == nil
+                let glideOffset = try source.portamento.map { _ in
+                    try PitchGlide.midi(event: event, source: source, time: time, secondsPerBeat: secondsPerBeat)
+                        - (Double(event.pitch?.midiNote ?? 60) + event.pitchOffsetSemitones)
+                } ?? 0
+                let currentFrequency = frequency * pow(2, (glideOffset + automatedPitch + pitchDepth * (pitchContour?.value(at: time) ?? 0)) / 12)
+                let currentPhase = pitchContour == nil && source.pitchAutomation == nil && source.portamento == nil
                     ? (time * frequency).truncatingRemainder(dividingBy: 1) : state.phase
                 raw = Double(oscillator(waveform, phase: currentPhase, time: time))
                 state.phase = (state.phase + currentFrequency / PreparedLoop.requiredSampleRate).truncatingRemainder(dividingBy: 1)
@@ -108,7 +130,7 @@ internal struct RenderedVoice {
                 }
                 raw = sampleVoice.value(at: state.samplePosition, reversed: source.sampleReversed, channel: 0)
                 right = sampleVoice.value(at: state.samplePosition, reversed: source.sampleReversed, channel: 1)
-                state.samplePosition += source.pitchEnvelope == nil && source.pitchAutomation == nil ? fixedIncrement
+                state.samplePosition += source.pitchEnvelope == nil && source.pitchAutomation == nil && source.portamento == nil ? fixedIncrement
                     : try sampleVoice.increment(event: event, source: source, time: time,
                         secondsPerBeat: secondsPerBeat, automationSecondsPerBeat: automationSecondsPerBeat)
             }

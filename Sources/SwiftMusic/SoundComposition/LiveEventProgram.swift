@@ -11,7 +11,7 @@ internal struct _LiveEventProgram {
     let period: MusicalTime?
     private let finiteExtent: MusicalTime?
     private let sourceIDs: Set<Int>
-    private let recurringSourceIDs: Set<Int>
+    let recurringSourceIDs: Set<Int>
 
     static func finite(_ fragment: _SoundFragment) -> Self {
         Self(operation: .seeds(fragment.events), period: nil,
@@ -48,7 +48,7 @@ internal struct _LiveEventProgram {
             guard period != nil else { return .finite(finite) }
             return Self(operation: .seeds(finite.events), period: finite.extent,
                         finiteExtent: nil, sourceIDs: sourceIDs, recurringSourceIDs: sourceIDs)
-        case .tuning, .sampleRegion, .sampleReversed, .samplePlaybackRate, .unison,
+        case .portamento, .tuning, .sampleRegion, .sampleReversed, .samplePlaybackRate, .unison,
              .voicePolicy, .chokeGroup,
              .effect, .gain, .pan, .muted, .send, .output,
              .pitchEnvelope, .filterEnvelope:
@@ -162,12 +162,13 @@ internal struct _LiveEventProgram {
         }
         var output: [CompiledSoundEvent] = []
         output.reserveCapacity(finiteCount + recurringCount * Int(ratio.numerator))
+        var harmonyCopies = _HarmonyCopies(events)
         for iteration in 0..<ratio.numerator {
             let origin = try period.multiplied(by: iteration)
             for original in events {
                 let recurring = recurringSourceIDs.contains(original.sourceID)
                 guard recurring || iteration == 0 else { continue }
-                var event = original
+                var event = harmonyCopies.copy(original, iteration: Int(iteration))
                 if recurring {
                     event.start = try _patternTimeRemainder(original.start, divisor: period).adding(origin)
                 }

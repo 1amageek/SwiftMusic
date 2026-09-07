@@ -8,7 +8,7 @@ internal struct PreparedSampleVoice {
     func increment(event: CompiledSoundEvent, source: CompiledSource, time: Double,
                    secondsPerBeat: Double, automationSecondsPerBeat: Double? = nil) throws -> Double {
         let rootFrequency = 440 * pow(2, (Double(rootPitch.midiNote) - 69) / 12)
-        var midi = Double(event.pitch?.midiNote ?? 60) + event.pitchOffsetSemitones
+        var midi = try PitchGlide.midi(event: event, source: source, time: time, secondsPerBeat: secondsPerBeat)
         if let automation = source.pitchAutomation {
             let start = Double(event.start.numerator) / Double(event.start.denominator) * secondsPerBeat
             let frame = Int((start * sample.sampleRate).rounded(.down)) + Int((time * sample.sampleRate).rounded())
@@ -39,7 +39,7 @@ internal struct PreparedSampleVoice {
         guard horizon > 0, limit > 0 else { throw LoopRenderingError.invalidSound("invalid sample horizon") }
         let firstIncrement = try increment(event: event, source: source, time: 0,
             secondsPerBeat: secondsPerBeat, automationSecondsPerBeat: automationSecondsPerBeat)
-        if source.pitchEnvelope == nil && source.pitchAutomation == nil {
+        if source.pitchEnvelope == nil && source.pitchAutomation == nil && source.portamento == nil {
             let count = min((Double(sample.frameCount) / firstIncrement).rounded(.up),
                             (horizon * sample.sampleRate).rounded(.up))
             guard count.isFinite, count > 0, count <= Double(limit) else {

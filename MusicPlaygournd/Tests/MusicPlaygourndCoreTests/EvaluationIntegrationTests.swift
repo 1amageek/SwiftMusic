@@ -36,6 +36,8 @@ extension NativeHostTests {
                 let compressor: SidechainCompressor
                 let limiter: Limiter
                 let swing: Swing
+                let glide: Portamento
+                let arpeggio: Arpeggio
                 init() throws {
                     let url = URL(fileURLWithPath: \(url.path.debugDescription))
                     bank = try SampleBank([
@@ -52,6 +54,8 @@ extension NativeHostTests {
                         knee: Decibels(value: 6), sidechainBus: "room")
                     limiter = try Limiter(ceiling: Decibels(value: -1), release: .milliseconds(10))
                     swing = try Swing(subdivision: .quarter, delay: .sixteenth)
+                    glide = try Portamento(duration: .seconds(.milliseconds(100)))
+                    arpeggio = try Arpeggio(order: .up, step: .sixteenth)
                 }
                 var body: some Sound {
                     Track("Bank voices") {
@@ -67,6 +71,10 @@ extension NativeHostTests {
                             .voicePolicy(.monophonic)
                             .duck(targetBus: "room", depth: duckDepth, attack: .milliseconds(2), recovery: .milliseconds(100))
                             .swing(swing)
+                            .chord(.power)
+                            .arpeggiated(arpeggio)
+                            .legato()
+                            .portamento(glide)
                     }
                     .trackLevel(0.8)
                     .trackPan(-0.25)
@@ -84,10 +92,10 @@ extension NativeHostTests {
             """
             do {
                 let loop = try await evaluator.evaluate(source: source, bpm: 120, beatsPerBar: 4)
-                #expect(loop.events.count == 8)
+                #expect(loop.events.count == 16)
                 #expect(loop.beatCount == 8)
-                #expect(loop.events.map(\.startBeat) == [0, 1.25, 2, 3.25, 4, 5.25, 6, 7.25])
-                #expect(loop.events.compactMap(\.midiNote) == [60, 62, 60, 62, 60, 62, 60, 62])
+                #expect(loop.events.map(\.startBeat) == [0, 0.25, 1.25, 1.5, 2, 2.25, 3.25, 3.5, 4, 4.25, 5.25, 5.5, 6, 6.25, 7.25, 7.5])
+                #expect(loop.events.compactMap(\.midiNote) == [60, 67, 62, 69, 60, 67, 62, 69, 60, 67, 62, 69, 60, 67, 62, 69])
                 #expect(loop.samples.contains { abs($0) > 0.01 })
                 #expect(loop.samples.allSatisfy { $0.isFinite })
                 #expect(loop.events.allSatisfy { $0.label == "Bank voices" })
@@ -141,6 +149,13 @@ extension NativeHostTests {
                         with: "delay: .whole"), bpm: 120, beatsPerBar: 4)
                     Issue.record("An invalid swing must fail evaluation")
                 } catch { #expect(error.localizedDescription.contains("invalidSwing")) }
+                #expect(engine.snapshot().revision == 51)
+                #expect(engine.snapshot().isPlaying)
+                do {
+                    _ = try await evaluator.evaluate(source: source.replacingOccurrences(of: "Portamento(duration: .seconds(.milliseconds(100)))",
+                        with: "Portamento(duration: .seconds(.zero))"), bpm: 120, beatsPerBar: 4)
+                    Issue.record("An invalid glide must fail evaluation")
+                } catch { #expect(error.localizedDescription.contains("invalidPortamento")) }
                 #expect(engine.snapshot().revision == 51)
                 #expect(engine.snapshot().isPlaying)
                 do {

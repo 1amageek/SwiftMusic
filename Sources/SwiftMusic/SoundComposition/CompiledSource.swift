@@ -2,6 +2,7 @@
 public struct CompiledSource: Sendable, Equatable {
     public internal(set) var id: Int
     public internal(set) var kind: SourceKind
+    public internal(set) var portamento: Portamento? = nil
     public internal(set) var tuning: Tuning?
     public internal(set) var envelope: Envelope?
     public internal(set) var pitchEnvelope: EnvelopeModulation?
