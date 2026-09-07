@@ -25,7 +25,7 @@ public struct LoopRenderer: Sendable {
             throw LoopRenderingError.tooManyRenderNodes(limit: 256)
         }
 
-        let extent = try beatValue(sound.extent)
+        var extent = try beatValue(sound.extent)
         guard extent.isFinite, extent >= 0 else {
             throw LoopRenderingError.invalidSound("non-finite extent")
         }
@@ -33,6 +33,26 @@ public struct LoopRenderer: Sendable {
             throw LoopRenderingError.extentTooLong(extent)
         }
 
+        for (index, event) in sound.events.enumerated() {
+            guard sound.sources.indices.contains(event.sourceID) else {
+                throw LoopRenderingError.invalidEvent(index: index, reason: "source ID is out of range")
+            }
+            if let envelope = VoiceEnvelope.amplitude(event: event, source: sound.sources[event.sourceID],
+                                                       secondsPerBeat: 60 / bpm) {
+                let span = envelope.duration * bpm / 60
+                guard span.isFinite, span > 0 else {
+                    throw LoopRenderingError.invalidEvent(index: index, reason: "invalid envelope release horizon")
+                }
+                if sound.playbackMode == .finite {
+                    extent = max(extent, try beatValue(event.start) + span)
+                    guard extent <= PreparedLoop.maximumBeatCount else {
+                        throw LoopRenderingError.extentTooLong(extent)
+                    }
+                } else if span > extent {
+                    throw LoopRenderingError.invalidEvent(index: index, reason: "envelope release exceeds loop window")
+                }
+            }
+        }
         let bars = max(1, Int(ceil(extent / Double(beatsPerBar))))
         let beatCount = Double(bars * beatsPerBar)
         guard beatCount <= PreparedLoop.maximumBeatCount else {
@@ -67,10 +87,12 @@ public struct LoopRenderer: Sendable {
             let source = sound.sources[event.sourceID]
             let startBeat = try beatValue(event.start)
             let durationBeats = try beatValue(event.duration)
+            let fullDuration = VoiceEnvelope.amplitude(event: event, source: source, secondsPerBeat: 60 / bpm)
+                .map { $0.duration * bpm / 60 } ?? durationBeats * event.gate
             let audibleDuration: Double
             let wrapsLoopBoundary: Bool
             if sound.playbackMode == .seamlessLoop {
-                let gatedDuration = durationBeats * event.gate
+                let gatedDuration = fullDuration
                 guard gatedDuration.isFinite, gatedDuration > 0, gatedDuration <= beatCount else {
                     throw LoopRenderingError.invalidEvent(
                         index: index,
@@ -81,7 +103,7 @@ public struct LoopRenderer: Sendable {
                 wrapsLoopBoundary = startBeat + gatedDuration > beatCount
             } else {
                 audibleDuration = min(
-                    durationBeats * event.gate,
+                    fullDuration,
                     max(0, beatCount - startBeat)
                 )
                 wrapsLoopBoundary = false
@@ -258,32 +280,28 @@ private struct RenderContext: Sendable {
             count: sound.sources.count
         )
 
-        for (index, event) in sound.events.enumerated() {
-            // FIXME(INCOMPLETE_IMPLEMENTATION): editor evaluation cannot render pitch offsets yet; require pitch PCM tests before enabling.
-            guard event.pitchOffsetSemitones == 0 else {
-                throw LoopRenderingError.unsupportedEventSetting(index: index, setting: "pitchOffsetSemitones")
-            }
-            // FIXME(INCOMPLETE_IMPLEMENTATION): editor evaluation cannot render event cutoff yet; require per-voice filter PCM tests before enabling.
-            guard event.cutoffHz == nil else {
-                throw LoopRenderingError.unsupportedEventSetting(index: index, setting: "cutoffHz")
-            }
-            // FIXME(INCOMPLETE_IMPLEMENTATION): editor evaluation cannot render event envelopes yet; require ADSR PCM tests before enabling.
-            guard event.envelope == nil else {
-                throw LoopRenderingError.unsupportedEventSetting(index: index, setting: "envelope")
+        for event in sound.events {
+            let source = sound.sources[event.sourceID]
+            guard (event.cutoffHz != nil) == (source.filter != nil) else {
+                throw LoopRenderingError.invalidSound("source filter and event cutoff must be paired")
             }
         }
         for source in sound.sources {
-            // FIXME(INCOMPLETE_IMPLEMENTATION): editor evaluation cannot render source filters yet; require per-voice filter PCM tests before enabling.
-            guard source.filter == nil else {
-                throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "filter")
+            if case .synthesizer(.noise) = source.kind,
+               source.tuning != nil || source.pitchEnvelope != nil || sound.events.contains(where: {
+                   $0.sourceID == source.id && $0.pitchOffsetSemitones != 0
+               }) {
+                throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "white noise has no pitched oscillator")
             }
-            // FIXME(INCOMPLETE_IMPLEMENTATION): tuning rendering is unavailable in editor evaluation; require PCM behavior tests before enabling it.
-            guard source.tuning == nil else {
-                throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "tuning")
+            if source.filterEnvelope != nil, source.filter == nil {
+                throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "filterEnvelope requires a source filter")
             }
-            // FIXME(INCOMPLETE_IMPLEMENTATION): envelope rendering is unavailable in editor evaluation; require PCM behavior tests before enabling it.
-            guard source.envelope == nil else {
-                throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "envelope")
+            // FIXME(INCOMPLETE_IMPLEMENTATION): procedural sample pitch traversal remains unavailable in editor evaluation until P03.3 provides rate/phase PCM tests.
+            if case .sample = source.kind,
+               source.tuning != nil || source.pitchEnvelope != nil || sound.events.contains(where: {
+                   $0.sourceID == source.id && $0.pitchOffsetSemitones != 0
+               }) {
+                throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "sample pitch traversal")
             }
             // FIXME(INCOMPLETE_IMPLEMENTATION): sampleRegion rendering is unavailable in editor evaluation; require PCM behavior tests before enabling it.
             guard source.sampleRegion == nil else {
@@ -398,9 +416,12 @@ private struct RenderContext: Sendable {
                 }
             }
             let naturalDuration = durationBeats * secondsPerBeat
+            let amplitudeEnvelope = VoiceEnvelope.amplitude(event: event, source: source,
+                                                             secondsPerBeat: secondsPerBeat)
+            let fullDuration = amplitudeEnvelope?.duration ?? naturalDuration * event.gate
             let eventFrames: Int
             if seamless {
-                let fullGatedDuration = naturalDuration * event.gate
+                let fullGatedDuration = fullDuration
                 guard fullGatedDuration.isFinite,
                       fullGatedDuration > 0,
                       fullGatedDuration <= beatCount * secondsPerBeat else {
@@ -419,7 +440,7 @@ private struct RenderContext: Sendable {
                 eventFrames = renderedFrames
             } else {
                 let gatedDuration = min(
-                    naturalDuration * event.gate,
+                    fullDuration,
                     max(0, beatCount * secondsPerBeat - startBeat * secondsPerBeat)
                 )
                 eventFrames = min(
@@ -438,6 +459,8 @@ private struct RenderContext: Sendable {
             let leftGain = event.pan.map { Float(cos(($0 + 1) * .pi / 4)) } ?? 1
             let rightGain = event.pan.map { Float(sin(($0 + 1) * .pi / 4)) } ?? 1
             let edgeFrames = min(128, max(1, eventFrames / 2))
+            if amplitudeEnvelope == nil, source.tuning == nil, source.pitchEnvelope == nil,
+               source.filter == nil, source.filterEnvelope == nil, event.pitchOffsetSemitones == 0 {
             for offset in 0..<eventFrames {
                 let frame = seamless ? (startFrame + offset) % frameCount : startFrame + offset
                 let time = Double(offset) / PreparedLoop.requiredSampleRate
@@ -451,6 +474,67 @@ private struct RenderContext: Sendable {
                 let value = sample(source.kind, pitch: event.pitch, time: time) * amplitude * Float(edge)
                 output.left[frame] += value * leftGain
                 output.right[frame] += value * rightGain
+            }
+            } else {
+                let pitchContour = source.pitchEnvelope.map {
+                    VoiceEnvelope($0.envelope, noteDuration: naturalDuration, gate: event.gate)
+                }
+                let filterContour = source.filterEnvelope.map {
+                    VoiceEnvelope($0.envelope, noteDuration: naturalDuration, gate: event.gate)
+                }
+                let midi = Double(event.pitch?.midiNote ?? 60) + event.pitchOffsetSemitones
+                let frequency = (source.tuning?.frequencyHz ?? 440)
+                    * pow(2, (midi - Double(source.tuning?.referencePitch.midiNote ?? 69)) / 12)
+                let pitchDepth = source.pitchEnvelope?.depth.value ?? 0
+                let filterDepth = source.filterEnvelope?.depth.value ?? 0
+                if case .synthesizer = source.kind {
+                    try validateFrequency(frequency, depth: pitchDepth, eventIndex: eventIndex)
+                }
+                var filter = source.filter.map(VoiceFilter.init)
+                if filter != nil {
+                    guard let cutoff = event.cutoffHz else {
+                        throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "source filter requires event cutoff")
+                    }
+                    try validateFrequency(cutoff, depth: filterDepth, eventIndex: eventIndex)
+                } else if event.cutoffHz != nil {
+                    throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "cutoff requires a source filter")
+                }
+                var phase = 0.0
+                for offset in 0..<eventFrames {
+                    let frame = seamless ? (startFrame + offset) % frameCount : startFrame + offset
+                    let time = Double(offset) / PreparedLoop.requiredSampleRate
+                    var raw: Double
+                    switch source.kind {
+                    case .synthesizer(let waveform):
+                        let currentFrequency = frequency * pow(2, pitchDepth * (pitchContour?.value(at: time) ?? 0) / 12)
+                        let currentPhase = pitchContour == nil
+                            ? (time * frequency).truncatingRemainder(dividingBy: 1) : phase
+                        raw = Double(oscillator(waveform, phase: currentPhase, time: time))
+                        phase = (phase + currentFrequency / PreparedLoop.requiredSampleRate)
+                            .truncatingRemainder(dividingBy: 1)
+                    case .sample:
+                        raw = Double(sample(source.kind, pitch: event.pitch, time: time))
+                    }
+                    if filter != nil, let cutoff = event.cutoffHz {
+                        let frequency = cutoff * pow(2, filterDepth * (filterContour?.value(at: time) ?? 0) / 12)
+                        if let filtered = try filter?.process(raw, cutoff: frequency, eventIndex: eventIndex) {
+                            raw = filtered
+                        }
+                    }
+                    let contour: Double
+                    if let amplitudeEnvelope {
+                        contour = amplitudeEnvelope.value(at: time)
+                    } else {
+                        contour = min(1, min(Double(offset + 1) / Double(edgeFrames),
+                                             Double(eventFrames - offset) / Double(edgeFrames)))
+                    }
+                    let value = raw * Double(amplitude) * contour
+                    guard value.isFinite, abs(value) <= Double(Float.greatestFiniteMagnitude) else {
+                        throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "non-finite source PCM")
+                    }
+                    output.left[frame] += Float(value) * leftGain
+                    output.right[frame] += Float(value) * rightGain
+                }
             }
         }
         sourcePeakEnvelopes[sourceID] = peakEnvelope(for: output)
@@ -479,13 +563,7 @@ private struct RenderContext: Sendable {
             let midi = Double(pitch?.midiNote ?? 60)
             let frequency = 440 * pow(2, (midi - 69) / 12)
             let phase = (time * frequency).truncatingRemainder(dividingBy: 1)
-            switch waveform {
-            case .sine: return Float(sin(2 * .pi * phase))
-            case .square: return phase < 0.5 ? 1 : -1
-            case .saw: return Float(2 * phase - 1)
-            case .triangle: return Float(1 - 4 * abs((phase - 0.5).rounded() - (phase - 0.5)))
-            case .noise: return deterministicNoise(time: time)
-            }
+            return oscillator(waveform, phase: phase, time: time)
         case .sample(let name):
             let decay: Double
             switch name {
@@ -500,6 +578,25 @@ private struct RenderContext: Sendable {
             default:
                 return 0
             }
+        }
+    }
+
+    private func validateFrequency(_ frequency: Double, depth: Double, eventIndex: Int) throws {
+        let endpoint = frequency * pow(2, depth / 12)
+        let nyquist = PreparedLoop.requiredSampleRate / 2
+        guard frequency.isFinite, frequency > 0, frequency < nyquist,
+              endpoint.isFinite, endpoint > 0, endpoint < nyquist else {
+            throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "frequency must be positive and below Nyquist")
+        }
+    }
+
+    private func oscillator(_ waveform: Waveform, phase: Double, time: Double) -> Float {
+        switch waveform {
+        case .sine: Float(sin(2 * .pi * phase))
+        case .square: phase < 0.5 ? 1 : -1
+        case .saw: Float(2 * phase - 1)
+        case .triangle: Float(1 - 4 * abs((phase - 0.5).rounded() - (phase - 0.5)))
+        case .noise: deterministicNoise(time: time)
         }
     }
 
