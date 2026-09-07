@@ -7,12 +7,20 @@ public extension Sound {
         ModifiedSound(base: self, modifier: .gainPattern(pattern, cycle))
     }
 
+    func gain(_ automation: GainAutomation) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .gainAutomation(automation))
+    }
+
     func pan(_ value: Double) -> ModifiedSound {
         ModifiedSound(base: self, modifier: .pan(value))
     }
 
     func pan(_ pattern: PanPattern, cycle: MusicalTime = .whole) -> ModifiedSound {
         ModifiedSound(base: self, modifier: .panPattern(pattern, cycle))
+    }
+
+    func pan(_ automation: PanAutomation) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .panAutomation(automation))
     }
 
     func muted() -> ModifiedSound {

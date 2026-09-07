@@ -78,7 +78,7 @@ public struct SoundCompiler: Sendable {
             if let policy {
                 return try context.finishLive(fragment, policy: policy)
             }
-            return context.finish(fragment)
+            return try context.finish(fragment)
         } catch {
             throw mappedCompilationError(error)
         }

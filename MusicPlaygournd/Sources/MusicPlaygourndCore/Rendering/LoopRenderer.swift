@@ -37,6 +37,11 @@ public struct LoopRenderer: Sendable {
             throw LoopRenderingError.extentTooLong(extent)
         }
 
+        try AutomationEvaluator.validate(sound, bpm: bpm, windowBeats: max(extent, Double(beatsPerBar)))
+        let automationSecondsPerBeat = sound.playbackMode == .seamlessLoop
+            ? ceil(extent * 60 / bpm * PreparedLoop.requiredSampleRate) / PreparedLoop.requiredSampleRate / extent
+            : 60 / bpm
+
         let preparedSamples = try SamplePreparation(sound: sound, loader: sampleLoader)
         var sampleFrames: [Int: Int] = [:]
         let maximumSeconds = min(PreparedLoop.maximumDurationSeconds, PreparedLoop.maximumBeatCount * 60 / bpm)
@@ -46,7 +51,8 @@ public struct LoopRenderer: Sendable {
             let available = sound.playbackMode == .seamlessLoop ? extent * 60 / bpm
                 : max(0, maximumSeconds - (try beatValue(event.start)) * 60 / bpm)
             let frames = try voice.frames(event: event, source: source, secondsPerBeat: 60 / bpm,
-                                          limit: Int((available * PreparedLoop.requiredSampleRate).rounded(.down)))
+                                          limit: Int((available * PreparedLoop.requiredSampleRate).rounded(.down)),
+                                          automationSecondsPerBeat: automationSecondsPerBeat)
             sampleFrames[index] = frames
             if sound.playbackMode == .finite {
                 extent = max(extent, try beatValue(event.start) + Double(frames) / PreparedLoop.requiredSampleRate * bpm / 60)
@@ -98,6 +104,9 @@ public struct LoopRenderer: Sendable {
         )
         let sourceBeatCount = beatCount
         try context.prepareEffects(beatsPerBar: beatsPerBar)
+        if context.beatCount != beatCount {
+            try AutomationEvaluator.validate(sound, bpm: bpm, windowBeats: context.beatCount)
+        }
         beatCount = context.beatCount
         frameCount = context.frameCount
         var output = try context.renderRoots()
@@ -299,6 +308,7 @@ private struct RenderContext {
     var audibleTracks: [Bool] = []
     var admittedSources: [Bool] = []
     let secondsPerBeat: Double
+    let automationSecondsPerBeat: Double
     var nodeStates: [UInt8]
     var sourcePeakEnvelopes: [[Float]]
     let preparedSamples: SamplePreparation
@@ -316,6 +326,8 @@ private struct RenderContext {
         self.beatCount = beatCount
         self.frameCount = frameCount
         self.secondsPerBeat = 60 / bpm
+        self.automationSecondsPerBeat = sound.playbackMode == .seamlessLoop
+            ? Double(frameCount) / PreparedLoop.requiredSampleRate / beatCount : 60 / bpm
         self.nodeStates = Array(repeating: 0, count: sound.renderNodes.count)
         self.sourcePeakEnvelopes = Array(
             repeating: [Float](repeating: 0, count: 1),
@@ -332,7 +344,7 @@ private struct RenderContext {
         }
         for source in sound.sources {
             if case .synthesizer(.noise) = source.kind,
-               source.tuning != nil || source.pitchEnvelope != nil || sound.events.contains(where: {
+               source.tuning != nil || source.pitchEnvelope != nil || source.pitchAutomation != nil || sound.events.contains(where: {
                    $0.sourceID == source.id && $0.pitchOffsetSemitones != 0
                }) {
                 throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "white noise has no pitched oscillator")
@@ -342,7 +354,7 @@ private struct RenderContext {
             }
             // Procedural samples have no decoded asset or root pitch; rooted file/bank sources support pitch traversal.
             if case .sample = source.kind,
-               source.tuning != nil || source.pitchEnvelope != nil || sound.events.contains(where: {
+               source.tuning != nil || source.pitchEnvelope != nil || source.pitchAutomation != nil || sound.events.contains(where: {
                    $0.sourceID == source.id && $0.pitchOffsetSemitones != 0
                }) {
                 throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "sample pitch traversal")
@@ -444,7 +456,8 @@ private struct RenderContext {
                 guard sources.indices.contains(source) else { throw LoopRenderingError.invalidSound("source node ID is out of range") }
                 value = sources[source]
             case .mix(let inputs): value = try inputs.reduce(0) { max($0, try horizon($1)) }
-            case .gain(let input, _), .pan(let input, _), .mute(let input), .track(let input, _): value = try horizon(input)
+            case .gain(let input, _), .pan(let input, _), .mute(let input), .track(let input, _),
+                 .gainAutomation(let input, _), .panAutomation(let input, _): value = try horizon(input)
             case .effect(let input, let effect):
                 let tail = try EffectProcessor.tailFrames(effect, bpm: bpm, node: index)
                 value = try horizon(input) + tail
@@ -541,6 +554,39 @@ private struct RenderContext {
             }
             var output = try renderNode(input)
             output.applyPan(value)
+            return output
+        case .gainAutomation(let input, let automation):
+            var output = try renderNode(input)
+            for frame in output.left.indices {
+                let gain = try AutomationEvaluator.mapped(automation.signal,
+                    from: automation.from, to: automation.to, frame: frame, secondsPerBeat: automationSecondsPerBeat)
+                let left = Double(output.left[frame]) * gain
+                let right = Double(output.right[frame]) * gain
+                guard left.isFinite, right.isFinite,
+                      abs(left) <= Double(Float.greatestFiniteMagnitude),
+                      abs(right) <= Double(Float.greatestFiniteMagnitude) else {
+                    throw LoopRenderingError.invalidSound("automated gain exceeds finite PCM range")
+                }
+                output.left[frame] = Float(left)
+                output.right[frame] = Float(right)
+            }
+            return output
+        case .panAutomation(let input, let automation):
+            var output = try renderNode(input)
+            for frame in output.left.indices {
+                let pan = try AutomationEvaluator.mapped(automation.signal,
+                    from: automation.from, to: automation.to, frame: frame, secondsPerBeat: automationSecondsPerBeat)
+                let angle = (pan + 1) * .pi / 4
+                let left = Double(output.left[frame]) * cos(angle)
+                let right = Double(output.right[frame]) * sin(angle)
+                guard left.isFinite, right.isFinite,
+                      abs(left) <= Double(Float.greatestFiniteMagnitude),
+                      abs(right) <= Double(Float.greatestFiniteMagnitude) else {
+                    throw LoopRenderingError.invalidSound("automated pan exceeds finite PCM range")
+                }
+                output.left[frame] = Float(left)
+                output.right[frame] = Float(right)
+            }
             return output
         case .mute(let input):
             var output = try renderNode(input)
@@ -694,7 +740,8 @@ private struct RenderContext {
         return try RenderedVoice(event: event, source: source, eventIndex: eventIndex,
             startFrame: startFrame, eventFrames: eventFrames, secondsPerBeat: secondsPerBeat,
             sampleVoice: sampleVoice, amplitudeEnvelope: amplitudeEnvelope,
-            amplitude: amplitude, leftGain: leftGain, rightGain: rightGain, edgeFrames: edgeFrames)
+            amplitude: amplitude, leftGain: leftGain, rightGain: rightGain, edgeFrames: edgeFrames,
+            automationSecondsPerBeat: automationSecondsPerBeat)
     }
 
     private func beatValue(_ time: MusicalTime) throws -> Double {

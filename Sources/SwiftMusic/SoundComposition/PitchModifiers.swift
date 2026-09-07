@@ -41,6 +41,10 @@ public extension Sound {
         ModifiedSound(base: self, modifier: .pitchPattern(pattern, cycle))
     }
 
+    func transpose(_ automation: PitchAutomation) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .pitchAutomation(automation))
+    }
+
     func chord(_ chord: Chord) -> ModifiedSound {
         ModifiedSound(base: self, modifier: .chord(chord))
     }

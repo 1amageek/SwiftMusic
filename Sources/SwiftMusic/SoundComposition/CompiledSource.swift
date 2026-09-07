@@ -6,6 +6,8 @@ public struct CompiledSource: Sendable, Equatable {
     public internal(set) var envelope: Envelope?
     public internal(set) var pitchEnvelope: EnvelopeModulation?
     public internal(set) var filterEnvelope: EnvelopeModulation?
+    public internal(set) var pitchAutomation: PitchAutomation?
+    public internal(set) var cutoffAutomation: CutoffAutomation?
     public internal(set) var sampleRegion: SampleRegion?
     public internal(set) var sampleReversed: Bool
     public internal(set) var samplePlaybackRate: Double
@@ -23,6 +25,8 @@ public struct CompiledSource: Sendable, Equatable {
         envelope: Envelope? = nil,
         pitchEnvelope: EnvelopeModulation? = nil,
         filterEnvelope: EnvelopeModulation? = nil,
+        pitchAutomation: PitchAutomation? = nil,
+        cutoffAutomation: CutoffAutomation? = nil,
         sampleRegion: SampleRegion? = nil,
         sampleReversed: Bool = false,
         samplePlaybackRate: Double = 1,
@@ -39,6 +43,8 @@ public struct CompiledSource: Sendable, Equatable {
         self.envelope = envelope
         self.pitchEnvelope = pitchEnvelope
         self.filterEnvelope = filterEnvelope
+        self.pitchAutomation = pitchAutomation
+        self.cutoffAutomation = cutoffAutomation
         self.sampleRegion = sampleRegion
         self.sampleReversed = sampleReversed
         self.samplePlaybackRate = samplePlaybackRate

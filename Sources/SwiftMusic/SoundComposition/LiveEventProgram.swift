@@ -52,31 +52,38 @@ internal struct _LiveEventProgram {
              .pitchEnvelope, .filterEnvelope:
             return self
         default:
-            guard var period else { return .finite(finite) }
+            var period = self.period
             var extent = finiteExtent
             switch modifier {
             case .gainPattern(let pattern, let cycle):
+                guard period != nil else { return .finite(finite) }
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
             case .panPattern(let pattern, let cycle):
+                guard period != nil else { return .finite(finite) }
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
             case .pitchPattern(let pattern, let cycle):
+                guard period != nil else { return .finite(finite) }
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
             case .cutoffPattern(_, let pattern, let cycle, _, _):
+                guard period != nil else { return .finite(finite) }
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
             case .envelopePattern(let pattern, let cycle):
+                guard period != nil else { return .finite(finite) }
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
             case .sampleSelection(let pattern, let cycle):
+                guard period != nil else { return .finite(finite) }
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
             case .fast(let factor):
-                period = try period.divided(by: factor)
+                period = try period?.divided(by: factor)
                 extent = try extent?.divided(by: factor)
             case .slow(let factor):
-                period = try period.multiplied(by: factor)
+                period = try period?.multiplied(by: factor)
                 extent = try extent?.multiplied(by: factor)
             case .offset(let offset):
                 extent = try extent?.adding(offset)
             default: break
             }
+            guard let period else { return .finite(finite) }
             return Self(operation: .modifier(self, modifier), period: period, finiteExtent: extent,
                         sourceIDs: sourceIDs, recurringSourceIDs: recurringSourceIDs)
         }
@@ -88,9 +95,13 @@ internal struct _LiveEventProgram {
              sourceIDs: sourceIDs, recurringSourceIDs: sourceIDs)
     }
 
-    func window(policy: LiveLoopPolicy) throws -> MusicalTime {
+    func window(
+        policy: LiveLoopPolicy,
+        additionalPeriod: MusicalTime? = nil
+    ) throws -> MusicalTime {
         let bar = try MusicalTime(numerator: UInt64(policy.beatsPerBar), denominator: 1)
-        let common = try Self.commonPeriod(period, bar)!
+        let eventAndAutomationPeriod = try Self.commonPeriod(period, additionalPeriod)
+        let common = try Self.commonPeriod(eventAndAutomationPeriod, bar)!
         guard common <= policy.maximumBeats, (finiteExtent ?? .zero) <= policy.maximumBeats else {
             throw SoundCompilationError.liveWindowExceeded(maximum: policy.maximumBeats)
         }
@@ -173,6 +184,19 @@ internal struct _LiveEventProgram {
                 sourceIDs: sourceIDs
             ).events
         case .modifier(let child, let modifier):
+            switch modifier {
+            case .gainAutomation, .panAutomation, .pitchAutomation:
+                return try child.emit(through: period ?? .quarter, limits: limits, sources: sources)
+            case .cutoffAutomation(_, let automation, _, _):
+                var events = try child.emit(through: period ?? .quarter, limits: limits, sources: sources)
+                let cutoff = automation.from.hertz
+                for index in events.indices {
+                    events[index].cutoffHz = cutoff
+                }
+                return events
+            default:
+                break
+            }
             let horizon: MusicalTime
             switch modifier {
             case .fast, .slow: horizon = child.period ?? .quarter
@@ -190,7 +214,7 @@ internal struct _LiveEventProgram {
         }
     }
 
-    private static func commonPeriod(_ lhs: MusicalTime?, _ rhs: MusicalTime?) throws -> MusicalTime? {
+    internal static func commonPeriod(_ lhs: MusicalTime?, _ rhs: MusicalTime?) throws -> MusicalTime? {
         guard let lhs else { return rhs }
         guard let rhs else { return lhs }
         let divisor = MusicalTime.greatestCommonDivisor(lhs.numerator, rhs.numerator)

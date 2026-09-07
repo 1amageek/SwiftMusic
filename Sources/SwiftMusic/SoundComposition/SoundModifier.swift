@@ -31,8 +31,12 @@ internal enum _SoundModifier: Sendable {
     case effect(AudioEffect)
     case gain(Double)
     case gainPattern(GainPattern, MusicalTime)
+    case gainAutomation(GainAutomation)
     case pan(Double)
     case panPattern(PanPattern, MusicalTime)
+    case panAutomation(PanAutomation)
+    case pitchAutomation(PitchAutomation)
+    case cutoffAutomation(FilterKind, CutoffAutomation, Double, FilterSlope)
     case muted
     case send(String, Double)
     case output(String)

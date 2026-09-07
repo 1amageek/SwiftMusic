@@ -267,9 +267,35 @@ internal struct _SoundCompilationContext {
                 fragment.events[index].pitchOffsetSemitones += try pattern.value(at: leaf).value
                 try validateEffectivePitch(fragment.events[index])
             }
+        case .pitchAutomation(let automation):
+            guard !sourceRange.isEmpty else {
+                throw invalid("Pitch automation requires a source")
+            }
+            try validate(automation, events: fragment.events, sourceRange: sourceRange)
+            for index in sourceRange {
+                guard sources.indices.contains(index) else { throw invalid("Pitch automation source is missing") }
+                switch sources[index].kind {
+                case .synthesizer(let waveform):
+                    guard waveform != .noise else {
+                        throw SoundCompilationError.unsupportedSourceSetting(
+                            "Pitch automation requires a pitched source"
+                        )
+                    }
+                    sources[index].pitchAutomation = automation
+                case .fileSample, .sampleBank:
+                    sources[index].pitchAutomation = automation
+                case .sample:
+                    throw SoundCompilationError.unsupportedSourceSetting(
+                        "Pitch automation requires a pitched source"
+                    )
+                }
+            }
         case .fixedFilter(let kind, let cutoff, let resonanceQ, let slope):
             let filter = try SourceFilter(kind: kind, resonanceQ: resonanceQ, slope: slope)
-            for index in sourceRange { sources[index].filter = filter }
+            for index in sourceRange {
+                sources[index].filter = filter
+                sources[index].cutoffAutomation = nil
+            }
             for index in fragment.events.indices {
                 fragment.events[index].cutoffHz = cutoff.hertz
             }
@@ -278,10 +304,26 @@ internal struct _SoundCompilationContext {
             let filter = try SourceFilter(kind: kind, resonanceQ: resonanceQ, slope: slope)
             let resolved = try pattern.resolvedTransform(cycle: cycle)
             let period = try resolved.period
-            for index in sourceRange { sources[index].filter = filter }
+            for index in sourceRange {
+                sources[index].filter = filter
+                sources[index].cutoffAutomation = nil
+            }
             for index in fragment.events.indices {
                 let leaf = try sampledLeaf(resolved, period: period, at: fragment.events[index].start)
                 fragment.events[index].cutoffHz = try pattern.value(at: leaf).hertz
+            }
+        case .cutoffAutomation(let kind, let automation, let resonanceQ, let slope):
+            guard !sourceRange.isEmpty else {
+                throw invalid("Cutoff automation requires a source")
+            }
+            let filter = try SourceFilter(kind: kind, resonanceQ: resonanceQ, slope: slope)
+            for index in sourceRange {
+                guard sources.indices.contains(index) else { throw invalid("Cutoff automation source is missing") }
+                sources[index].filter = filter
+                sources[index].cutoffAutomation = automation
+            }
+            for index in fragment.events.indices {
+                fragment.events[index].cutoffHz = automation.from.hertz
             }
         case .envelopePattern(let pattern, let cycle):
             guard cycle > .zero else { throw invalid("Envelope pattern cycle must be positive") }
@@ -454,6 +496,10 @@ internal struct _SoundCompilationContext {
                 }
                 fragment.events[index].gain = product
             }
+        case .gainAutomation(let automation):
+            if let root = try processingRoot(fragment.roots) {
+                fragment.roots = [try appendNode(.gainAutomation(input: root, automation: automation))]
+            }
         case .pan(let pan):
             guard pan.isFinite, (-1...1).contains(pan) else { throw invalid("Pan must be in -1...1") }
             if let root = try processingRoot(fragment.roots) {
@@ -478,6 +524,10 @@ internal struct _SoundCompilationContext {
                     throw invalid("Pan pattern value must be finite and in -1...1")
                 }
                 fragment.events[index].pan = value
+            }
+        case .panAutomation(let automation):
+            if let root = try processingRoot(fragment.roots) {
+                fragment.roots = [try appendNode(.panAutomation(input: root, automation: automation))]
             }
         case .muted:
             if let root = try processingRoot(fragment.roots) {
@@ -516,7 +566,8 @@ internal struct _SoundCompilationContext {
         guard let program = fragment.liveProgram else {
             throw SoundCompilationError.invalidParameter("Live program was not captured")
         }
-        let window = try program.window(policy: policy)
+        let automationPeriod = try continuousAutomationPeriod()
+        let window = try program.window(policy: policy, additionalPeriod: automationPeriod)
         var rendered = fragment
         rendered.events = try program.emit(through: window, limits: limits, sources: sources)
         rendered.extent = window
@@ -530,8 +581,31 @@ internal struct _SoundCompilationContext {
                 throw SoundCompilationError.invalidParameter("Live event starts outside its window")
             }
         }
-        var result = finish(rendered)
+        var result = try finish(rendered)
         result.playbackMode = .seamlessLoop
+        return result
+    }
+
+    private func continuousAutomationPeriod() throws -> MusicalTime? {
+        var result: MusicalTime?
+        for source in sources {
+            result = try _LiveEventProgram.commonPeriod(
+                result, source.pitchAutomation?.synchronizedPeriod
+            )
+            result = try _LiveEventProgram.commonPeriod(
+                result, source.cutoffAutomation?.synchronizedPeriod
+            )
+        }
+        for node in nodes {
+            switch node {
+            case .gainAutomation(_, let automation):
+                result = try _LiveEventProgram.commonPeriod(result, automation.synchronizedPeriod)
+            case .panAutomation(_, let automation):
+                result = try _LiveEventProgram.commonPeriod(result, automation.synchronizedPeriod)
+            default:
+                break
+            }
+        }
         return result
     }
 
@@ -546,9 +620,44 @@ internal struct _SoundCompilationContext {
 
     private func validateEffectivePitch(_ event: CompiledSoundEvent) throws {
         guard let pitch = event.pitch else { throw SoundCompilationError.missingPitch }
-        let effective = Double(pitch.midiNote) + event.pitchOffsetSemitones
-        guard effective.isFinite, (0...127).contains(effective) else {
+        let base = Double(pitch.midiNote) + event.pitchOffsetSemitones
+        guard base.isFinite, (0...127).contains(base) else {
             throw SoundCompilationError.pitchOutOfRange
+        }
+    }
+
+    private func validateRetainedPitchAutomation(_ event: CompiledSoundEvent) throws {
+        guard sources.indices.contains(event.sourceID) else {
+            throw SoundCompilationError.invalidParameter("Pitch source is missing")
+        }
+        guard let automation = sources[event.sourceID].pitchAutomation else { return }
+        guard let pitch = event.pitch else { throw SoundCompilationError.missingPitch }
+        let base = Double(pitch.midiNote) + event.pitchOffsetSemitones
+        guard base.isFinite, (0...127).contains(base) else {
+            throw SoundCompilationError.pitchOutOfRange
+        }
+        for offset in [automation.from.value, automation.to.value] {
+            let effective = base + offset
+            guard effective.isFinite, (0...127).contains(effective) else {
+                throw SoundCompilationError.pitchOutOfRange
+            }
+        }
+    }
+
+    private func validate(
+        _ automation: PitchAutomation,
+        events: [CompiledSoundEvent],
+        sourceRange: Range<Int>
+    ) throws {
+        for event in events where sourceRange.contains(event.sourceID) {
+            guard let pitch = event.pitch else { throw SoundCompilationError.missingPitch }
+            let base = Double(pitch.midiNote) + event.pitchOffsetSemitones
+            for offset in [automation.from.value, automation.to.value] {
+                let value = base + offset
+                guard value.isFinite, (0...127).contains(value) else {
+                    throw SoundCompilationError.pitchOutOfRange
+                }
+            }
         }
     }
 
@@ -697,11 +806,14 @@ internal struct _SoundCompilationContext {
         }
     }
 
-    func finish(_ fragment: _SoundFragment) -> CompiledSound {
+    func finish(_ fragment: _SoundFragment) throws -> CompiledSound {
         let events = fragment.events.enumerated().sorted {
             if $0.element.start != $1.element.start { return $0.element.start < $1.element.start }
             return $0.offset < $1.offset
         }.map(\.element)
+        for event in events {
+            try validateRetainedPitchAutomation(event)
+        }
         return CompiledSound(
             events: events, tracks: tracks, sources: sources, renderNodes: nodes,
             rootNodeIDs: fragment.roots, extent: fragment.extent

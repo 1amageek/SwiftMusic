@@ -60,6 +60,14 @@ public extension Sound {
         ModifiedSound(base: self, modifier: .cutoffPattern(.lowPass, pattern, cycle, resonanceQ, slope))
     }
 
+    func lowPass(
+        _ automation: CutoffAutomation,
+        resonanceQ: Double = 0.7071067811865476,
+        slope: FilterSlope = .twelve
+    ) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .cutoffAutomation(.lowPass, automation, resonanceQ, slope))
+    }
+
     func highPass(
         _ pattern: CutoffPattern,
         cycle: MusicalTime = .whole,
@@ -72,6 +80,14 @@ public extension Sound {
         )
     }
 
+    func highPass(
+        _ automation: CutoffAutomation,
+        resonanceQ: Double = 0.7071067811865476,
+        slope: FilterSlope = .twelve
+    ) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .cutoffAutomation(.highPass, automation, resonanceQ, slope))
+    }
+
     func bandPass(
         _ pattern: CutoffPattern,
         cycle: MusicalTime = .whole,
@@ -82,6 +98,14 @@ public extension Sound {
             base: self,
             modifier: .cutoffPattern(.bandPass, pattern, cycle, resonanceQ, slope)
         )
+    }
+
+    func bandPass(
+        _ automation: CutoffAutomation,
+        resonanceQ: Double = 0.7071067811865476,
+        slope: FilterSlope = .twelve
+    ) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .cutoffAutomation(.bandPass, automation, resonanceQ, slope))
     }
 
     func sampleRegion(_ value: SampleRegion) -> ModifiedSound {
