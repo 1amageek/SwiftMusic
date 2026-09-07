@@ -24,7 +24,7 @@ The app bundle includes its evaluation package sources. It retains the installed
 - Change BPM (40–240), low-pass cutoff, delay mix and reverb mix live with the master sliders. These controls do not compile code or create a new loop revision. Tempo changes preserve pitch.
 - Code and quarter-note meter (2/4–7/4) changes prepare a new loop and switch at a bar boundary.
 - Open/Save UTF-8 Swift sessions: Command–O / Command–S. Keep the entry type named `Session` and conform it to `Music`.
-- Click the diagnostic heading to select a reported Swift source line. Direct pattern literals glow while their compiled source events play.
+- Open Logs below the spectrum to read the latest diagnostic and completion information. It starts collapsed and shows whether a diagnostic is present. Click the diagnostic heading to select its Swift source line. Direct pattern literals glow while their compiled source events play.
 - Inline results appear after the final modifier of each compiler-mapped sound expression by default. Time runs horizontally; notes use vertical pitch lanes. Result cards scroll with the source and never become part of the saved Swift text.
 - Use the layout selector to switch between inline results, the attached side timeline, and the bottom overview.
 

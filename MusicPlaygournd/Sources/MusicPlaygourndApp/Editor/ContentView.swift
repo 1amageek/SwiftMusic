@@ -4,6 +4,7 @@ struct ContentView: View {
     @Bindable var model: SessionModel
     @State private var lineRects: [Int: CGRect] = [:]
     @State private var timelineScroll: CGFloat = 0
+    @State private var logsExpanded = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,14 +48,12 @@ struct ContentView: View {
             Divider()
             SpectrumView(bands: model.spectrum, samples: model.outputSamples, isPlaying: model.isPlaying)
             Divider()
+            logs
+            Divider()
             HStack(spacing: 10) {
                 if model.isPreparing { ProgressView().controlSize(.mini) }
                 else { Circle().fill(model.diagnostic.isEmpty ? Color.mint : .orange).frame(width: 6, height: 6) }
                 Text(model.status).font(.system(size: 11))
-                if !model.completionStatus.isEmpty {
-                    Text(model.completionStatus).font(.system(size: 10)).foregroundStyle(.secondary)
-                        .lineLimit(1).help(model.completionStatus)
-                }
                 Spacer()
                 if let revision = model.currentRevision {
                     Text("LOOP r\(revision) / EDIT r\(model.revision)").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
@@ -128,18 +127,63 @@ struct ContentView: View {
                 beforeEdit: model.beforeEdit, onEdit: model.sourceChanged,
                 completions: { source, offset in try await model.completions(source: source, utf16Offset: offset) },
                 onCompletionStatus: { model.completionStatus = $0 })
-            if !model.diagnostic.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Button { model.revealDiagnostic() } label: {
-                        Label("Edit needs attention", systemImage: "exclamationmark.circle.fill").font(.system(size: 12, weight: .semibold)).foregroundStyle(.orange)
-                    }.buttonStyle(.plain).disabled(!model.diagnostic.contains("Session.swift:"))
-                    ScrollView {
-                        Text(model.diagnostic).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }.frame(maxHeight: 130)
-                }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.orange.opacity(0.07))
-            }
         }.frame(minWidth: 350, minHeight: 220)
+    }
+
+    @ViewBuilder
+    private var logs: some View {
+        DisclosureGroup(isExpanded: $logsExpanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                if !model.diagnostic.isEmpty {
+                    Button { model.revealDiagnostic() } label: {
+                        Label("Edit needs attention", systemImage: "exclamationmark.circle.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.orange)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!model.diagnostic.contains("Session.swift:"))
+                    ScrollView {
+                        Text(model.diagnostic)
+                            .font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 130)
+                } else {
+                    Text("No diagnostics")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                if !model.completionStatus.isEmpty {
+                    Divider()
+                    Text(model.completionStatus)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                        .help(model.completionStatus)
+                }
+            }
+            .padding(.top, 8)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: model.diagnostic.isEmpty ? "doc.text" : "exclamationmark.circle.fill")
+                    .foregroundStyle(model.diagnostic.isEmpty ? Color.secondary : Color.orange)
+                Text("Logs")
+                Spacer()
+                Text(diagnosticCountLabel)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(model.diagnostic.isEmpty ? Color.secondary : Color.orange)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 8)
+        .background(model.diagnostic.isEmpty ? Color.white.opacity(0.025) : Color.orange.opacity(0.07))
+    }
+
+    private var diagnosticCountLabel: String {
+        let count = model.diagnostic.isEmpty ? 0 : 1
+        return "\(count) error\(count == 1 ? "" : "s")"
     }
 
     private var rhythm: some View {
