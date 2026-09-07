@@ -38,6 +38,8 @@ internal struct _LiveEventProgram {
         switch modifier {
         case .oneShot:
             return .finite(finite)
+        case .euclidean(let value):
+            return try generator(modifier, period: value.cycle)
         case .rhythm(let pattern, let cycle, _):
             return try generator(modifier, period: pattern.resolvedTransform(cycle: cycle).period)
         case .notePattern(let pattern, let cycle, _):
@@ -55,6 +57,12 @@ internal struct _LiveEventProgram {
             var period = self.period
             var extent = finiteExtent
             switch modifier {
+            case .swing(let value):
+                guard period != nil else { return .finite(finite) }
+                period = try Self.commonPeriod(period, value.subdivision.multiplied(by: 2))
+            case .periodically(let value):
+                guard period != nil else { return .finite(finite) }
+                period = try Self.commonPeriod(period, value.cycle.multiplied(by: value.every))
             case .gainPattern(let pattern, let cycle):
                 guard period != nil else { return .finite(finite) }
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
@@ -204,7 +212,8 @@ internal struct _LiveEventProgram {
                 extent: .zero,
                 limits: limits,
                 sources: sources,
-                sourceIDs: sourceIDs
+                sourceIDs: sourceIDs,
+                livePeriod: period
             ).events
         case .modifier(let child, let modifier):
             switch modifier {
@@ -232,7 +241,8 @@ internal struct _LiveEventProgram {
                 extent: .zero,
                 limits: limits,
                 sources: sources,
-                sourceIDs: sourceIDs
+                sourceIDs: sourceIDs,
+                livePeriod: period
             ).events
         }
     }

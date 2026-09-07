@@ -150,7 +150,7 @@ internal func _patternTimeRemainder(_ value: MusicalTime, divisor: MusicalTime) 
         denominator: MusicalTime.checkedMultiply(value.denominator / common, divisor.denominator))
 }
 
-private func _subtractPatternTime(_ lhs: MusicalTime, _ rhs: MusicalTime) throws -> MusicalTime {
+internal func _subtractPatternTime(_ lhs: MusicalTime, _ rhs: MusicalTime) throws -> MusicalTime {
     guard lhs >= rhs else { throw MusicalTimeError.overflow }
     guard rhs.numerator != 0 else { return lhs }
 

@@ -1,4 +1,10 @@
 internal enum _SoundModifier: Sendable {
+    case swing(Swing)
+    case euclidean(EuclideanRhythm)
+    case ratchet(Int)
+    case probability(Probability)
+    case humanize(Humanization)
+    case periodically(PeriodicRhythmTransform)
     case oneShot
     case rhythm(RhythmPattern, MusicalTime, SoundSourceAnchor)
     case offset(MusicalTime)

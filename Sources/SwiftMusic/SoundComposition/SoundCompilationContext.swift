@@ -1,6 +1,7 @@
 internal struct _SoundCompilationContext {
     let limits: SoundCompiler.Limits
     var capturesLiveProgram = false
+    var eventTransformPeriod: MusicalTime?
     var sources: [CompiledSource] = []
     var tracks: [CompiledTrack] = []
     var nodes: [CompiledRenderNode] = []
@@ -187,6 +188,24 @@ internal struct _SoundCompilationContext {
         sourceIDs: Set<Int>? = nil
     ) throws {
         switch modifier {
+        case .swing, .euclidean, .ratchet, .probability, .humanize, .periodically:
+            var period = eventTransformPeriod ?? (capturesLiveProgram ? fragment.liveProgram?.period : nil)
+            do {
+                if period != nil {
+                    switch modifier {
+                    case .swing(let value): period = try _LiveEventProgram.commonPeriod(period, value.subdivision.multiplied(by: 2))
+                    case .euclidean(let value): period = try _LiveEventProgram.commonPeriod(period, value.cycle)
+                    case .periodically(let value): period = try _LiveEventProgram.commonPeriod(period, value.cycle.multiplied(by: value.every))
+                    default: break
+                    }
+                }
+            } catch is MusicalTimeError { throw RhythmTransformError.timingOverflow }
+            let result = try _RhythmEventProcessing.apply(modifier, events: fragment.events,
+                extent: fragment.extent, limits: limits, livePeriod: period,
+                maximumOutputEvents: limits.maximumEvents - eventCount + fragment.events.count)
+            try replaceEventCount(fragment.events.count, with: result.events.count)
+            fragment.events = result.events
+            fragment.extent = result.extent
         case .oneShot:
             break
         case .rhythm(let pattern, let cycle, let anchor):
@@ -198,7 +217,7 @@ internal struct _SoundCompilationContext {
                 applyPatternProvenance(anchor, text: pattern.rawValue, to: sourceRange)
                 let hitCount = leaves.reduce(0) { $0 + ($1.token == "x" ? 1 : 0) }
                 let count = try expandedCount(fragment.events.count, multiplier: hitCount)
-                try validateEventDuckRuleBudget(fragment.events, copies: hitCount)
+                try Self.validateEventDuckRuleBudget(fragment.events, copies: hitCount)
                 try replaceEventCount(fragment.events.count, with: count)
                 var events: [CompiledSoundEvent] = []
                 events.reserveCapacity(count)
@@ -230,7 +249,7 @@ internal struct _SoundCompilationContext {
                 }
                 let hitCount = pitches.reduce(0) { $0 + $1.count }
                 let count = try expandedCount(fragment.events.count, multiplier: hitCount)
-                try validateEventDuckRuleBudget(fragment.events, copies: hitCount)
+                try Self.validateEventDuckRuleBudget(fragment.events, copies: hitCount)
                 try replaceEventCount(fragment.events.count, with: count)
                 var events: [CompiledSoundEvent] = []
                 events.reserveCapacity(count)
@@ -262,7 +281,7 @@ internal struct _SoundCompilationContext {
         case .repeated(let repetitions):
             guard repetitions > 0 else { throw invalid("Repeat count must be positive") }
             let count = try expandedCount(fragment.events.count, multiplier: repetitions)
-            try validateEventDuckRuleBudget(fragment.events, copies: repetitions)
+            try Self.validateEventDuckRuleBudget(fragment.events, copies: repetitions)
             let newExtent = try fragment.extent.multiplied(by: UInt64(repetitions))
             try replaceEventCount(fragment.events.count, with: count)
             var events: [CompiledSoundEvent] = []
@@ -414,7 +433,7 @@ internal struct _SoundCompilationContext {
             }
         case .chord(let chord):
             let count = try expandedCount(fragment.events.count, multiplier: chord.intervals.count)
-            try validateEventDuckRuleBudget(fragment.events, copies: chord.intervals.count)
+            try Self.validateEventDuckRuleBudget(fragment.events, copies: chord.intervals.count)
             try replaceEventCount(fragment.events.count, with: count)
             var events: [CompiledSoundEvent] = []
             events.reserveCapacity(count)
@@ -603,7 +622,7 @@ internal struct _SoundCompilationContext {
                 attackSeconds: attackSeconds,
                 recoverySeconds: recoverySeconds
             )
-            try validateEventDuckRuleBudget(fragment.events, additionalPerEvent: 1)
+            try Self.validateEventDuckRuleBudget(fragment.events, additionalPerEvent: 1)
             for index in fragment.events.indices {
                 fragment.events[index].pendingEventDucks.append(pending)
             }
@@ -631,9 +650,10 @@ internal struct _SoundCompilationContext {
         extent: MusicalTime,
         limits: SoundCompiler.Limits,
         sources: [CompiledSource] = [],
-        sourceIDs: Set<Int>? = nil
+        sourceIDs: Set<Int>? = nil,
+        livePeriod: MusicalTime? = nil
     ) throws -> _SoundFragment {
-        var context = Self(limits: limits, sources: sources)
+        var context = Self(limits: limits, eventTransformPeriod: livePeriod, sources: sources)
         context.eventCount = events.count
         var fragment = _SoundFragment(events: events, extent: extent)
         try context.apply(modifier, to: &fragment, sourceRange: 0..<0, sourceIDs: sourceIDs)
@@ -785,7 +805,7 @@ internal struct _SoundCompilationContext {
         }
     }
 
-    private func validateEventDuckRuleBudget(
+    static func validateEventDuckRuleBudget(
         _ events: [CompiledSoundEvent], copies: Int = 1, additionalPerEvent: Int = 0
     ) throws {
         let existing = Self.eventDuckRuleCount(events)

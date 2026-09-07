@@ -1,4 +1,13 @@
 public extension Sound {
+    func swing(_ value: Swing) -> ModifiedSound { ModifiedSound(base: self, modifier: .swing(value)) }
+    func euclidean(_ value: EuclideanRhythm) -> ModifiedSound { ModifiedSound(base: self, modifier: .euclidean(value)) }
+    func ratchet(_ count: Int) -> ModifiedSound { ModifiedSound(base: self, modifier: .ratchet(count)) }
+    func probability(_ value: Probability) -> ModifiedSound { ModifiedSound(base: self, modifier: .probability(value)) }
+    func humanize(_ value: Humanization) -> ModifiedSound { ModifiedSound(base: self, modifier: .humanize(value)) }
+    func periodically(_ value: PeriodicRhythmTransform) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .periodically(value))
+    }
+
     func rhythm(
         _ pattern: RhythmPattern,
         cycle: MusicalTime = .whole,

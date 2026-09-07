@@ -1,4 +1,5 @@
 public enum SoundCompilationError: Error, Equatable, Sendable {
+    case invalidRhythmTransform(RhythmTransformError)
     case invalidRhythm(RhythmPatternError)
     case invalidNotes(NotePatternError)
     case invalidGainPattern(GainPatternError)

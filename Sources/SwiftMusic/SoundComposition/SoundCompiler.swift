@@ -90,6 +90,8 @@ public struct SoundCompiler: Sendable {
 
     private func mappedCompilationError(_ error: Error) -> Error {
         switch error {
+        case let error as RhythmTransformError:
+            return SoundCompilationError.invalidRhythmTransform(error)
         case let error as RhythmPatternError:
             return SoundCompilationError.invalidRhythm(error)
         case let error as NotePatternError:
