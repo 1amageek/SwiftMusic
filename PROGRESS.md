@@ -1,4 +1,4 @@
 # Progress
 
-- [x] SM-01 Implement the SwiftMusic score-composition foundation; public behavior and design conformance verified `depends:none` `parallel:none` `commit:c14122b`
-- [x] SM-INT Verify committed package with clean Release build and 11 passing tests; execute README public client and confirm independent 60/120 BPM mapping `depends:SM-01` `parallel:none`
+- [x] SND-01 Migrate Score to Sound and implement six bounded modifier categories through compiled events and render-plan descriptors; pass design review and create one coherent local commit `depends:none` `parallel:none` `commit:HEAD`
+- [ ] SND-INT From the committed state run a clean Release build, the complete timeout-bounded suite, and the README client; confirm repository and PROGRESS.md represent the completed scope `depends:SND-01` `parallel:none`

@@ -1,0 +1,24 @@
+internal enum _SoundModifier: Sendable {
+    case rhythm(RhythmPattern, MusicalTime)
+    case offset(MusicalTime)
+    case repeated(Int)
+    case fast(UInt64)
+    case slow(UInt64)
+    case notes([Pitch])
+    case transpose(Int)
+    case chord(Chord)
+    case dynamic(Dynamic)
+    case velocity(Int)
+    case gate(Double)
+    case staccato
+    case tuning(Tuning)
+    case envelope(Envelope)
+    case sampleRegion(SampleRegion)
+    case unison(Unison)
+    case effect(AudioEffect)
+    case gain(Double)
+    case pan(Double)
+    case muted
+    case send(String, Double)
+    case output(String)
+}

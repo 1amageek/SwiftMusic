@@ -2,65 +2,64 @@
 
 ## Purpose and Scope
 
-SwiftMusic is a Swift package for declaring immutable musical scores and compiling them into deterministic beat-domain events. This file is both the system and package design because the repository and package roots are the same directory.
+SwiftMusic declares immutable `Sound` trees and compiles them into deterministic beat-domain events plus an ordered render plan. This file is both system and package design because the roots are the same. The package contains one module, [`Sources/SwiftMusic/DESIGN.md`](Sources/SwiftMusic/DESIGN.md).
 
-The package contains one library module, [`Sources/SwiftMusic/DESIGN.md`](Sources/SwiftMusic/DESIGN.md). Audio synthesis, playback, editor UI, source-code instrumentation, persistence, MIDI I/O, a textual rhythm language, effects, dynamics, meter, and notation import/export are outside this foundation.
+This task provides one working set in each of six modifier categories: rhythm, pitch and harmony, expression, source settings, audio effects, and mix and routing. Render-plan data describes audio work; this package does not synthesize PCM or prove that an effect was heard.
+
+Playback, an audio backend, editor UI, source-code instrumentation, persistence, MIDI I/O, meter, tempo automation, broad pattern syntax, parameter automation, and notation import/export are outside this task.
 
 ## Responsibilities and Boundaries
 
-SwiftMusic owns:
+SwiftMusic owns `Music`, composable `Sound`, `SoundBuilder`, source declarations, modifier values, exact musical time, bounded compilation, observable render-plan order, and separate tempo conversion. Clients own audio rendering, scheduling, playback state, and editor presentation.
 
-- the top-level `Music` declaration contract;
-- the composable `Score` declaration contract and `ScoreBuilder`;
-- immutable musical-time, note, rest, and named-track values;
-- compilation of a declaration tree into bounded, deterministic beat-domain events;
-- conversion of musical time to seconds using a separately supplied tempo.
-
-Clients own audio scheduling, synthesis, playback state, editor presentation, and source-to-score correspondence. No package API reads a clock, starts a task, mutates global state, or performs I/O.
+The unreleased `Score` API is replaced. `Score`, `ScoreBuilder`, `CompiledScore`, `ScoreCompiler`, `Note`, and `Rest` are removed instead of retained as aliases; there is no published compatibility contract or remote tag.
 
 ## Related Designs
 
 | Design | Relationship | Contract Used | Summary | Cautions |
 |---|---|---|---|---|
-| [`Sources/SwiftMusic/DESIGN.md`](Sources/SwiftMusic/DESIGN.md) | child | `SwiftMusic` public module | Defines the module composition and exported contract | Package changes must preserve its platform-independent value semantics |
+| [`Sources/SwiftMusic/DESIGN.md`](Sources/SwiftMusic/DESIGN.md) | child | public SwiftMusic module | Defines module composition and export boundary | Do not duplicate event or render-plan models in clients |
 
 ## Architecture
 
 ```text
-Client Music declaration
-        |
-        v
-SwiftMusic module
-        |
-        +-- ScoreComposition ----> CompiledScore (musical time)
-                                      |
-                                      +-- Tempo ----> seconds
-        |
-        +-- future client adapters: audio and editor (outside package)
+Music.body: some Sound
+          |
+          v
+ Sound tree + ordered modifiers
+          |
+          v
+    SoundCompiler
+       |       |
+       v       v
+ beat events  ordered render plan
+       |
+       v
+ Tempo.seconds(for:)       audio backend and editor are clients
 ```
 
-Dependency direction is client -> public SwiftMusic values -> internal compiler. The foundation has no third-party dependencies.
+The package has no third-party dependency, global mutable state, task, clock access, or I/O.
 
 ## Contracts and Invariants
 
-- A `Music` value supplies one score root and does not own tempo or playback state.
-- A `Score` value is immutable and `Sendable`; its `body` composes lower-level scores.
-- Sibling expressions emitted by `ScoreBuilder` begin at the same musical origin. Parallel composition is the default.
-- `Track` is optional metadata and grouping. Adding or removing a `Track` wrapper does not shift event time.
-- Compilation produces the same ordered result for the same score value and limits.
-- Compiled event positions and durations remain in exact musical time. Applying a different `Tempo` never recompiles or mutates the score.
-- Resource and arithmetic bounds fail explicitly; compilation never silently drops, truncates, or clamps an event.
+- `Music` is the work-level entry; `Sound` is every composable declaration, not PCM storage.
+- `SoundBuilder` siblings start at the same musical origin. Parallel composition remains the default.
+- Modifier order is Swift call-chain order from source outward and is observable in transformed events or the render plan.
+- Rhythm, pitch, and expression modifiers transform compiled events in their subtree.
+- Source settings alter matching leaf-source descriptors in their subtree; unsupported source capabilities fail compilation.
+- Effect and mix modifiers append post-mix nodes around their subtree and preserve chain order; `output` is a terminal routed sink and is never mixed back into or consumed by later processing.
+- `Track` is optional metadata and changes neither event time nor the render plan when unmodified.
+- Beat-domain output is independent of `Tempo`; one compiled sound maps at different BPM values.
+- Arithmetic, expansion, graph, and scalar failures are typed and never return a partial result.
 
 ## Failure, Concurrency, and Constraints
 
-Compilation is synchronous, side-effect free, and safe to call concurrently with independent values. Public values contain no shared mutable state.
+Compilation is synchronous, deterministic, side-effect free, and bounded by recursive depth, events, tracks, sources, and render nodes. Repetition, rhythm hits, and chord expansion count against event limits before unbounded allocation. Public values and results are immutable `Sendable` values.
 
-Default compilation limits are owned by `ScoreCompiler.Limits` and protect recursive traversal depth across every score node, event count, and track count. Clients may lower or raise them for their workload. Limit violations, zero note duration, invalid MIDI pitch, and musical-time overflow are typed errors. Invalid tempo input and non-finite second conversion are typed tempo errors.
-
-The first release promises native Swift behavior only. It makes no Embedded Swift, WASM, real-time audio, or allocation-budget claim.
+This release promises native Swift value and compiler behavior only. It makes no DSP, audible-output, real-time, Embedded Swift, or WASM claim.
 
 ## Verification and Change Impact
 
-The `SwiftMusicTests` target owns behavioral verification. Tests must execute external `Music` and custom `Score` bodies, builder branches and loops, parallel timing, optional and nested tracks, rests, deterministic ordering, typed failures, and two-tempo conversion of one compiled score. A build or protocol-conformance check alone is insufficient.
+Public tests execute custom `Music` and `Sound` bodies, builder control flow, parallel timing, all supported event transforms, source-setting capability failures, effect and mix order and scope, track transparency, resource bounds, exact time arithmetic, and separate tempo mapping. README code must compile and run as an external client.
 
-Changes to public declaration or event semantics require review of the module and component designs. Audio or editor work must consume `CompiledScore` as a boundary and define separate designs before entering this package.
+Changes to event semantics, modifier placement, node order, IDs, bounds, or public names require review of the module and [`SoundComposition`](Sources/SwiftMusic/SoundComposition/DESIGN.md) designs.

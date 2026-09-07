@@ -14,7 +14,10 @@ let package = Package(
         .target(
             name: "SwiftMusic",
             path: "Sources/SwiftMusic",
-            exclude: ["DESIGN.md", "ScoreComposition/DESIGN.md"]
+            exclude: [
+                "DESIGN.md",
+                "SoundComposition/DESIGN.md"
+            ]
         ),
         .testTarget(
             name: "SwiftMusicTests",
