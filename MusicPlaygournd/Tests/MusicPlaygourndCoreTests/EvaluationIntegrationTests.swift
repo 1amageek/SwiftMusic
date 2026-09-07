@@ -1,9 +1,99 @@
+import AVFoundation
+import SwiftMusic
 import Foundation
 import MusicPlaygourndCore
 import Testing
 
 extension NativeHostTests {
     struct EvaluationIntegrationTests {
+        @MainActor
+        @Test(.timeLimit(.minutes(3)))
+        func testEvaluatedRootedBankDSPVoicePolicyReachesNativePlaybackAndFailureRetainsRevision() async throws {
+            let package = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+                .deletingLastPathComponent().deletingLastPathComponent()
+            let evaluator = SourceEvaluator(packageURL: package,
+                workspace: package.appending(path: ".build/evaluator-integration"), swiftExecutable: "/usr/bin/swift")
+            let url = FileManager.default.temporaryDirectory.appending(path: "EvaluatedSample-\(UUID().uuidString).wav")
+            defer {
+                do { try FileManager.default.removeItem(at: url) }
+                catch { Issue.record(error) }
+            }
+            let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1))
+            let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 44_100))
+            buffer.frameLength = buffer.frameCapacity
+            let data = try #require(buffer.floatChannelData)
+            for frame in 0..<44_100 { data[0][frame] = Float(sin(2 * Double.pi * 440 * Double(frame) / 44_100)) * 0.3 }
+            let file = try AVAudioFile(forWriting: url, settings: format.settings)
+            try file.write(from: buffer)
+            file.close()
+            let source = """
+            struct Session: Music {
+                let bank: SampleBank
+                let envelope: Envelope
+                let tuning: Tuning
+                let depth: Semitones
+                init() throws {
+                    let url = URL(fileURLWithPath: \(url.path.debugDescription))
+                    bank = try SampleBank([
+                        SampleAsset(key: "a", fileURL: url),
+                        SampleAsset(key: "b", fileURL: url, rootPitch: Pitch(midiNote: 72))
+                    ])
+                    envelope = try Envelope(attack: .milliseconds(1), decay: .milliseconds(10),
+                        sustainLevel: 0.8, release: .milliseconds(50))
+                    tuning = try Tuning(referencePitch: Pitch(midiNote: 69), frequencyHz: 442)
+                    depth = try Semitones(value: 1)
+                }
+                var body: some Sound {
+                    Sample(bank: bank)
+                        .notes("C4 D4 C4 D4")
+                        .sampleSelection("<a b>")
+                        .transpose(PitchPattern("0.5 -0.5"))
+                        .tuning(tuning)
+                        .pitchEnvelope(envelope, depth: depth)
+                        .lowPass("800 1600")
+                        .gate(1.2)
+                        .envelope(envelope)
+                        .voicePolicy(.monophonic)
+                }
+            }
+            """
+            do {
+                let loop = try await evaluator.evaluate(source: source, bpm: 120, beatsPerBar: 4)
+                #expect(loop.events.count == 8)
+                #expect(loop.beatCount == 8)
+                #expect(loop.events.map(\.startBeat) == [0, 1, 2, 3, 4, 5, 6, 7])
+                #expect(loop.events.compactMap(\.midiNote) == [60, 62, 60, 62, 60, 62, 60, 62])
+                #expect(loop.samples.contains { abs($0) > 0.01 })
+                #expect(loop.samples.allSatisfy { $0.isFinite })
+                let half = loop.samples.count / 2
+                var selectionDifference: Float = 0
+                for index in 0..<half {
+                    selectionDifference = max(selectionDifference, abs(loop.samples[index] - loop.samples[index + half]))
+                }
+                #expect(selectionDifference > 0.005)
+                #expect(loop.rows.first?.patternText == "C4 D4 C4 D4")
+                let engine = try AudioLoopEngine()
+                defer { engine.stop() }
+                engine.beginUpdate(revision: 51)
+                try engine.submit(loop: loop, revision: 51)
+                try engine.play()
+                try await Task.sleep(for: .milliseconds(350))
+                #expect(engine.outputMeter().interleavedSamples.contains { abs($0) > 0.0001 })
+                engine.beginUpdate(revision: 52)
+                do {
+                    _ = try await evaluator.evaluate(source: source.replacingOccurrences(of: url.path,
+                        with: url.path + ".missing"), bpm: 120, beatsPerBar: 4)
+                    Issue.record("A missing decoded asset must fail evaluation")
+                } catch { #expect(error.localizedDescription.contains("unreadableFile")) }
+                #expect(engine.snapshot().revision == 51)
+                #expect(engine.snapshot().isPlaying)
+                try await evaluator.shutdown()
+            } catch {
+                try await evaluator.shutdown()
+                throw error
+            }
+        }
+
         @MainActor
         @Test(.timeLimit(.minutes(3)))
         func testRealSwiftEvaluationFailureCancellationTimeoutAndRecovery() async throws {

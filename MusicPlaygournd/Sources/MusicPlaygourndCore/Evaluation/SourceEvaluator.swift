@@ -102,7 +102,14 @@ public actor SourceEvaluator {
         let prefix = "import Foundation\nimport SwiftMusic\nimport MusicPlaygourndCore\n"
         let displaySource = workspace.appending(path: "ResultLocations.swift")
         try (prefix + source).write(to: displaySource, atomically: true, encoding: .utf8)
+        let sdk = try await run("/usr/bin/xcrun", ["--sdk", "macosx", "--show-sdk-path"], timeout: 20)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var isDirectory: ObjCBool = false
+        guard sdk.hasPrefix("/"), manager.fileExists(atPath: sdk, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw EvaluationError.invalidResult("The active macOS SDK is not an existing absolute directory.")
+        }
         let ast = try await run(swiftExecutable, ["-frontend", "-dump-ast", "-dump-ast-format", "json", "-suppress-warnings",
+            "-sdk", sdk,
             "-I", binaryPath, "-I", URL(fileURLWithPath: binaryPath).appending(path: "Modules").path,
             displaySource.path], timeout: 20)
         let resultLines = try ExpressionResultLocations.lines(ast: Data(ast.utf8), source: source, prefixBytes: prefix.utf8.count, rows: loop.rows)
