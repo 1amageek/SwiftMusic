@@ -4,6 +4,7 @@ import Synchronization
 
 @MainActor
 public final class AudioLoopEngine {
+    private let parameterSmoother: MasterParameterSmoother
     private let audioEngine: AVAudioEngine
     private let sourceNode: AVAudioSourceNode
     private let timePitch: AVAudioUnitTimePitch
@@ -16,7 +17,12 @@ public final class AudioLoopEngine {
     private var retainedLoops: [UInt64: PreparedLoop] = [:]
     private var latestRequestedRevision: UInt64?
 
-    public init() throws {
+    public convenience init() throws {
+        try self.init(parameterSmoother: MasterParameterSmoother())
+    }
+
+    internal init(parameterSmoother: MasterParameterSmoother) throws {
+        self.parameterSmoother = parameterSmoother
         guard let format = AVAudioFormat(
             standardFormatWithSampleRate: PreparedLoop.requiredSampleRate,
             channels: 2
@@ -116,6 +122,7 @@ public final class AudioLoopEngine {
     public func stop() {
         transport.stopPlayback()
         audioEngine.stop()
+        parameterSmoother.finishAll()
         meterStore.clear()
         pruneRetainedLoops()
     }
@@ -152,20 +159,28 @@ public final class AudioLoopEngine {
         guard rate.isFinite, (1.0 / 32.0...32.0).contains(rate) else {
             throw PlaybackError.invalidPlaybackRate(rate)
         }
-        timePitch.rate = rate
+        let unit = timePitch
+        parameterSmoother.set(.rate, from: unit.rate, to: rate,
+                              immediate: !transport.snapshot().isPlaying) { value, _ in
+            unit.rate = value
+        }
     }
 
     public func setLowPass(cutoff: Float?) throws {
-        if let cutoff {
-            guard cutoff.isFinite, (20...20_000).contains(cutoff) else {
-                throw PlaybackError.invalidLowPassCutoff(cutoff)
-            }
-            let filter = equalizer.bands[0]
-            filter.filterType = .lowPass
-            filter.frequency = cutoff
+        if let cutoff, !cutoff.isFinite || !(20...20_000).contains(cutoff) {
+            throw PlaybackError.invalidLowPassCutoff(cutoff)
+        }
+        let filter = equalizer.bands[0]
+        let disabling = cutoff == nil
+        let immediate = !transport.snapshot().isPlaying || (disabling && filter.bypass)
+        if !disabling, filter.bypass {
+            filter.frequency = 20_000
             filter.bypass = false
-        } else {
-            equalizer.bands[0].bypass = true
+        }
+        parameterSmoother.set(.lowPass, from: filter.frequency, to: cutoff ?? 20_000,
+                              immediate: immediate) { value, final in
+            filter.frequency = value
+            filter.bypass = disabling && final
         }
     }
 
@@ -173,14 +188,28 @@ public final class AudioLoopEngine {
         guard mix.isFinite, (0...1).contains(mix) else {
             throw PlaybackError.invalidDelayMix(mix)
         }
-        delay.wetDryMix = mix * 100
+        let unit = delay
+        parameterSmoother.set(.delay, from: unit.wetDryMix / 100, to: mix,
+                              immediate: !transport.snapshot().isPlaying) { value, _ in
+            unit.wetDryMix = value * 100
+        }
     }
 
     public func setReverb(mix: Float) throws {
         guard mix.isFinite, (0...1).contains(mix) else {
             throw PlaybackError.invalidReverbMix(mix)
         }
-        reverb.wetDryMix = mix * 100
+        let unit = reverb
+        parameterSmoother.set(.reverb, from: unit.wetDryMix / 100, to: mix,
+                              immediate: !transport.snapshot().isPlaying) { value, _ in
+            unit.wetDryMix = value * 100
+        }
+    }
+
+    internal var masterParametersForTests: (rate: Float, lowPass: Float?, delay: Float, reverb: Float) {
+        let filter = equalizer.bands[0]
+        return (timePitch.rate, filter.bypass ? nil : filter.frequency,
+                delay.wetDryMix / 100, reverb.wetDryMix / 100)
     }
 
     public func outputMeter() -> OutputMeterSnapshot {
@@ -267,7 +296,8 @@ public final class AudioLoopEngine {
         retainedLoops = retainedLoops.filter { retained.contains($0.key) }
     }
 
-    deinit {
+    isolated deinit {
+        parameterSmoother.cancelAll()
         audioEngine.mainMixerNode.removeTap(onBus: 0)
         audioEngine.stop()
     }

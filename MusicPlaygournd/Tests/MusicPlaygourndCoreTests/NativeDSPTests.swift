@@ -8,7 +8,7 @@ extension NativeHostTests {
         private let sampleRate = 44_100.0
 
         @Test(.timeLimit(.minutes(3)))
-        func testLiveRateChangesTimingWithoutChangingPitchOrRevision() throws {
+        func testLiveRateChangesTimingWithoutChangingPitchOrRevision() async throws {
             let engine = try makeEngine { time in
                 let phase = time.truncatingRemainder(dividingBy: 0.5)
                 return phase < 0.15 ? Float(sin(time * 2 * .pi * 440)) * 0.4 : 0
@@ -16,6 +16,7 @@ extension NativeHostTests {
             defer { engine.stop() }
             let normal = try render(engine, seconds: 2)
             try engine.setPlaybackRate(2)
+            try await Task.sleep(for: .milliseconds(50))
             let fast = try render(engine, seconds: 2)
             #expect(engine.snapshot().revision == 1)
             let normalOnsets = onsets(normal)
@@ -29,13 +30,15 @@ extension NativeHostTests {
         }
 
         @Test(.timeLimit(.minutes(3)))
-        func testLiveLowPassAttenuatesHighFrequenciesAndBypassRestoresThem() throws {
+        func testLiveLowPassAttenuatesHighFrequenciesAndBypassRestoresThem() async throws {
             let engine = try makeEngine { Float(sin($0 * 2 * .pi * 6_000)) * 0.4 }
             defer { engine.stop() }
             let dry = rms(try render(engine, seconds: 0.5).suffix(8_192))
             try engine.setLowPass(cutoff: 400)
+            try await Task.sleep(for: .milliseconds(50))
             let filtered = rms(try render(engine, seconds: 0.5).suffix(8_192))
             try engine.setLowPass(cutoff: nil)
+            try await Task.sleep(for: .milliseconds(50))
             let restored = rms(try render(engine, seconds: 0.5).suffix(8_192))
             #expect(abs((dry) - (0.4 / sqrt(2))) <= 0.01)
             #expect(filtered < dry * 0.05)
