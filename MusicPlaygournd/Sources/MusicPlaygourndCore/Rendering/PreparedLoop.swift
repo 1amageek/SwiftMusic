@@ -112,6 +112,9 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
         }
         var previousStart = 0.0
         for (index, event) in events.enumerated() {
+            if let pan = event.pan, !pan.isFinite || !(-1...1).contains(pan) {
+                throw PreparedLoopValidationError.invalidEvent(index: index, reason: "pan is invalid")
+            }
             guard event.sourceID >= 0 else {
                 throw PreparedLoopValidationError.invalidEvent(index: index, reason: "negative source ID")
             }

@@ -30,3 +30,7 @@ SpectrumAnalyzer owns a reusable Accelerate complex DFT setup and buffers on Mai
 
 ### Patterned per-event gain
 SwiftMusic supplies finite, nonnegative CompiledSoundEvent.gain selected at event onset. The renderer multiplies each voice by this gain before mixing and existing ordered scalar gain nodes. Zero renders silence without inventing or removing rhythmic events. The same value is retained in LoopEvent; inactive zero-gain tokens do not glow. Float amplitude overflow produces an explicit invalid-event diagnostic. PCM tests compare onset-aligned nested gain values, silent spans, relative amplitudes and unchanged scalar gain behavior.
+
+### Patterned per-event pan
+
+SwiftMusic supplies optional `CompiledSoundEvent.pan` in `-1...1`, sampled at the exact event onset. Nil bypasses per-event panning and preserves existing centered PCM exactly; every resolved value, including zero, uses the existing scalar pan node's equal-power cosine/sine law before source mixing. LoopRenderer copies the optional value to `LoopEvent.pan`; decoding legacy LoopEvent data without this field yields nil. Final finite-PCM validation and output clamping remain unchanged, and scalar pan render nodes keep their graph order and behavior. Tests compare left/right PCM for endpoints and explicit center, verify nil default and legacy decode compatibility, reject nonfinite/out-of-range decoded values, and retain scalar-pan evidence.

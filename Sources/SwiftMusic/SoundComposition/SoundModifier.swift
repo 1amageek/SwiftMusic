@@ -20,6 +20,7 @@ internal enum _SoundModifier: Sendable {
     case gain(Double)
     case gainPattern(GainPattern, MusicalTime)
     case pan(Double)
+    case panPattern(PanPattern, MusicalTime)
     case muted
     case send(String, Double)
     case output(String)

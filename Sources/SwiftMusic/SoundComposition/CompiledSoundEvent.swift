@@ -8,6 +8,7 @@ public struct CompiledSoundEvent: Sendable, Equatable {
     public internal(set) var velocity: Int
     public internal(set) var gate: Double
     public internal(set) var gain: Double
+    public internal(set) var pan: Double?
     public internal(set) var patternStepIndex: Int?
 
     internal init(
@@ -19,6 +20,7 @@ public struct CompiledSoundEvent: Sendable, Equatable {
         velocity: Int = 80,
         gate: Double = 1,
         gain: Double = 1,
+        pan: Double? = nil,
         patternStepIndex: Int? = nil
     ) {
         self.sourceID = sourceID
@@ -29,6 +31,7 @@ public struct CompiledSoundEvent: Sendable, Equatable {
         self.velocity = velocity
         self.gate = gate
         self.gain = gain
+        self.pan = pan
         self.patternStepIndex = patternStepIndex
     }
 }

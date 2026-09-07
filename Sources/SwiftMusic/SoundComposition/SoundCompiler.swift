@@ -58,6 +58,8 @@ public struct SoundCompiler: Sendable {
             throw SoundCompilationError.invalidNotes(error)
         } catch let error as GainPatternError {
             throw SoundCompilationError.invalidGainPattern(error)
+        } catch let error as PanPatternError {
+            throw SoundCompilationError.invalidPanPattern(error)
         } catch is MusicalTimeError {
             throw SoundCompilationError.timeOverflow
         }

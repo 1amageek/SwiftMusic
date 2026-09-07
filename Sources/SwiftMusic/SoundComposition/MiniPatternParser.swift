@@ -163,6 +163,75 @@ internal func _scalePatternTime(_ cycle: MusicalTime, by fraction: MusicalTime) 
     return try MusicalTime(numerator: numerator, denominator: denominator)
 }
 
+internal enum _PatternPhaseFailure: Error, Equatable, Sendable {
+    case zeroFactor
+    case overflow
+}
+
+/// A bounded exact cycle scale shared by deferred numeric pattern domains.
+internal struct _PatternPhaseScale: Sendable, Equatable {
+    let numerator: UInt64
+    let denominator: UInt64
+    let failure: _PatternPhaseFailure?
+
+    static let identity = Self(numerator: 1, denominator: 1, failure: nil)
+
+    private init(numerator: UInt64, denominator: UInt64, failure: _PatternPhaseFailure?) {
+        self.numerator = numerator
+        self.denominator = denominator
+        self.failure = failure
+    }
+
+    func fast(_ factor: UInt64) -> Self {
+        guard failure == nil else { return self }
+        guard factor > 0 else {
+            return Self(numerator: numerator, denominator: denominator, failure: .zeroFactor)
+        }
+        let cancellation = MusicalTime.greatestCommonDivisor(numerator, factor)
+        let reducedNumerator = numerator / cancellation
+        let reducedFactor = factor / cancellation
+        let (scaledDenominator, overflow) = denominator.multipliedReportingOverflow(by: reducedFactor)
+        guard !overflow else {
+            return Self(numerator: numerator, denominator: denominator, failure: .overflow)
+        }
+        return normalized(numerator: reducedNumerator, denominator: scaledDenominator)
+    }
+
+    func slow(_ factor: UInt64) -> Self {
+        guard failure == nil else { return self }
+        guard factor > 0 else {
+            return Self(numerator: numerator, denominator: denominator, failure: .zeroFactor)
+        }
+        let cancellation = MusicalTime.greatestCommonDivisor(denominator, factor)
+        let reducedDenominator = denominator / cancellation
+        let reducedFactor = factor / cancellation
+        let (scaledNumerator, overflow) = numerator.multipliedReportingOverflow(by: reducedFactor)
+        guard !overflow else {
+            return Self(numerator: numerator, denominator: denominator, failure: .overflow)
+        }
+        return normalized(numerator: scaledNumerator, denominator: reducedDenominator)
+    }
+
+    func resolvedCycle(from cycle: MusicalTime) throws -> MusicalTime {
+        if let failure { throw failure }
+        do {
+            let fraction = try MusicalTime(numerator: numerator, denominator: denominator)
+            return try _scalePatternTime(cycle, by: fraction)
+        } catch is MusicalTimeError {
+            throw _PatternPhaseFailure.overflow
+        }
+    }
+
+    private func normalized(numerator: UInt64, denominator: UInt64) -> Self {
+        let divisor = MusicalTime.greatestCommonDivisor(numerator, denominator)
+        return Self(
+            numerator: numerator / divisor,
+            denominator: denominator / divisor,
+            failure: nil
+        )
+    }
+}
+
 /// A small exact unsigned integer used for rational phase comparisons.
 private struct _PatternWideUInt: Equatable, Comparable {
     private var limbs: [UInt32]

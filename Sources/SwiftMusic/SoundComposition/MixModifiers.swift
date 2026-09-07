@@ -11,6 +11,10 @@ public extension Sound {
         ModifiedSound(base: self, modifier: .pan(value))
     }
 
+    func pan(_ pattern: PanPattern, cycle: MusicalTime = .whole) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .panPattern(pattern, cycle))
+    }
+
     func muted() -> ModifiedSound {
         ModifiedSound(base: self, modifier: .muted)
     }

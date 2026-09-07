@@ -2,6 +2,7 @@ public enum SoundCompilationError: Error, Equatable, Sendable {
     case invalidRhythm(RhythmPatternError)
     case invalidNotes(NotePatternError)
     case invalidGainPattern(GainPatternError)
+    case invalidPanPattern(PanPatternError)
     case unexpectedFailure(String)
     case invalidParameter(String)
     case unsupportedSourceSetting(String)

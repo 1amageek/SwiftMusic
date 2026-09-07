@@ -230,11 +230,12 @@ internal struct _SoundCompilationContext {
         case .gainPattern(let pattern, let cycle):
             guard cycle > .zero else { throw invalid("Gain pattern cycle must be positive") }
             let leaves = try pattern.timedLeaves
+            let resolvedCycle = try pattern.resolvedCycle(from: cycle)
             for index in fragment.events.indices {
                 let eventStart = fragment.events[index].start
                 guard let leafPosition = _patternLeafIndex(
                     at: eventStart,
-                    cycle: cycle,
+                    cycle: resolvedCycle,
                     leaves: leaves
                 ) else {
                     throw invalid("Gain pattern phase did not resolve to a leaf")
@@ -253,6 +254,25 @@ internal struct _SoundCompilationContext {
             guard pan.isFinite, (-1...1).contains(pan) else { throw invalid("Pan must be in -1...1") }
             if let root = try processingRoot(fragment.roots) {
                 fragment.roots = [try appendNode(.pan(input: root, value: pan))]
+            }
+        case .panPattern(let pattern, let cycle):
+            guard cycle > .zero else { throw invalid("Pan pattern cycle must be positive") }
+            let leaves = try pattern.timedLeaves
+            let resolvedCycle = try pattern.resolvedCycle(from: cycle)
+            for index in fragment.events.indices {
+                let eventStart = fragment.events[index].start
+                guard let leafPosition = _patternLeafIndex(
+                    at: eventStart,
+                    cycle: resolvedCycle,
+                    leaves: leaves
+                ) else {
+                    throw invalid("Pan pattern phase did not resolve to a leaf")
+                }
+                guard let value = Double(leaves[leafPosition].token),
+                      value.isFinite, (-1...1).contains(value) else {
+                    throw invalid("Pan pattern value must be finite and in -1...1")
+                }
+                fragment.events[index].pan = value
             }
         case .muted:
             if let root = try processingRoot(fragment.roots) {

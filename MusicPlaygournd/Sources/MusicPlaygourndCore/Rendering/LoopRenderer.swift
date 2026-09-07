@@ -86,7 +86,8 @@ public struct LoopRenderer: Sendable {
                 midiNote: event.pitch.map { Int($0.midiNote) },
                 velocity: event.velocity,
                 patternStepIndex: event.patternStepIndex,
-                gain: event.gain
+                gain: event.gain,
+                pan: event.pan
             )
         }
         let rows = sound.sources.enumerated().map { index, source in
@@ -358,14 +359,19 @@ private struct RenderContext: Sendable {
                 throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "gain cannot be rendered as finite PCM")
             }
             let amplitude = Float(level)
+            if let pan = event.pan, !pan.isFinite || !(-1...1).contains(pan) {
+                throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "pan is invalid")
+            }
+            let leftGain = event.pan.map { Float(cos(($0 + 1) * .pi / 4)) } ?? 1
+            let rightGain = event.pan.map { Float(sin(($0 + 1) * .pi / 4)) } ?? 1
             for offset in 0..<eventFrames {
                 let frame = startFrame + offset
                 let time = Double(offset) / PreparedLoop.requiredSampleRate
                 let edgeFrames = min(128, max(1, eventFrames / 2))
                 let edge = min(1, min(Double(offset + 1) / Double(edgeFrames), Double(eventFrames - offset) / Double(edgeFrames)))
                 let value = sample(source.kind, pitch: event.pitch, time: time) * amplitude * Float(edge)
-                output.left[frame] += value
-                output.right[frame] += value
+                output.left[frame] += value * leftGain
+                output.right[frame] += value * rightGain
             }
         }
         sourcePeakEnvelopes[sourceID] = peakEnvelope(for: output)

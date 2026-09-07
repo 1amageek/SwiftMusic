@@ -83,6 +83,19 @@ edit -> beginUpdate -> prepare -> receive -> pending -> host boundary -> current
 
 Preparation is synchronous and returns immutable beat events and an ordered render plan. An audio host prepares backend resources before calling `receive`, delivering one final success or failure per revision, then adopts at its chosen boundary. The host owns revision allocation, state isolation, clocking, and rendering. `LiveMusicState` handles plan adoption only: no audio backend, automatic bar synchronization, Swift source evaluator, or Editor UI is implemented in this library. The separate MusicPlaygournd package provides those host responsibilities.
 
+## Development branch: patterned mix controls
+
+These additions are not included in the published 0.1.0 tag. Gain and pan use separate domain types with context-inferred string literals:
+
+```swift
+Synthesizer(.sine)
+    .notes("C4 C4 C4 C4")
+    .gain("1 0.5 [0.8 0.3] 1")
+    .pan("-1 1")
+```
+
+`GainPattern` and `PanPattern` support independent integer `fast` and `slow` transformations. Values are sampled at each note onset using exact beat time. Gain values multiply; the last pan pattern selects each voice's pan. Invalid literals report typed compilation errors. Pan accepts finite values from -1 to 1 and uses equal-power panning. Omitting pan preserves existing centered audio; explicitly setting zero applies the same center attenuation as scalar `.pan(0)`. Scalar gain and pan remain ordered post-mix operations.
+
 ## License
 
 SwiftMusic is available under the [MIT License](LICENSE).

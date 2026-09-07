@@ -178,3 +178,29 @@ compiled events -> client per-voice gain -> existing ordered mix graph
 ```
 
 Tests own nested/nonuniform timing, rest/token provenance, flat compatibility, bracket failures and bounds, gain onset sampling with unequal pattern counts and repeated cycles, exact boundary arithmetic, stacked/zero/nonfinite gain, modifier order and preservation through transforms. Parent and MusicPlaygournd renderer contracts must be rechecked when event fields or pattern timing change.
+
+## Domain Parameter Patterns
+
+Numeric parameter patterns remain domain-specific public values. Parser and exact phase machinery may be reused internally, but that implementation reuse does not create a public generic pattern abstraction.
+
+Existing `GainPattern`, `.gain(_ pattern: GainPattern, cycle:)`, its source syntax, flattened `steps`, error cases, onset multiplication, and scalar `.gain(Double)` render-node semantics remain compatible. `GainPattern.fast(_ factor: UInt64)` and `.slow(_ factor: UInt64)` return deferred transformations without parsing a literal at construction. Fast advances exact phase by the factor within the modifier cycle; slow expands the cycle by the factor. Zero factors and arithmetic overflow are typed gain-pattern failures when resolved.
+
+`PanPattern` is a separate `ExpressibleByStringLiteral` value with retained `rawValue`, deferred literal parsing, throwing eager dynamic validation, flattened `steps`, and the same exact nested `[]` grammar and 64 KiB/1,024-leaf/32-depth bounds. Every leaf must be a finite `Double` in `-1...1`; rests are invalid. Its integer `fast` and `slow` transformations follow the same deferred exact-phase contract and return typed pan-pattern failures.
+
+`.pan(_ pattern: PanPattern, cycle: MusicalTime = .whole)` samples transformed phase at each current event onset. The outermost pan pattern replaces earlier event-pan values; later time transforms preserve the assigned value while earlier time transforms affect sampling. `CompiledSoundEvent.pan` is optional and defaults to nil so sounds without a pan pattern preserve prior centered PCM byte for byte. A resolved value, including explicit zero, uses the existing equal-power cosine/sine law. Existing `.pan(Double)` remains an ordered post-mix render node with unchanged behavior. Patterned pan is per voice before source mixing and is copied as optional client event metadata. Pattern resolution validates empty subtrees and positive cycles and never adds, removes, or retimes events. Rational speed ratios and additional grammar belong to the following pattern/time sprint.
+
+Tests own GainPattern/PanPattern deferred validation and parser bounds, integer fast/slow exact phase, existing gain source/error/scalar compatibility, pan cycle boundaries and last-pattern precedence, modifier order, nil-default preservation versus explicit-zero equal-power behavior, invalid domains/overflow, CompiledSoundEvent and client-event optional pan metadata, stereo PCM direction/power, and unchanged scalar pan rendering.
+
+## Rational Pattern Rates
+
+`PatternRate` is the public time-domain value for an exact positive pattern speed. It is not a generic parameter-pattern abstraction. `PatternRate(numerator:denominator:)` and `PatternRate(_ value: Double)` validate eagerly and throw `PatternRateError` for zero, negative, nonfinite, zero-denominator, or reduced values that cannot fit its bounded `UInt64` rational representation. `ExpressibleByFloatLiteral` retains the same validation result so source such as `.fast(1.5)` remains nonthrowing during Swift expression construction and reports a typed domain-pattern compilation failure when resolved. Binary floating-point input is converted to its exact reduced rational value; it is never rounded to a decimal approximation.
+
+`GainPattern` and `PanPattern` add `fast(_ rate: PatternRate)` and `slow(_ rate: PatternRate)` while retaining the existing `UInt64` overloads unchanged. An integer literal therefore continues to select the existing overload, and a fractional literal selects `PatternRate`. Fast resolves the pattern cycle as `cycle / rate`; slow resolves it as `cycle * rate`. Chained transforms compose normalized rational factors exactly and defer parsing of pattern source text. Invalid deferred rates and checked-arithmetic overflow map to the receiving domain's typed compilation error. These operations change only phase sampling: values, leaf indices, event onsets, event counts, sound extent, scalar modifiers, and source provenance remain unchanged.
+
+```text
+integer factor -> existing UInt64 overload ----\
+fractional literal -> PatternRate exact p/q ----+-> deferred phase scale -> onset sampling
+explicit p/q -> validated PatternRate ----------/
+```
+
+Focused tests distinguish integer-overload source compatibility from fractional-literal selection; prove exact `3/2`, reciprocal fast/slow, chained reduction and cycle-boundary sampling for gain and pan; reject zero, negative, nonfinite, zero-denominator and unrepresentable ratios through typed failures; and cover checked composition overflow without parsing or retiming events. Alternation grammar, reverse/repetition, independent track cycles, and typed musical parameter units remain separate work items.

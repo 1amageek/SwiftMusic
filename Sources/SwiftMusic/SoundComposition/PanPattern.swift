@@ -1,5 +1,5 @@
-/// A deferred recursively subdivided sequence of per-event gain values.
-public struct GainPattern: Sendable, Equatable, ExpressibleByStringLiteral {
+/// A deferred recursively subdivided sequence of per-event pan values.
+public struct PanPattern: Sendable, Equatable, ExpressibleByStringLiteral {
     /// The source text retained by a literal or an eagerly validated value.
     public let rawValue: String
     private let phase: _PatternPhaseScale
@@ -16,13 +16,31 @@ public struct GainPattern: Sendable, Equatable, ExpressibleByStringLiteral {
         try self.init(value)
     }
 
+    /// Creates and eagerly validates a pattern from values in the pan domain.
+    public init(steps: [Double]) throws {
+        guard !steps.isEmpty else { throw PanPatternError.emptyInput }
+        guard steps.count <= _MiniPatternParser.maximumLeaves else {
+            throw PanPatternError.tooManyLeaves(limit: _MiniPatternParser.maximumLeaves)
+        }
+        for (index, value) in steps.enumerated() {
+            guard value.isFinite else {
+                throw PanPatternError.nonFiniteValue(token: String(value), index: index)
+            }
+            guard (-1...1).contains(value) else {
+                throw PanPatternError.outOfRangeValue(token: String(value), index: index)
+            }
+        }
+        rawValue = steps.map { String($0) }.joined(separator: " ")
+        phase = .identity
+    }
+
     /// Retains literal input without validating it during Swift source evaluation.
     public init(stringLiteral value: String) {
         rawValue = value
         phase = .identity
     }
 
-    /// Resolves the source text into flat values for clients that need the legacy view.
+    /// Resolves the source text into flat pan values.
     public var steps: [Double] {
         get throws {
             try Self.parse(rawValue)
@@ -50,9 +68,9 @@ public struct GainPattern: Sendable, Equatable, ExpressibleByStringLiteral {
         do {
             return try phase.resolvedCycle(from: cycle)
         } catch _PatternPhaseFailure.zeroFactor {
-            throw GainPatternError.zeroFactor
+            throw PanPatternError.zeroFactor
         } catch _PatternPhaseFailure.overflow {
-            throw GainPatternError.timingOverflow
+            throw PanPatternError.timingOverflow
         }
     }
 
@@ -63,10 +81,10 @@ public struct GainPattern: Sendable, Equatable, ExpressibleByStringLiteral {
 
     private static func parse(_ value: String) throws -> [Double] {
         try parseTimedLeaves(value).map { leaf in
-            guard let gain = Double(leaf.token) else {
-                throw GainPatternError.invalidToken(token: leaf.token, index: leaf.index)
+            guard let number = Double(leaf.token) else {
+                throw PanPatternError.invalidToken(token: leaf.token, index: leaf.index)
             }
-            return gain
+            return number
         }
     }
 
@@ -75,28 +93,25 @@ public struct GainPattern: Sendable, Equatable, ExpressibleByStringLiteral {
             var parser = try _MiniPatternParser(value)
             let leaves = try parser.parse()
             for leaf in leaves {
-                guard leaf.token != "~" else {
-                    throw GainPatternError.invalidToken(token: leaf.token, index: leaf.index)
+                guard let number = Double(leaf.token) else {
+                    throw PanPatternError.invalidToken(token: leaf.token, index: leaf.index)
                 }
-                guard let value = Double(leaf.token) else {
-                    throw GainPatternError.invalidToken(token: leaf.token, index: leaf.index)
+                guard number.isFinite else {
+                    throw PanPatternError.nonFiniteValue(token: leaf.token, index: leaf.index)
                 }
-                guard value.isFinite else {
-                    throw GainPatternError.nonFiniteValue(token: leaf.token, index: leaf.index)
-                }
-                guard value >= 0 else {
-                    throw GainPatternError.negativeValue(token: leaf.token, index: leaf.index)
+                guard (-1...1).contains(number) else {
+                    throw PanPatternError.outOfRangeValue(token: leaf.token, index: leaf.index)
                 }
             }
             return leaves
-        } catch let error as GainPatternError {
+        } catch let error as PanPatternError {
             throw error
         } catch let error as _PatternParserError {
             throw map(error)
         }
     }
 
-    private static func map(_ error: _PatternParserError) -> GainPatternError {
+    private static func map(_ error: _PatternParserError) -> PanPatternError {
         switch error {
         case .emptyInput: return .emptyInput
         case .emptyGroup(let offset): return .emptyGroup(offset: offset)
