@@ -52,6 +52,10 @@ public struct SoundCompiler: Sendable {
         do {
             let fragment = try context.visit(sound, depth: 0)
             return context.finish(fragment)
+        } catch let error as RhythmPatternError {
+            throw SoundCompilationError.invalidRhythm(error)
+        } catch let error as NotePatternError {
+            throw SoundCompilationError.invalidNotes(error)
         } catch is MusicalTimeError {
             throw SoundCompilationError.timeOverflow
         }

@@ -74,7 +74,7 @@ final class SoundCompositionTests: XCTestCase {
     }
 
     func testRhythmOffsetRepeatFastSlowAndTrailingExtent() throws {
-        let pattern = try RhythmPattern("x ~ x")
+        let pattern = try RhythmPattern(validating: "x ~ x")
         let rhythmic = Sample("hat").rhythm(pattern, cycle: .whole)
         let compiled = try SoundCompiler().compile(rhythmic)
 
@@ -321,10 +321,10 @@ final class SoundCompositionTests: XCTestCase {
     }
 
     func testTypedParsingParametersAndCompilerBounds() throws {
-        XCTAssertThrowsError(try RhythmPattern("")) { error in
+        XCTAssertThrowsError(try RhythmPattern(validating: "")) { error in
             XCTAssertEqual(error as? RhythmPatternError, .emptyInput)
         }
-        XCTAssertThrowsError(try RhythmPattern("x nope")) { error in
+        XCTAssertThrowsError(try RhythmPattern(validating: "x nope")) { error in
             XCTAssertEqual(
                 error as? RhythmPatternError,
                 .invalidToken(token: "nope", index: 1)

@@ -3,7 +3,7 @@ import SwiftMusic
 
 final class SoundPipelineTests: XCTestCase {
     func testEventModifiersComposeInWrittenOrderWithoutChangingSourceGraph() throws {
-        let rhythm = try RhythmPattern("x ~ x ~")
+        let rhythm = try RhythmPattern(validating: "x ~ x ~")
         let c = try Pitch(midiNote: 60)
         let d = try Pitch(midiNote: 62)
         let sound = Synthesizer(.saw)
@@ -124,7 +124,7 @@ final class SoundPipelineTests: XCTestCase {
             XCTAssertEqual($0 as? SoundCompilationError, .maximumRenderNodesExceeded(limit: 1))
         }
         let silent = Sample("a")
-            .rhythm(try RhythmPattern("~"), cycle: .eighth)
+            .rhythm(try RhythmPattern(validating: "~"), cycle: .eighth)
             .repeated(Int.max)
         let result = try limited.compile(silent)
         XCTAssertTrue(result.events.isEmpty)
@@ -133,7 +133,7 @@ final class SoundPipelineTests: XCTestCase {
 
     func testTempoDoesNotAlterCompiledEventsOrAudioPlan() throws {
         let sound = Sample("kick")
-            .rhythm(try RhythmPattern("x ~ x ~"), cycle: .whole)
+            .rhythm(try RhythmPattern(validating: "x ~ x ~"), cycle: .whole)
             .effect(.delay(time: .eighth, feedback: 0.2, wet: 0.3))
         let compiled = try SoundCompiler().compile(sound)
         XCTAssertEqual(try Tempo(beatsPerMinute: 60).seconds(for: compiled.extent), 4)

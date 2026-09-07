@@ -1,10 +1,6 @@
 public extension Sound {
-    func rhythm(_ pattern: RhythmPattern, cycle: MusicalTime) -> ModifiedSound {
+    func rhythm(_ pattern: RhythmPattern, cycle: MusicalTime = .whole) -> ModifiedSound {
         ModifiedSound(base: self, modifier: .rhythm(pattern, cycle))
-    }
-
-    func rhythm(_ pattern: String, cycle: MusicalTime) throws -> ModifiedSound {
-        try rhythm(RhythmPattern(pattern), cycle: cycle)
     }
 
     func offset(_ value: MusicalTime) -> ModifiedSound {

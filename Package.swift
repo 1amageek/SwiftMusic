@@ -16,7 +16,8 @@ let package = Package(
             path: "Sources/SwiftMusic",
             exclude: [
                 "DESIGN.md",
-                "SoundComposition/DESIGN.md"
+                "SoundComposition/DESIGN.md",
+                "LiveUpdates/DESIGN.md"
             ]
         ),
         .testTarget(

@@ -5,6 +5,7 @@ internal enum _SoundModifier: Sendable {
     case fast(UInt64)
     case slow(UInt64)
     case notes([Pitch])
+    case notePattern(NotePattern, MusicalTime)
     case transpose(Int)
     case chord(Chord)
     case dynamic(Dynamic)

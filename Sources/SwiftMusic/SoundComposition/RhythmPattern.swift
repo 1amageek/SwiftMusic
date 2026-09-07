@@ -1,8 +1,40 @@
-/// A bounded sequence of hit (`x`) and rest (`~`) steps.
-public struct RhythmPattern: Sendable, Equatable {
-    public let steps: [Bool]
+/// A deferred sequence of hit (`x`) and rest (`~`) steps.
+public struct RhythmPattern: Sendable, Equatable, ExpressibleByStringLiteral {
+    /// The source text retained by a literal or an eagerly validated value.
+    public let rawValue: String
 
+    /// Creates and eagerly validates a pattern from dynamic text.
     public init(_ value: String) throws {
+        _ = try Self.parse(value)
+        rawValue = value
+    }
+
+    /// Requests eager validation explicitly, including when the argument is a literal.
+    public init(validating value: String) throws {
+        try self.init(value)
+    }
+
+    /// Creates and eagerly validates a pattern from explicit steps.
+    public init(steps: [Bool]) throws {
+        guard !steps.isEmpty else {
+            throw RhythmPatternError.emptyInput
+        }
+        rawValue = steps.map { $0 ? "x" : "~" }.joined(separator: " ")
+    }
+
+    /// Retains literal input without validating it during Swift source evaluation.
+    public init(stringLiteral value: String) {
+        rawValue = value
+    }
+
+    /// Resolves the source text for the compiler.
+    public var steps: [Bool] {
+        get throws {
+            try Self.parse(rawValue)
+        }
+    }
+
+    private static func parse(_ value: String) throws -> [Bool] {
         let tokens = value.split(whereSeparator: Self.isASCIIWhitespace)
         guard !tokens.isEmpty else {
             throw RhythmPatternError.emptyInput
@@ -18,14 +50,7 @@ public struct RhythmPattern: Sendable, Equatable {
                 throw RhythmPatternError.invalidToken(token: String(token), index: index)
             }
         }
-        steps = parsed
-    }
-
-    public init(steps: [Bool]) throws {
-        guard !steps.isEmpty else {
-            throw RhythmPatternError.emptyInput
-        }
-        self.steps = steps
+        return parsed
     }
 
     private static func isASCIIWhitespace(_ character: Character) -> Bool {

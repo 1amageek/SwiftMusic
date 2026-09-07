@@ -79,18 +79,41 @@ internal struct _SoundCompilationContext {
         switch modifier {
         case .rhythm(let pattern, let cycle):
             guard cycle > .zero else { throw invalid("Rhythm cycle must be positive") }
-            let step = try cycle.divided(by: UInt64(pattern.steps.count))
-            let hitCount = pattern.steps.reduce(0) { $0 + ($1 ? 1 : 0) }
+            let steps = try pattern.steps
+            let step = try cycle.divided(by: UInt64(steps.count))
+            let hitCount = steps.reduce(0) { $0 + ($1 ? 1 : 0) }
             let count = try expandedCount(fragment.events.count, multiplier: hitCount)
             try replaceEventCount(fragment.events.count, with: count)
             var events: [CompiledSoundEvent] = []
             events.reserveCapacity(count)
-            for (index, hit) in pattern.steps.enumerated() where hit {
+            for (index, hit) in steps.enumerated() where hit {
                 let start = try step.multiplied(by: UInt64(index))
                 for original in fragment.events {
                     var event = original
                     event.start = try original.start.adding(start)
                     event.duration = step
+                    events.append(event)
+                }
+            }
+            fragment.events = events
+            fragment.extent = try extent(events, minimum: cycle)
+        case .notePattern(let pattern, let cycle):
+            guard cycle > .zero else { throw invalid("Note cycle must be positive") }
+            let steps = try pattern.steps
+            let step = try cycle.divided(by: UInt64(steps.count))
+            let hitCount = steps.reduce(0) { $0 + ($1 == nil ? 0 : 1) }
+            let count = try expandedCount(fragment.events.count, multiplier: hitCount)
+            try replaceEventCount(fragment.events.count, with: count)
+            var events: [CompiledSoundEvent] = []
+            events.reserveCapacity(count)
+            for (index, pitch) in steps.enumerated() {
+                guard let pitch else { continue }
+                let start = try step.multiplied(by: UInt64(index))
+                for original in fragment.events {
+                    var event = original
+                    event.start = try original.start.adding(start)
+                    event.duration = step
+                    event.pitch = pitch
                     events.append(event)
                 }
             }
