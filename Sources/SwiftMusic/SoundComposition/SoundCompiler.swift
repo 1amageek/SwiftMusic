@@ -6,6 +6,7 @@ public struct SoundCompiler: Sendable {
         public let maximumTracks: Int
         public let maximumSources: Int
         public let maximumRenderNodes: Int
+        public let maximumBuses: Int
 
         /// Default bounds for an interactive declaration; callers may supply tighter bounds.
         public static let standard = Limits()
@@ -16,6 +17,7 @@ public struct SoundCompiler: Sendable {
             maximumTracks = 1_000
             maximumSources = 1_000
             maximumRenderNodes = 10_000
+            maximumBuses = 32
         }
 
         public init(
@@ -23,10 +25,11 @@ public struct SoundCompiler: Sendable {
             maximumEvents: Int = 10_000,
             maximumTracks: Int = 1_000,
             maximumSources: Int = 1_000,
-            maximumRenderNodes: Int = 10_000
+            maximumRenderNodes: Int = 10_000,
+            maximumBuses: Int = 32
         ) throws {
             guard maximumDepth > 0, maximumEvents > 0, maximumTracks > 0,
-                  maximumSources > 0, maximumRenderNodes > 0 else {
+                  maximumSources > 0, maximumRenderNodes > 0, maximumBuses > 0 else {
                 throw SoundCompilationError.invalidParameter("Compiler limits must be positive")
             }
             self.maximumDepth = maximumDepth
@@ -34,6 +37,7 @@ public struct SoundCompiler: Sendable {
             self.maximumTracks = maximumTracks
             self.maximumSources = maximumSources
             self.maximumRenderNodes = maximumRenderNodes
+            self.maximumBuses = maximumBuses
         }
     }
 
@@ -102,6 +106,8 @@ public struct SoundCompiler: Sendable {
             return SoundCompilationError.invalidEnvelopePattern(error)
         case let error as SampleSelectionPatternError:
             return SoundCompilationError.invalidSampleSelection(error)
+        case let error as BusRoutingError:
+            return SoundCompilationError.invalidBusRouting(error)
         case is MusicalTimeError:
             return SoundCompilationError.timeOverflow
         default:

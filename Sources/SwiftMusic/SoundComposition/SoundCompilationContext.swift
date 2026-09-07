@@ -29,6 +29,12 @@ internal struct _SoundCompilationContext {
             return try source(.sampleBank(bank), pitch: .middleC, sampleKey: bank.firstKey)
         case .synthesizer(let waveform):
             return try source(.synthesizer(waveform), pitch: .middleC)
+        case .busReturn(let name):
+            try validateBusName(name)
+            let root = try appendNode(.busReturn(bus: name, inputs: []))
+            var fragment = _SoundFragment(roots: [root])
+            if capturesLiveProgram { fragment.liveProgram = .finite(fragment) }
+            return fragment
         case .group(let children):
             var result = _SoundFragment()
             var programs: [_LiveEventProgram] = []
@@ -80,6 +86,11 @@ internal struct _SoundCompilationContext {
                 || track.pan != nil
                 || track.isMuted
                 || track.isSoloed
+                || !track.sends.isEmpty
+            for send in track.sends {
+                try validateBusName(send.bus)
+                try nonnegative(send.level, "Track send level")
+            }
             if hasNondefaultSettings, !outputRoots.isEmpty {
                 throw invalid("Audio processing must precede output routing")
             }
@@ -94,6 +105,22 @@ internal struct _SoundCompilationContext {
             }
             let trackRoot = try appendNode(.track(input: mainRoot, trackID: id))
             tracks[id].renderNodeID = trackRoot
+            for send in track.sends {
+                let input: Int
+                switch send.placement {
+                case .preFader:
+                    input = mainRoot
+                case .postFader:
+                    input = trackRoot
+                }
+                _ = try appendNode(.trackSend(
+                    input: input,
+                    bus: send.bus,
+                    level: send.level,
+                    trackID: id,
+                    placement: send.placement
+                ))
+            }
             var result = fragment
             result.roots = outputRoots + [trackRoot]
             return result
@@ -534,7 +561,7 @@ internal struct _SoundCompilationContext {
                 fragment.roots = [try appendNode(.mute(input: root))]
             }
         case .send(let bus, let level):
-            try validateName(bus)
+            try validateBusName(bus)
             try nonnegative(level, "Send level")
             if let root = try processingRoot(fragment.roots) {
                 fragment.roots = [try appendNode(.send(input: root, bus: bus, level: level))]
@@ -742,6 +769,12 @@ internal struct _SoundCompilationContext {
         guard name.contains(where: { !$0.isWhitespace }) else { throw invalid("Name must not be blank") }
     }
 
+    private func validateBusName(_ name: String) throws {
+        guard name.contains(where: { !$0.isWhitespace }) else {
+            throw SoundCompilationError.invalidBusRouting(.invalidName(name))
+        }
+    }
+
     private func invalid(_ description: String) -> SoundCompilationError {
         .invalidParameter(description)
     }
@@ -806,6 +839,198 @@ internal struct _SoundCompilationContext {
         }
     }
 
+    private struct ResolvedGraph {
+        let nodes: [CompiledRenderNode]
+        let roots: [Int]
+        let tracks: [CompiledTrack]
+    }
+
+    private func resolvedGraph(rootNodeIDs: [Int]) throws -> ResolvedGraph {
+        var returnIDs: [String: Int] = [:]
+        var sendIDs: [String: [Int]] = [:]
+        var busNames = Set<String>()
+        var trackSendBuses = Set<String>()
+
+        for (id, node) in nodes.enumerated() {
+            switch node {
+            case .send(_, let bus, _):
+                try validateBusName(bus)
+                busNames.insert(bus)
+                sendIDs[bus, default: []].append(id)
+            case .trackSend(_, let bus, _, _, _):
+                try validateBusName(bus)
+                busNames.insert(bus)
+                sendIDs[bus, default: []].append(id)
+                trackSendBuses.insert(bus)
+            case .busReturn(let bus, _):
+                try validateBusName(bus)
+                busNames.insert(bus)
+                guard returnIDs[bus] == nil else {
+                    throw SoundCompilationError.invalidBusRouting(.duplicateReturn(bus))
+                }
+                returnIDs[bus] = id
+            default:
+                break
+            }
+        }
+
+        guard busNames.count <= limits.maximumBuses else {
+            throw SoundCompilationError.invalidBusRouting(
+            .maximumBusesExceeded(limit: limits.maximumBuses)
+            )
+        }
+
+        for bus in trackSendBuses {
+            guard returnIDs[bus] != nil else {
+                throw SoundCompilationError.invalidBusRouting(.missingReturn(bus))
+            }
+        }
+
+        for bus in returnIDs.keys {
+            guard let inputs = sendIDs[bus], !inputs.isEmpty else {
+                throw SoundCompilationError.invalidBusRouting(.emptyReturn(bus))
+            }
+        }
+
+        var resolvedNodes = nodes
+        for (id, node) in nodes.enumerated() {
+            guard case .busReturn(let bus, _) = node else { continue }
+            resolvedNodes[id] = .busReturn(bus: bus, inputs: sendIDs[bus] ?? [])
+        }
+
+        var dependencies = [[Int]]()
+        dependencies.reserveCapacity(resolvedNodes.count)
+        var edgeCount = 0
+        for node in resolvedNodes {
+            let inputs: [Int]
+            switch node {
+            case .source:
+                inputs = []
+            case .mix(let values):
+                inputs = values
+            case .effect(let input, _),
+                 .gain(let input, _),
+                 .gainAutomation(let input, _),
+                 .pan(let input, _),
+                 .panAutomation(let input, _),
+                 .mute(let input),
+                 .track(let input, _),
+                 .send(let input, _, _),
+                 .trackSend(let input, _, _, _, _),
+                 .output(let input, _):
+                inputs = [input]
+            case .busReturn(_, let values):
+                inputs = values
+            }
+            let (updatedEdges, overflow) = edgeCount.addingReportingOverflow(inputs.count)
+            guard !overflow else {
+                throw SoundCompilationError.invalidBusRouting(
+                    .maximumEdgesExceeded(limit: limits.maximumRenderNodes)
+                )
+            }
+            edgeCount = updatedEdges
+            for input in inputs {
+                guard resolvedNodes.indices.contains(input) else {
+                    throw SoundCompilationError.invalidParameter("Render graph dependency is invalid")
+                }
+            }
+            dependencies.append(inputs)
+        }
+        guard edgeCount <= limits.maximumRenderNodes else {
+            throw SoundCompilationError.invalidBusRouting(
+                .maximumEdgesExceeded(limit: limits.maximumRenderNodes)
+            )
+        }
+
+        var indegrees = dependencies.map(\.count)
+        var dependents = Array(repeating: [Int](), count: resolvedNodes.count)
+        for (nodeID, inputs) in dependencies.enumerated() {
+            for input in inputs {
+                dependents[input].append(nodeID)
+            }
+        }
+
+        var ready = indegrees.enumerated().compactMap { index, degree in
+            degree == 0 ? index : nil
+        }
+        var order: [Int] = []
+        order.reserveCapacity(resolvedNodes.count)
+        while !ready.isEmpty {
+            let nodeID = ready.removeFirst()
+            order.append(nodeID)
+            for dependent in dependents[nodeID] {
+                indegrees[dependent] -= 1
+                if indegrees[dependent] == 0 {
+                    let insertion = ready.firstIndex(where: { $0 > dependent }) ?? ready.endIndex
+                    ready.insert(dependent, at: insertion)
+                }
+            }
+        }
+        guard order.count == resolvedNodes.count else {
+            throw SoundCompilationError.invalidBusRouting(.cycle)
+        }
+
+        var remap = Array(repeating: 0, count: resolvedNodes.count)
+        for (newID, oldID) in order.enumerated() {
+            remap[oldID] = newID
+        }
+        let remappedNodes = order.map { remappedNode(resolvedNodes[$0], using: remap) }
+        let remappedRoots = try rootNodeIDs.map { root in
+            guard remap.indices.contains(root) else {
+                throw SoundCompilationError.invalidParameter("Render graph root is invalid")
+            }
+            return remap[root]
+        }
+        let remappedTracks = try tracks.map { track in
+            var copy = track
+            if let renderNodeID = track.renderNodeID {
+                guard remap.indices.contains(renderNodeID) else {
+                    throw SoundCompilationError.invalidParameter("Track render node is invalid")
+                }
+                copy.renderNodeID = remap[renderNodeID]
+            }
+            return copy
+        }
+        return ResolvedGraph(nodes: remappedNodes, roots: remappedRoots, tracks: remappedTracks)
+    }
+
+    private func remappedNode(
+        _ node: CompiledRenderNode,
+        using remap: [Int]
+    ) -> CompiledRenderNode {
+        func id(_ value: Int) -> Int { remap[value] }
+        switch node {
+        case .source(let sourceID):
+            return .source(sourceID: sourceID)
+        case .mix(let inputs):
+            return .mix(inputs: inputs.map(id))
+        case .effect(let input, let effect):
+            return .effect(input: id(input), effect: effect)
+        case .gain(let input, let value):
+            return .gain(input: id(input), value: value)
+        case .gainAutomation(let input, let automation):
+            return .gainAutomation(input: id(input), automation: automation)
+        case .pan(let input, let value):
+            return .pan(input: id(input), value: value)
+        case .panAutomation(let input, let automation):
+            return .panAutomation(input: id(input), automation: automation)
+        case .mute(let input):
+            return .mute(input: id(input))
+        case .track(let input, let trackID):
+            return .track(input: id(input), trackID: trackID)
+        case .send(let input, let bus, let level):
+            return .send(input: id(input), bus: bus, level: level)
+        case .trackSend(let input, let bus, let level, let trackID, let placement):
+            return .trackSend(
+                input: id(input), bus: bus, level: level, trackID: trackID, placement: placement
+            )
+        case .busReturn(let bus, let inputs):
+            return .busReturn(bus: bus, inputs: inputs.map(id))
+        case .output(let input, let bus):
+            return .output(input: id(input), bus: bus)
+        }
+    }
+
     func finish(_ fragment: _SoundFragment) throws -> CompiledSound {
         let events = fragment.events.enumerated().sorted {
             if $0.element.start != $1.element.start { return $0.element.start < $1.element.start }
@@ -814,9 +1039,10 @@ internal struct _SoundCompilationContext {
         for event in events {
             try validateRetainedPitchAutomation(event)
         }
+        let graph = try resolvedGraph(rootNodeIDs: fragment.roots)
         return CompiledSound(
-            events: events, tracks: tracks, sources: sources, renderNodes: nodes,
-            rootNodeIDs: fragment.roots, extent: fragment.extent
+            events: events, tracks: graph.tracks, sources: sources, renderNodes: graph.nodes,
+            rootNodeIDs: graph.roots, extent: fragment.extent
         )
     }
 }

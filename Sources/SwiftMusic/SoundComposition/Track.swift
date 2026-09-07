@@ -8,6 +8,7 @@ public struct Track: Sound, Sendable {
     internal var pan: Double?
     internal var isMuted = false
     internal var isSoloed = false
+    internal var sends: [_TrackSend] = []
 
     public init(
         _ name: String,
@@ -45,9 +46,26 @@ public struct Track: Sound, Sendable {
         return copy
     }
 
+    /// Returns a copy with a compiler-validated send from this track.
+    public func send(
+        to bus: String,
+        level: Double,
+        placement: TrackSendPlacement = .postFader
+    ) -> Track {
+        var copy = self
+        copy.sends.append(_TrackSend(bus: bus, level: level, placement: placement))
+        return copy
+    }
+
     public var body: Never {
         fatalError("Track is a compiler terminal")
     }
+}
+
+internal struct _TrackSend: Sendable, Equatable {
+    let bus: String
+    let level: Double
+    let placement: TrackSendPlacement
 }
 
 extension Track: _SoundPrimitive {

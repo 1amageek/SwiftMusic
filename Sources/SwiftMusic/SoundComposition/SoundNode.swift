@@ -7,5 +7,6 @@ internal indirect enum _SoundNode: Sendable {
     case sampleBank(SampleBank)
     case synthesizer(Waveform)
     case track(Track)
+    case busReturn(String)
     case modified(any Sound, _SoundModifier)
 }

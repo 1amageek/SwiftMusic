@@ -68,7 +68,7 @@ public actor SourceEvaluator {
         struct EvaluationEntry {
             static func main() {
               do {
-                let bounds = try SoundCompiler.Limits(maximumEvents: 1024, maximumSources: 32, maximumRenderNodes: 256)
+                let bounds = try SoundCompiler.Limits(maximumEvents: 1024, maximumSources: 32, maximumRenderNodes: 256, maximumBuses: 32)
                 let policy = try LiveLoopPolicy(
                     beatsPerBar: \(beatsPerBar),
                     maximumBeats: MusicalTime(numerator: \(maximumLiveBeats), denominator: 1)

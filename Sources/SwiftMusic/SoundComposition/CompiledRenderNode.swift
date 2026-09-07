@@ -10,5 +10,7 @@ public enum CompiledRenderNode: Sendable, Equatable {
     case mute(input: Int)
     case track(input: Int, trackID: Int)
     case send(input: Int, bus: String, level: Double)
+    case trackSend(input: Int, bus: String, level: Double, trackID: Int, placement: TrackSendPlacement)
+    case busReturn(bus: String, inputs: [Int])
     case output(input: Int, bus: String)
 }

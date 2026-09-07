@@ -274,8 +274,10 @@ internal struct StereoBuffer: Sendable {
     }
 
     mutating func mute() {
-        left = Array(repeating: 0, count: left.count)
-        right = Array(repeating: 0, count: right.count)
+        for index in left.indices {
+            left[index] = 0
+            right[index] = 0
+        }
     }
 
     mutating func clamp(to range: ClosedRange<Float>) {
@@ -309,7 +311,9 @@ private struct RenderContext {
     var admittedSources: [Bool] = []
     let secondsPerBeat: Double
     let automationSecondsPerBeat: Double
-    var nodeStates: [UInt8]
+    var nodeConsumers: [Int]
+    var nodeBuffers: [StereoBuffer?]
+    var neededNodes: [Bool]
     var sourcePeakEnvelopes: [[Float]]
     let preparedSamples: SamplePreparation
     let sampleFrames: [Int: Int]
@@ -328,13 +332,16 @@ private struct RenderContext {
         self.secondsPerBeat = 60 / bpm
         self.automationSecondsPerBeat = sound.playbackMode == .seamlessLoop
             ? Double(frameCount) / PreparedLoop.requiredSampleRate / beatCount : 60 / bpm
-        self.nodeStates = Array(repeating: 0, count: sound.renderNodes.count)
+        self.nodeConsumers = Array(repeating: 0, count: sound.renderNodes.count)
+        self.nodeBuffers = Array(repeating: nil, count: sound.renderNodes.count)
+        self.neededNodes = Array(repeating: false, count: sound.renderNodes.count)
         self.sourcePeakEnvelopes = Array(
             repeating: [Float](repeating: 0, count: 1),
             count: sound.sources.count
         )
 
         try prepareTracks()
+        try prepareRouting()
 
         for event in sound.events {
             let source = sound.sources[event.sourceID]
@@ -436,6 +443,114 @@ private struct RenderContext {
         }
     }
 
+    private func inputs(of node: CompiledRenderNode) -> [Int] {
+        switch node {
+        case .source: return []
+        case .mix(let inputs), .busReturn(_, let inputs): return inputs
+        case .effect(let input, _), .gain(let input, _), .pan(let input, _),
+             .gainAutomation(let input, _), .panAutomation(let input, _),
+             .track(let input, _), .mute(let input), .send(let input, _, _),
+             .trackSend(let input, _, _, _, _), .output(let input, _): return [input]
+        }
+    }
+
+    private mutating func prepareRouting() throws {
+        var returns: [String: [Int]] = [:]
+        var sends: [String: [Int]] = [:]
+        var sourceNodes: Set<Int> = []
+        for (index, node) in sound.renderNodes.enumerated() {
+            for input in inputs(of: node) {
+                guard input >= 0, input < index else {
+                    throw LoopRenderingError.invalidSound("render nodes must be dependency ordered")
+                }
+            }
+            switch node {
+            case .source(let id):
+                guard sound.sources.indices.contains(id), sourceNodes.insert(id).inserted else {
+                    throw LoopRenderingError.invalidSound("invalid or duplicate source node")
+                }
+            case .send(_, let bus, let level), .trackSend(_, let bus, let level, _, _):
+                guard !bus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      level.isFinite, level >= 0 else {
+                    throw LoopRenderingError.invalidSound("invalid bus send")
+                }
+                sends[bus, default: []].append(index)
+                if case .trackSend(_, _, _, let track, _) = node,
+                   !sound.tracks.indices.contains(track) {
+                    throw LoopRenderingError.invalidSound("send track ID is out of range")
+                }
+            case .busReturn(let bus, let inputs):
+                guard !bus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      returns[bus] == nil, !inputs.isEmpty else {
+                    throw LoopRenderingError.invalidSound("invalid or duplicate bus return")
+                }
+                returns[bus] = inputs
+            case .output(_, let name):
+                guard name == "main" else {
+                    throw LoopRenderingError.unsupportedRenderNode(index: index, operation: "external output \(name)")
+                }
+            default: break
+            }
+        }
+        guard returns.count <= 32 else { throw LoopRenderingError.invalidSound("maximum 32 buses exceeded") }
+        for (bus, contributions) in sends {
+            guard let inputs = returns[bus] else {
+                throw LoopRenderingError.unsupportedRenderNode(index: contributions[0], operation: "unresolved send bus \(bus)")
+            }
+            guard inputs.count == contributions.count, Set(inputs) == Set(contributions) else {
+                throw LoopRenderingError.invalidSound("bus contribution identities disagree")
+            }
+        }
+        guard returns.keys.allSatisfy({ sends[$0] != nil }) else {
+            throw LoopRenderingError.invalidSound("bus return has no sends")
+        }
+        var pending = sound.rootNodeIDs
+        while let node = pending.popLast() {
+            guard sound.renderNodes.indices.contains(node) else {
+                throw LoopRenderingError.invalidSound("root node ID is out of range")
+            }
+            if neededNodes[node] { continue }
+            neededNodes[node] = true
+            pending.append(contentsOf: inputs(of: sound.renderNodes[node]))
+        }
+        for index in sound.renderNodes.indices where neededNodes[index] {
+            for input in inputs(of: sound.renderNodes[index]) { nodeConsumers[input] += 1 }
+        }
+        for root in sound.rootNodeIDs { nodeConsumers[root] += 1 }
+
+        // A final input can transfer its buffer to the output; shared inputs
+        // remain retained while COW supplies a separate mutable output.
+        var remaining = nodeConsumers
+        let schedulesVoices = sound.sources.contains { $0.voicePolicy != nil || $0.chokeGroup != nil }
+        var live = schedulesVoices ? sound.sources.count : 0
+        var peak = live
+        for index in sound.renderNodes.indices where neededNodes[index] {
+            let inputs = inputs(of: sound.renderNodes[index])
+            let reusesFirst = inputs.first.map { remaining[$0] == 1 } ?? false
+            let preallocatedSource: Bool
+            if case .source = sound.renderNodes[index] { preallocatedSource = schedulesVoices }
+            else { preallocatedSource = false }
+            let effectWorkspace: Int
+            switch sound.renderNodes[index] {
+            case .effect(_, .delay(_, _, let wet)), .effect(_, .reverb(_, let wet)):
+                effectWorkspace = wet == 0 ? 0 : 1
+            default: effectWorkspace = 0
+            }
+            peak = max(peak, live + (reusesFirst || preallocatedSource ? 0 : 1) + effectWorkspace)
+            for input in inputs {
+                remaining[input] -= 1
+                if remaining[input] == 0 { live -= 1 }
+            }
+            if !preallocatedSource { live += 1 }
+        }
+        if let first = sound.rootNodeIDs.first {
+            peak = max(peak, live + (remaining[first] == 1 ? 0 : 1))
+        }
+        guard peak <= 32 else {
+            throw LoopRenderingError.invalidSound("render graph exceeds 32 live stereo buffers")
+        }
+    }
+
     mutating func prepareEffects(beatsPerBar: Int) throws {
         guard sound.renderNodes.contains(where: { if case .effect = $0 { true } else { false } }) else { return }
         let seamless = sound.playbackMode == .seamlessLoop
@@ -457,7 +572,10 @@ private struct RenderContext {
                 value = sources[source]
             case .mix(let inputs): value = try inputs.reduce(0) { max($0, try horizon($1)) }
             case .gain(let input, _), .pan(let input, _), .mute(let input), .track(let input, _),
-                 .gainAutomation(let input, _), .panAutomation(let input, _): value = try horizon(input)
+                 .gainAutomation(let input, _), .panAutomation(let input, _),
+                 .send(let input, _, _), .trackSend(let input, _, _, _, _), .output(let input, _):
+                value = try horizon(input)
+            case .busReturn(_, let inputs): value = try inputs.reduce(0) { max($0, try horizon($1)) }
             case .effect(let input, let effect):
                 let tail = try EffectProcessor.tailFrames(effect, bpm: bpm, node: index)
                 value = try horizon(input) + tail
@@ -466,7 +584,6 @@ private struct RenderContext {
                     if wet != 0 { maximumImpulse = max(maximumImpulse, tail + 1) }
                 default: break
                 }
-            case .send, .output: throw LoopRenderingError.unsupportedRenderNode(index: index, operation: "routing")
             }
             if !seamless, value > EffectProcessor.maximumTailFrames {
                 throw LoopRenderingError.durationTooLong(Double(value) / PreparedLoop.requiredSampleRate)
@@ -503,29 +620,31 @@ private struct RenderContext {
                 sourceCount: sound.sources.count, frameCount: frameCount,
                 seamless: sound.playbackMode == .seamlessLoop)
         }
-        var output = StereoBuffer(frameCount: frameCount)
-        for rootID in sound.rootNodeIDs {
-            guard rootID >= 0, rootID < sound.renderNodes.count else {
-                throw LoopRenderingError.invalidSound("root node ID is out of range")
-            }
-            var root = try renderNode(rootID)
-            output.add(root)
-            root.left.removeAll(keepingCapacity: false)
-            root.right.removeAll(keepingCapacity: false)
+        for index in sound.renderNodes.indices where neededNodes[index] {
+            let rendered = try renderNode(index)
+            nodeBuffers[index] = rendered
+        }
+        guard let first = sound.rootNodeIDs.first else { return StereoBuffer(frameCount: frameCount) }
+        var output = try takeNode(first)
+        for root in sound.rootNodeIDs.dropFirst() {
+            try add(try takeNode(root), to: &output)
+        }
+        guard output.left.allSatisfy({ $0.isFinite }), output.right.allSatisfy({ $0.isFinite }) else {
+            throw LoopRenderingError.invalidSound("non-finite graph output")
         }
         return output
     }
 
-    private mutating func renderNode(_ nodeID: Int) throws -> StereoBuffer {
-        guard nodeID >= 0, nodeID < sound.renderNodes.count else {
-            throw LoopRenderingError.invalidSound("node ID is out of range")
+    private mutating func takeNode(_ id: Int) throws -> StereoBuffer {
+        guard nodeBuffers.indices.contains(id), nodeConsumers[id] > 0, let buffer = nodeBuffers[id] else {
+            throw LoopRenderingError.invalidSound("render node consumed outside its lifetime")
         }
-        guard nodeStates[nodeID] != 1 else {
-            throw LoopRenderingError.invalidSound("render graph contains a cycle")
-        }
-        nodeStates[nodeID] = 1
-        defer { nodeStates[nodeID] = 2 }
+        nodeConsumers[id] -= 1
+        if nodeConsumers[id] == 0 { nodeBuffers[id] = nil }
+        return buffer
+    }
 
+    private mutating func renderNode(_ nodeID: Int) throws -> StereoBuffer {
         switch sound.renderNodes[nodeID] {
         case .source(let sourceID):
             guard sourceID >= 0, sourceID < sound.sources.count else {
@@ -533,30 +652,26 @@ private struct RenderContext {
             }
             return try renderSource(sourceID)
         case .mix(let inputs):
-            var output = StereoBuffer(frameCount: frameCount)
-            for input in inputs {
-                var child = try renderNode(input)
-                output.add(child)
-                child.left.removeAll(keepingCapacity: false)
-                child.right.removeAll(keepingCapacity: false)
-            }
+            guard let first = inputs.first else { return StereoBuffer(frameCount: frameCount) }
+            var output = try takeNode(first)
+            for input in inputs.dropFirst() { try add(try takeNode(input), to: &output) }
             return output
         case .gain(let input, let value):
             guard value.isFinite, value >= 0 else {
                 throw LoopRenderingError.invalidSound("gain is invalid")
             }
-            var output = try renderNode(input)
+            var output = try takeNode(input)
             output.multiply(by: Float(value))
             return output
         case .pan(let input, let value):
             guard value.isFinite, (-1...1).contains(value) else {
                 throw LoopRenderingError.invalidSound("pan is invalid")
             }
-            var output = try renderNode(input)
+            var output = try takeNode(input)
             output.applyPan(value)
             return output
         case .gainAutomation(let input, let automation):
-            var output = try renderNode(input)
+            var output = try takeNode(input)
             for frame in output.left.indices {
                 let gain = try AutomationEvaluator.mapped(automation.signal,
                     from: automation.from, to: automation.to, frame: frame, secondsPerBeat: automationSecondsPerBeat)
@@ -572,7 +687,7 @@ private struct RenderContext {
             }
             return output
         case .panAutomation(let input, let automation):
-            var output = try renderNode(input)
+            var output = try takeNode(input)
             for frame in output.left.indices {
                 let pan = try AutomationEvaluator.mapped(automation.signal,
                     from: automation.from, to: automation.to, frame: frame, secondsPerBeat: automationSecondsPerBeat)
@@ -589,11 +704,11 @@ private struct RenderContext {
             }
             return output
         case .mute(let input):
-            var output = try renderNode(input)
+            var output = try takeNode(input)
             output.mute()
             return output
         case .track(let input, let id):
-            var output = try renderNode(input)
+            var output = try takeNode(input)
             let track = sound.tracks[id]
             if track.level != 1 {
                 for index in output.left.indices {
@@ -612,27 +727,75 @@ private struct RenderContext {
             if track.isMuted || !audibleTracks[id] { output.mute() }
             return output
         case .effect(let input, let effect):
-            var output = try renderNode(input)
+            var output = try takeNode(input)
             try EffectProcessor.apply(effect, to: &output, inputHorizon: nodeHorizons[input],
                                       bpm: bpm, seamless: sound.playbackMode == .seamlessLoop,
                                       node: nodeID, convolver: convolver)
             return output
-        // FIXME(INCOMPLETE_IMPLEMENTATION): send processing is unavailable in editor evaluation; require DSP/routing behavior tests before enabling it.
-        case .send:
-            throw LoopRenderingError.unsupportedRenderNode(index: nodeID, operation: "send")
-        // FIXME(INCOMPLETE_IMPLEMENTATION): output processing is unavailable in editor evaluation; require DSP/routing behavior tests before enabling it.
-        case .output:
-            throw LoopRenderingError.unsupportedRenderNode(index: nodeID, operation: "output")
+        case .send(let input, _, _), .trackSend(let input, _, _, _, _), .output(let input, _):
+            return try takeNode(input)
+        case .busReturn(_, let inputs):
+            guard let first = inputs.first else { throw LoopRenderingError.invalidSound("empty bus return") }
+            var output = try takeNode(first)
+            try scale(&output, by: sendLevel(first))
+            for input in inputs.dropFirst() {
+                try add(try takeNode(input), to: &output, level: sendLevel(input))
+            }
+            return output
+        }
+    }
+
+    private func sendLevel(_ node: Int) -> Double {
+        switch sound.renderNodes[node] {
+        case .send(_, _, let level): return level
+        case .trackSend(_, _, let level, let track, _):
+            guard audibleTracks[track] else { return 0 }
+            var owner: Int? = track
+            while let id = owner {
+                if sound.tracks[id].isMuted { return 0 }
+                owner = sound.tracks[id].parentID
+            }
+            return level
+        default: preconditionFailure("Routing validation admits only send contributions")
+        }
+    }
+
+    private func scale(_ output: inout StereoBuffer, by level: Double) throws {
+        for frame in output.left.indices {
+            let left = Double(output.left[frame]) * level
+            let right = Double(output.right[frame]) * level
+            guard left.isFinite, right.isFinite,
+                  abs(left) <= Double(Float.greatestFiniteMagnitude), abs(right) <= Double(Float.greatestFiniteMagnitude) else {
+                throw LoopRenderingError.invalidSound("send level exceeds finite PCM range")
+            }
+            output.left[frame] = Float(left)
+            output.right[frame] = Float(right)
+        }
+    }
+
+    private func add(_ input: StereoBuffer, to output: inout StereoBuffer, level: Double = 1) throws {
+        for frame in output.left.indices {
+            let left = Double(output.left[frame]) + Double(input.left[frame]) * level
+            let right = Double(output.right[frame]) + Double(input.right[frame]) * level
+            guard left.isFinite, right.isFinite,
+                  abs(left) <= Double(Float.greatestFiniteMagnitude), abs(right) <= Double(Float.greatestFiniteMagnitude) else {
+                throw LoopRenderingError.invalidSound("bus or main mix exceeds finite PCM range")
+            }
+            output.left[frame] = Float(left)
+            output.right[frame] = Float(right)
         }
     }
 
     private mutating func renderSource(_ sourceID: Int) throws -> StereoBuffer {
-        if !admittedSources[sourceID] { return StereoBuffer(frameCount: frameCount) }
-        if let scheduledSources {
-            let output = scheduledSources[sourceID]
+        if scheduledSources != nil {
+            let output = scheduledSources![sourceID]
+            // Transfer the scheduler's ownership so a final consumer can reuse
+            // this buffer without a hidden retained copy outside the graph plan.
+            scheduledSources![sourceID] = StereoBuffer(frameCount: 0)
             sourcePeakEnvelopes[sourceID] = peakEnvelope(for: output)
             return output
         }
+        if !admittedSources[sourceID] { return StereoBuffer(frameCount: frameCount) }
         var output = StereoBuffer(frameCount: frameCount)
         for eventIndex in sound.events.indices where sound.events[eventIndex].sourceID == sourceID {
             var voice = try makeVoice(eventIndex)

@@ -58,10 +58,13 @@ extension NativeHostTests {
                     }
                     .trackLevel(0.8)
                     .trackPan(-0.25)
+                    .send(to: "room", level: 0.2, placement: .preFader)
                     .effect(.equalizer(frequencyHz: 1_200, gainDecibels: 3, q: 0.7))
                     .effect(.saturation(drive: 0.3))
                     .effect(.delay(time: .quarter, feedback: 0.2, wet: 0.1))
                     .effect(.reverb(roomSize: 0.2, wet: 0.15))
+                    BusReturn("room")
+                        .effect(.reverb(roomSize: 0.1, wet: 1))
                 }
             }
             """
@@ -103,6 +106,13 @@ extension NativeHostTests {
                         with: url.path + ".missing"), bpm: 120, beatsPerBar: 4)
                     Issue.record("A missing decoded asset must fail evaluation")
                 } catch { #expect(error.localizedDescription.contains("unreadableFile")) }
+                #expect(engine.snapshot().revision == 51)
+                #expect(engine.snapshot().isPlaying)
+                do {
+                    _ = try await evaluator.evaluate(source: source.replacingOccurrences(of: "BusReturn(\"room\")",
+                        with: "BusReturn(\"room\").send(to: \"room\", level: 1)"), bpm: 120, beatsPerBar: 4)
+                    Issue.record("A cyclic bus must fail evaluation")
+                } catch { #expect(error.localizedDescription.lowercased().contains("cycle")) }
                 #expect(engine.snapshot().revision == 51)
                 #expect(engine.snapshot().isPlaying)
                 do {

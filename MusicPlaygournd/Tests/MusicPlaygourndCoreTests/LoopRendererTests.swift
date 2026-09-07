@@ -90,11 +90,11 @@ struct LoopRendererTests {
             return false
         }
 
-        let routed = try SoundCompiler().compile(Sample("kick").output("main"))
+        let routed = try SoundCompiler().compile(Sample("kick").output("external"))
         #expect {
             try renderer.render(routed, bpm: 120, beatsPerBar: 4)
         } throws: { error in
-            if case .unsupportedRenderNode(_, "output") = error as? LoopRenderingError { return true }
+            if case .unsupportedRenderNode(_, "external output external") = error as? LoopRenderingError { return true }
             return false
         }
 
