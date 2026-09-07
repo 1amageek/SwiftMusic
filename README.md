@@ -2,7 +2,9 @@
 
 SwiftMusic declares immutable `Sound` trees. Sibling declarations are parallel, and modifiers transform only the subtree on which they are written. Rhythm and note literals stay in the declaration and resolve into exact beat-domain events during compilation.
 
-The live music-making experience and the planned MusicPlaygournd editor are defined in [PHILOSOPHY.md](PHILOSOPHY.md). The example below uses the declarative foundation API.
+The live music-making experience and the MusicPlaygournd editor are defined in [PHILOSOPHY.md](PHILOSOPHY.md). The example below uses the declarative foundation API.
+
+The native macOS editor is in [MusicPlaygournd](MusicPlaygournd/README.md). It hosts real Swift evaluation, bounded PCM playback, and synchronized rhythm visualization.
 
 ## Requirements
 
@@ -79,7 +81,7 @@ edit -> beginUpdate -> prepare -> receive -> pending -> host boundary -> current
 
 `RhythmPattern` accepts whitespace-separated `x` and `~`; `NotePattern` accepts scientific pitch names and `~` rests. Their default cycle is four quarter-note beats. C4 is MIDI 60. Note-pattern literals generate a timed sequence; `notes([Pitch])` assigns pitches to existing events. To validate text immediately, use `try RhythmPattern(validating: text)` or `try NotePattern(validating: text)`. Literal conversion itself does not throw.
 
-Preparation is synchronous and returns immutable beat events and an ordered render plan. An audio host prepares backend resources before calling `receive`, delivering one final success or failure per revision, then adopts at its chosen boundary. The host owns revision allocation, state isolation, clocking, and rendering. `LiveMusicState` handles plan adoption only: no audio backend, automatic bar synchronization, Swift source evaluator, or Editor UI is implemented yet.
+Preparation is synchronous and returns immutable beat events and an ordered render plan. An audio host prepares backend resources before calling `receive`, delivering one final success or failure per revision, then adopts at its chosen boundary. The host owns revision allocation, state isolation, clocking, and rendering. `LiveMusicState` handles plan adoption only: no audio backend, automatic bar synchronization, Swift source evaluator, or Editor UI is implemented in this library. The separate MusicPlaygournd package provides those host responsibilities.
 
 ## License
 
