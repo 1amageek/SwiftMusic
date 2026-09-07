@@ -50,6 +50,10 @@ struct ContentView: View {
                 if model.isPreparing { ProgressView().controlSize(.mini) }
                 else { Circle().fill(model.diagnostic.isEmpty ? Color.mint : .orange).frame(width: 6, height: 6) }
                 Text(model.status).font(.system(size: 11))
+                if !model.completionStatus.isEmpty {
+                    Text(model.completionStatus).font(.system(size: 10)).foregroundStyle(.secondary)
+                        .lineLimit(1).help(model.completionStatus)
+                }
                 Spacer()
                 if let revision = model.currentRevision {
                     Text("LOOP r\(revision) / EDIT r\(model.revision)").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
@@ -115,7 +119,9 @@ struct ContentView: View {
                 patternTexts: Dictionary(uniqueKeysWithValues: (model.loop?.rows ?? []).compactMap { row in row.patternText.map { (row.sourceID, $0) } }),
                 activeTokens: model.activeTokens,
                 scrollDelta: timelineScroll, onLayout: { lineRects = $0 },
-                beforeEdit: model.beforeEdit, onEdit: model.sourceChanged)
+                beforeEdit: model.beforeEdit, onEdit: model.sourceChanged,
+                completions: { source, offset in try await model.completions(source: source, utf16Offset: offset) },
+                onCompletionStatus: { model.completionStatus = $0 })
             if !model.diagnostic.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     Button { model.revealDiagnostic() } label: {

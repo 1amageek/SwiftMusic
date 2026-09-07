@@ -2,7 +2,8 @@
 set -euo pipefail
 package_root="$(cd "$(dirname "$0")/.." && pwd)"
 swift_executable="$(xcrun --find swift)"
-"$swift_executable" build --package-path "$package_root" -c release
+# The 2026-08-14 Swift 6.4 snapshot asserts while round-tripping FileHandle.AsyncBytes debug types.
+"$swift_executable" build --package-path "$package_root" -c release -Xswiftc -Xfrontend -Xswiftc -disable-round-trip-debug-types
 binary_directory="$("$swift_executable" build --package-path "$package_root" -c release --show-bin-path)"
 app_path="${1:-$package_root/.build/MusicPlaygournd.app}"
 bundle_id="${2:-com.1amageek.MusicPlaygournd}"

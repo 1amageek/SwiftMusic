@@ -14,6 +14,8 @@ struct CodeEditor: NSViewRepresentable {
     let onLayout: ([Int: CGRect]) -> Void
     let beforeEdit: (NSRange, String) -> Void
     let onEdit: () -> Void
+    let completions: @MainActor (String, Int) async throws -> [SwiftCompletion]
+    let onCompletionStatus: (String) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -23,8 +25,9 @@ struct CodeEditor: NSViewRepresentable {
         scroll.hasHorizontalScroller = true
         scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
-        let editor = TimelineTextView()
+        let editor = CompletionTextView()
         editor.isRichText = false
+        editor.allowsUndo = true
         editor.isAutomaticQuoteSubstitutionEnabled = false
         editor.isAutomaticDashSubstitutionEnabled = false
         editor.isAutomaticTextReplacementEnabled = false
@@ -56,15 +59,24 @@ struct CodeEditor: NSViewRepresentable {
         scroll.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.scrolled), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         editor.onLayout = { [weak coordinator = context.coordinator] in coordinator?.publishLayout() }
+        editor.onCompletionRequest = { [weak coordinator = context.coordinator, weak editor] in
+            guard let editor else { return }
+            coordinator?.requestCompletion(editor, immediate: true)
+        }
         context.coordinator.highlight(editor)
         context.coordinator.publishLayout()
         return scroll
+    }
+
+    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        coordinator.cancelCompletion()
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let editor = scroll.documentView as? NSTextView else { return }
         if editor.string != text {
+            context.coordinator.cancelCompletion()
             editor.string = text
             context.coordinator.highlight(editor)
         }
@@ -100,6 +112,8 @@ struct CodeEditor: NSViewRepresentable {
         private var rangeLines: [Int: Int] = [:]
         private var rangePatterns: [Int: String] = [:]
         private var literalRanges: [Int: [NSRange]] = [:]
+        private var completionTask: Task<Void, Never>?
+        private var completionGeneration = 0
         private var previousActive: [Int: Set<Int>] = [:]
 
         func highlightPlayback(_ editor: NSTextView) {
@@ -167,7 +181,58 @@ struct CodeEditor: NSViewRepresentable {
             highlight(editor)
             parent.onEdit()
             publishLayout()
+            guard let editor = editor as? CompletionTextView else { return }
+            let offset = editor.selectedRange().location
+            let text = editor.string as NSString
+            guard editor.selectedRange().length == 0, offset > 0, offset <= text.length else {
+                completionTask?.cancel()
+                return
+            }
+            let last = text.character(at: offset - 1)
+            if last == 46 || (65...90).contains(last) || (97...122).contains(last) || last == 95 {
+                requestCompletion(editor, immediate: last == 46)
+            } else {
+                completionTask?.cancel()
+                parent.onCompletionStatus("")
+            }
         }
+
+        func requestCompletion(_ editor: CompletionTextView, immediate: Bool) {
+            completionTask?.cancel()
+            completionGeneration += 1
+            let generation = completionGeneration
+            let source = editor.string
+            let selection = editor.selectedRange()
+            guard selection.length == 0 else { return }
+            completionTask = Task { @MainActor [weak self, weak editor] in
+                do {
+                    if !immediate { try await Task.sleep(for: .milliseconds(250)) }
+                    guard let self, let editor else { return }
+                    self.parent.onCompletionStatus("Swift completion…")
+                    let values = try await self.parent.completions(source, selection.location)
+                    try Task.checkCancellation()
+                    guard generation == self.completionGeneration else { return }
+                    guard editor.string == source, editor.selectedRange() == selection else {
+                        self.parent.onCompletionStatus("")
+                        return
+                    }
+                    self.parent.onCompletionStatus(values.isEmpty ? "No Swift completions" : "")
+                    editor.presentCompletions(values, source: source, selection: selection)
+                } catch is CancellationError {
+                    // A later source/cursor request owns completion presentation.
+                } catch {
+                    guard let self, generation == self.completionGeneration else { return }
+                    self.parent.onCompletionStatus("Completion: \(error.localizedDescription)")
+                }
+            }
+        }
+
+        func cancelCompletion() {
+            completionTask?.cancel()
+            completionGeneration += 1
+            parent.onCompletionStatus("")
+        }
+
         func highlight(_ editor: NSTextView) {
             guard let storage = editor.textStorage else { return }
             let full = NSRange(location: 0, length: storage.length)
@@ -190,14 +255,5 @@ struct CodeEditor: NSViewRepresentable {
             }
             storage.endEditing()
         }
-    }
-}
-
-/// A platform adapter: native layout remains the authority for timeline row geometry.
-@MainActor private final class TimelineTextView: NSTextView {
-    var onLayout: (() -> Void)?
-    override func layout() {
-        super.layout()
-        onLayout?()
     }
 }

@@ -4,13 +4,14 @@
 Runtime module. Parent: [Package](../../DESIGN.md). Children: [Rendering](Rendering/DESIGN.md), [Playback](Playback/DESIGN.md), [Evaluation](Evaluation/DESIGN.md).
 
 ## Responsibilities and Boundaries
-Owns immutable prepared PCM, resource validation, evaluation lifetime, synchronized playback, live master processing, and bounded post-FX sample snapshots. SwiftMusic owns musical event transformation. App owns UI and documents.
+Owns immutable prepared PCM, resource validation, evaluation and semantic-completion process lifetimes, synchronized playback, live master processing, and bounded post-FX sample snapshots. SwiftMusic owns musical event transformation. App owns UI and documents.
 
 ## Related Designs
 Use the parent/child links above. Dependencies: SwiftMusic owns event semantics; Core owns rendering/playback/evaluation contracts; App consumes Core.
 
 ## Architecture
 ```text
+Swift source -> SourceKit-LSP semantic completion
 SwiftMusic.CompiledSound -> LoopRenderer -> PreparedLoop -> AudioLoopEngine -> master FX -> post-FX samples
 ```
 

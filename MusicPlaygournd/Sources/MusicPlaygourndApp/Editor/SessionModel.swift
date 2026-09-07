@@ -51,12 +51,14 @@ final class SessionModel {
     var hasUnsavedChanges = false
     var bottomLayout = false
     var audioError = ""
+    var completionStatus = ""
     var rowLines: [Int: Int] = [:]
     var spectrum = [Float](repeating: -90, count: SpectrumAnalyzer.bandCount)
     private var lineMaps: [UInt64: SourceLineMap] = [:]
     private var analyzer: SpectrumAnalyzer?
     private var engine: AudioLoopEngine?
     private let evaluator: SourceEvaluator
+    private let completionService: SwiftCompletionService
     private var evaluationTask: Task<Void, Never>?
     private var wantsPlayback = false
 
@@ -72,10 +74,17 @@ final class SessionModel {
             .appending(path: "MusicPlaygournd/Evaluation-\(ProcessInfo.processInfo.processIdentifier)")
         let swift = bundle.object(forInfoDictionaryKey: "SwiftExecutable") as? String ?? "/usr/bin/swift"
         evaluator = SourceEvaluator(packageURL: packageURL, workspace: cache, swiftExecutable: swift)
+        completionService = SwiftCompletionService(packageURL: packageURL,
+            workspace: cache.deletingLastPathComponent().appending(path: "Completion-\(ProcessInfo.processInfo.processIdentifier)"),
+            sourceKitLSPExecutable: URL(fileURLWithPath: swift).deletingLastPathComponent().appending(path: "sourcekit-lsp").path)
         do { analyzer = try SpectrumAnalyzer() }
         catch { diagnostic = "Spectrum analyzer could not initialize: \(error)" }
         do { engine = try AudioLoopEngine() }
         catch { audioError = error.localizedDescription; diagnostic = audioError }
+    }
+
+    func completions(source: String, utf16Offset: Int) async throws -> [SwiftCompletion] {
+        try await completionService.completions(source: source, utf16Offset: utf16Offset)
     }
 
     func sourceChanged() {
@@ -252,7 +261,9 @@ final class SessionModel {
         evaluationTask?.cancel()
         engine?.stop()
         await evaluationTask?.value
-        try await evaluator.shutdown()
+        async let completionShutdown: Void = completionService.shutdown()
+        async let evaluationShutdown: Void = evaluator.shutdown()
+        _ = try await (completionShutdown, evaluationShutdown)
     }
 
     static let initialSource = """

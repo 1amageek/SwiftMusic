@@ -27,6 +27,10 @@ The app bundle includes its evaluation package sources. It retains the installed
 - Click the diagnostic heading to select a reported Swift source line. Direct pattern literals glow while their compiled source events play. The attached timeline scrolls with the code; scroll over either pane.
 - Use the lower-right layout button to put the rhythm view below the code.
 
+## Swift completion
+
+Type a dot or pause while typing an identifier to request semantic Swift completion. Control–Space requests it manually. Select a signature and press Return or Tab; the first argument is selected for replacement. Browsing candidates does not edit the source or prepare audio. Candidate insertion is one undoable edit. The first request prepares the SwiftMusic module; later requests reuse the server. Completion uses the installed toolchain's SourceKit-LSP in a separate workspace and reports unavailable-server errors in the status bar.
+
 ## Patterned rhythm and gain
 
 ```swift
@@ -55,3 +59,7 @@ See [DESIGN.md](DESIGN.md) for ownership and failure contracts. This development
 ## Verification
 
 On macOS 27.0 arm64 with Swift 6.4 snapshot 2026-08-14, 40 SwiftMusic tests, 24 focused editor/runtime tests, and a native hardware-output tap test passed. Native DSP tests verify tempo/pitch, neutral gain, filter attenuation and delay/reverb tails; model tests verify controls allocate no evaluation revision. The unchanged evaluator's real compilation/failure/cancellation/timeout/recovery test passed in 54 seconds for the nested-pattern change. Repeating that long test during active editor compilations reached its 120-second outer budget while still building; its previous evidence is retained, and the changed hardware-output path was verified separately. Release builds pass with development-toolchain object verification warnings. Visible checks cover nested leaf highlighting, aligned scrolling, post-FX monitoring, live controls and open/save. This does not claim tested macOS 15 runtime behavior or hard real-time scheduling.
+
+Twelve completion/control tests pass, including real SourceKit-LSP gain overloads, UTF-16 edits, initial-request cancellation, recovery, malformed frames, unresponsive-server timeout, process shutdown, candidate navigation, insertion and Undo. The cold semantic service test completed in 8.574 seconds. In the optimized app, automatic gain overloads, arrow navigation without edits, Return acceptance with argument selection, one Undo, and a single pan candidate without automatic insertion were verified while the previous loop and output monitoring continued through invalid edits.
+
+The app build script disables the Swift 6.4 2026-08-14 snapshot compiler's debug-type round-trip assertion, which crashes on optimized `FileHandle.AsyncBytes` code. This is a compiler diagnostic workaround; optimization remains enabled.
