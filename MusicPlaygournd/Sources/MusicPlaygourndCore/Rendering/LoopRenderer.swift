@@ -29,14 +29,19 @@ public struct LoopRenderer: Sendable {
         guard extent.isFinite, extent >= 0 else {
             throw LoopRenderingError.invalidSound("non-finite extent")
         }
-        guard extent <= 32 else {
+        guard extent <= PreparedLoop.maximumBeatCount else {
             throw LoopRenderingError.extentTooLong(extent)
         }
 
         let bars = max(1, Int(ceil(extent / Double(beatsPerBar))))
         let beatCount = Double(bars * beatsPerBar)
-        guard beatCount <= 32 else {
+        guard beatCount <= PreparedLoop.maximumBeatCount else {
             throw LoopRenderingError.extentTooLong(beatCount)
+        }
+        if sound.playbackMode == .seamlessLoop, beatCount != extent {
+            throw LoopRenderingError.invalidSound(
+                "Seamless loop extent must align with the requested meter"
+            )
         }
         let duration = beatCount * 60 / bpm
         guard duration.isFinite, duration <= PreparedLoop.maximumDurationSeconds else {
@@ -62,10 +67,25 @@ public struct LoopRenderer: Sendable {
             let source = sound.sources[event.sourceID]
             let startBeat = try beatValue(event.start)
             let durationBeats = try beatValue(event.duration)
-            let audibleDuration = min(
-                durationBeats * event.gate,
-                max(0, beatCount - startBeat)
-            )
+            let audibleDuration: Double
+            let wrapsLoopBoundary: Bool
+            if sound.playbackMode == .seamlessLoop {
+                let gatedDuration = durationBeats * event.gate
+                guard gatedDuration.isFinite, gatedDuration > 0, gatedDuration <= beatCount else {
+                    throw LoopRenderingError.invalidEvent(
+                        index: index,
+                        reason: "seamless event duration exceeds loop window"
+                    )
+                }
+                audibleDuration = gatedDuration
+                wrapsLoopBoundary = startBeat + gatedDuration > beatCount
+            } else {
+                audibleDuration = min(
+                    durationBeats * event.gate,
+                    max(0, beatCount - startBeat)
+                )
+                wrapsLoopBoundary = false
+            }
             guard audibleDuration > 0 else {
                 throw LoopRenderingError.invalidEvent(index: index, reason: "event has no audible duration")
             }
@@ -87,7 +107,8 @@ public struct LoopRenderer: Sendable {
                 velocity: event.velocity,
                 patternStepIndex: event.patternStepIndex,
                 gain: event.gain,
-                pan: event.pan
+                pan: event.pan,
+                wrapsLoopBoundary: wrapsLoopBoundary
             )
         }
         let rows = sound.sources.enumerated().map { index, source in
@@ -347,13 +368,47 @@ private struct RenderContext: Sendable {
             guard event.gate.isFinite, event.gate > 0 else {
                 throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "gate is invalid")
             }
-            guard startBeat >= 0, startBeat < beatCount + 1e-9 else {
+            let seamless = sound.playbackMode == .seamlessLoop
+            guard startBeat >= 0,
+                  seamless ? startBeat < beatCount : startBeat < beatCount + 1e-9 else {
                 throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "start is outside loop")
             }
             let startFrame = max(0, min(frameCount, Int((startBeat * secondsPerBeat * PreparedLoop.requiredSampleRate).rounded(.down))))
+            if seamless {
+                guard startFrame < frameCount else {
+                    throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "start is outside loop frames")
+                }
+            }
             let naturalDuration = durationBeats * secondsPerBeat
-            let gatedDuration = min(naturalDuration * event.gate, max(0, beatCount * secondsPerBeat - startBeat * secondsPerBeat))
-            let eventFrames = min(frameCount - startFrame, max(1, Int((gatedDuration * PreparedLoop.requiredSampleRate).rounded(.up))))
+            let eventFrames: Int
+            if seamless {
+                let fullGatedDuration = naturalDuration * event.gate
+                guard fullGatedDuration.isFinite,
+                      fullGatedDuration > 0,
+                      fullGatedDuration <= beatCount * secondsPerBeat else {
+                    throw LoopRenderingError.invalidEvent(
+                        index: eventIndex,
+                        reason: "seamless event duration exceeds loop window"
+                    )
+                }
+                let renderedFrames = max(1, Int((fullGatedDuration * PreparedLoop.requiredSampleRate).rounded(.up)))
+                guard renderedFrames <= frameCount else {
+                    throw LoopRenderingError.invalidEvent(
+                        index: eventIndex,
+                        reason: "seamless event duration exceeds loop frame count"
+                    )
+                }
+                eventFrames = renderedFrames
+            } else {
+                let gatedDuration = min(
+                    naturalDuration * event.gate,
+                    max(0, beatCount * secondsPerBeat - startBeat * secondsPerBeat)
+                )
+                eventFrames = min(
+                    frameCount - startFrame,
+                    max(1, Int((gatedDuration * PreparedLoop.requiredSampleRate).rounded(.up)))
+                )
+            }
             let level = Double(event.velocity) / 127 * 0.35 * event.gain
             guard event.gain.isFinite, event.gain >= 0, level.isFinite, level <= Double(Float.greatestFiniteMagnitude) else {
                 throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "gain cannot be rendered as finite PCM")
@@ -364,11 +419,17 @@ private struct RenderContext: Sendable {
             }
             let leftGain = event.pan.map { Float(cos(($0 + 1) * .pi / 4)) } ?? 1
             let rightGain = event.pan.map { Float(sin(($0 + 1) * .pi / 4)) } ?? 1
+            let edgeFrames = min(128, max(1, eventFrames / 2))
             for offset in 0..<eventFrames {
-                let frame = startFrame + offset
+                let frame = seamless ? (startFrame + offset) % frameCount : startFrame + offset
                 let time = Double(offset) / PreparedLoop.requiredSampleRate
-                let edgeFrames = min(128, max(1, eventFrames / 2))
-                let edge = min(1, min(Double(offset + 1) / Double(edgeFrames), Double(eventFrames - offset) / Double(edgeFrames)))
+                let edge = min(
+                    1,
+                    min(
+                        Double(offset + 1) / Double(edgeFrames),
+                        Double(eventFrames - offset) / Double(edgeFrames)
+                    )
+                )
                 let value = sample(source.kind, pitch: event.pitch, time: time) * amplitude * Float(edge)
                 output.left[frame] += value * leftGain
                 output.right[frame] += value * rightGain
