@@ -10,7 +10,7 @@ SoundComposition owns the path from declarative `Sound` through six modifier cat
 | Pitch and harmony | `notes(_:)`, `transpose(_:)`, `chord(_:)` |
 | Expression | `dynamic(_:)`, `velocity(_:)`, `gate(_:)`, `staccato()`, pattern `gain(_:cycle:)` |
 | Source settings | `tuning(_:)`, `envelope(_:)`, `sampleRegion(_:)`, `unison(_:)` |
-| Audio effects | `effect(_:)` with EQ, filter, compressor, distortion, delay, reverb, chorus |
+| Audio effects | `effect(_:)` with EQ, filter, compressor, saturation, distortion, delay, reverb, chorus |
 | Mix and routing | scalar `gain(_:)`, `pan(_:)`, `muted()`, `send(to:level:)`, `output(_:)` |
 
 Swing, quantization, scales, voicing, arpeggiation, accent, legato, techniques, pitch envelopes, general automation, and mini-notation operators beyond recursive brackets are deferred without placeholder APIs.
@@ -103,6 +103,7 @@ Tuning and envelope support both sources. Sample region supports only Sample; un
 case equalizer(frequencyHz: Double, gainDecibels: Double, q: Double)
 case filter(kind: FilterKind, cutoffHz: Double, resonance: Double)
 case compressor(thresholdDecibels: Double, ratio: Double)
+case saturation(drive: Double)
 case distortion(drive: Double)
 case delay(time: MusicalTime, feedback: Double, wet: Double)
 case reverb(roomSize: Double, wet: Double)
@@ -395,5 +396,11 @@ Compiler output adds optional `CompiledSource.voicePolicy` and `chokeGroup`; nei
 At each event onset the native scheduler first terminates every older active voice in the same choke group, then applies the incoming source's voice limit. Oldest chooses the smallest true onset and then compiled event order. Quietest compares the active voice's actual instantaneous stereo magnitude immediately before the incoming onset after oscillator/sample traversal, filter, amplitude envelope, velocity, event gain and pan but before source mixing; it does not substitute velocity, age or envelope level as a proxy. Equal finite magnitudes use oldest then compiled order. Simultaneous events are admitted in compiled event order, so a later same-frame choke or limit decision may terminate an earlier one deterministically. Release and seamless-wrap portions remain active until their true audible asset/envelope horizon; a terminated voice never resumes in the next cycle.
 
 Allocation changes PCM ownership only. The immutable compiled event list and its source anchor, pattern text and step index remain complete even when a voice is suppressed or terminated, so clients retain the exact declaration provenance. P03.4 does not reinterpret selection patterns, change musical extent, add per-note public handles or promise editor visualization of allocation decisions.
+
+## Ordered Mix and Effect Performance
+
+P04 preserves the existing distinction between event `gain`/`pan` values and ordered subtree render nodes. `GainPattern` and `PanPattern` stay per-event before source mixing. Existing `.gain(Double)`, `.pan(Double)` and `.muted()` remain graph operations at their declaration position. Chained effects remain dependency ordered and a multi-source subtree is mixed once before its enclosing effect. SwiftMusic validates immutable descriptors and graph topology but performs no DSP or live parameter mutation.
+
+P04.1 retains all existing `AudioEffect` cases and adds `case saturation(drive: Double)`. EQ frequency and Q are finite positive and gain dB finite; saturation and distortion drive are finite nonnegative; delay time is positive, feedback finite in `0..<1` and wet finite in `0...1`; reverb roomSize and wet are finite in `0...1`. Zero saturation/distortion drive and zero wet are neutral. Existing post-mix filter, compressor and chorus descriptors remain source compatible but are still explicit renderer-unsupported cases until their owning later sprint. Repeating EQ nodes is the public multi-band composition mechanism; P04 adds no separate EQ collection or mutable effect identity.
 
 Compiler tests own initializer/domain validation, inner-to-outer replacement, event-onset pattern selection, empty-subtree failure, capability errors, deterministic bank keys, voice policy and choke metadata, and unchanged legacy descriptors. Native tests own oscillator frequency, exact ADSR segment boundaries and release horizon, pitch/filter modulation, 12/24 dB filter response, resonance stability, real temporary-file decode, stereo preservation, selection/region/reverse/rate traversal, typed I/O failures and limits, deterministic stealing/choke output, nil-policy PCM compatibility, and nonzero hardware playback of a prepared result. All new tests use Swift Testing.

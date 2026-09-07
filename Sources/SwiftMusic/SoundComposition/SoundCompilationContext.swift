@@ -623,6 +623,8 @@ internal struct _SoundCompilationContext {
         case .compressor(let threshold, let ratio):
             guard threshold.isFinite else { throw invalid("Compressor threshold must be finite") }
             guard ratio.isFinite, ratio >= 1 else { throw invalid("Compressor ratio must be at least one") }
+        case .saturation(let drive):
+            try nonnegative(drive, "Saturation drive")
         case .distortion(let drive):
             try nonnegative(drive, "Distortion drive")
         case .delay(let time, let feedback, let wet):
