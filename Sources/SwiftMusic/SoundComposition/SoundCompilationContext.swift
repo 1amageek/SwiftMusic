@@ -1,5 +1,6 @@
 internal struct _SoundCompilationContext {
     let limits: SoundCompiler.Limits
+    var capturesLiveProgram = false
     var sources: [CompiledSource] = []
     var tracks: [CompiledTrack] = []
     var nodes: [CompiledRenderNode] = []
@@ -26,13 +27,16 @@ internal struct _SoundCompilationContext {
             return try source(.synthesizer(waveform), pitch: .middleC)
         case .group(let children):
             var result = _SoundFragment()
+            var programs: [_LiveEventProgram] = []
             for child in children {
                 let fragment = try visit(child, depth: childDepth(depth))
                 result.events.append(contentsOf: fragment.events)
                 result.roots.append(contentsOf: fragment.roots)
                 result.extent = max(result.extent, fragment.extent)
+                if let program = fragment.liveProgram { programs.append(program) }
             }
             result.roots = try mixedRoots(result.roots)
+            if capturesLiveProgram { result.liveProgram = try .group(programs) }
             return result
         case .track(let name, let content):
             guard tracks.count < limits.maximumTracks else {
@@ -47,7 +51,11 @@ internal struct _SoundCompilationContext {
         case .modified(let content, let modifier):
             let firstSource = sources.count
             var fragment = try visit(content, depth: childDepth(depth))
+            let childProgram = fragment.liveProgram
             try apply(modifier, to: &fragment, sourceRange: firstSource..<sources.count)
+            if let childProgram {
+                fragment.liveProgram = try childProgram.applying(modifier, finite: fragment)
+            }
             return fragment
         }
     }
@@ -62,13 +70,15 @@ internal struct _SoundCompilationContext {
             id: id, kind: kind, tuning: nil, envelope: nil, sampleRegion: nil, unison: nil
         ))
         let root = try appendNode(.source(sourceID: id))
-        return _SoundFragment(
+        var fragment = _SoundFragment(
             events: [CompiledSoundEvent(
                 sourceID: id, trackID: currentTrackID, start: .zero,
                 duration: .quarter, pitch: pitch, velocity: 80, gate: 1
             )],
             roots: [root], extent: .quarter
         )
+        if capturesLiveProgram { fragment.liveProgram = .finite(fragment) }
+        return fragment
     }
 
     private mutating func apply(
@@ -77,6 +87,8 @@ internal struct _SoundCompilationContext {
         sourceRange: Range<Int>
     ) throws {
         switch modifier {
+        case .oneShot:
+            break
         case .rhythm(let pattern, let cycle, let anchor):
             guard cycle > .zero else { throw invalid("Rhythm cycle must be positive") }
             do {
@@ -308,6 +320,42 @@ internal struct _SoundCompilationContext {
                 fragment.roots = [try appendNode(.output(input: root, bus: bus))]
             }
         }
+    }
+
+    internal static func applyEvents(
+        _ modifier: _SoundModifier,
+        events: [CompiledSoundEvent],
+        extent: MusicalTime,
+        limits: SoundCompiler.Limits
+    ) throws -> _SoundFragment {
+        var context = Self(limits: limits)
+        context.eventCount = events.count
+        var fragment = _SoundFragment(events: events, extent: extent)
+        try context.apply(modifier, to: &fragment, sourceRange: 0..<0)
+        return fragment
+    }
+
+    func finishLive(_ fragment: _SoundFragment, policy: LiveLoopPolicy) throws -> CompiledSound {
+        guard let program = fragment.liveProgram else {
+            throw SoundCompilationError.invalidParameter("Live program was not captured")
+        }
+        let window = try program.window(policy: policy)
+        var rendered = fragment
+        rendered.events = try program.emit(through: window, limits: limits)
+        rendered.extent = window
+        let beats = Double(window.numerator) / Double(window.denominator)
+        for (index, event) in rendered.events.enumerated() {
+            let duration = Double(event.duration.numerator) / Double(event.duration.denominator) * event.gate
+            guard duration.isFinite, duration > 0, duration <= beats else {
+                throw SoundCompilationError.liveEventDurationExceeded(index: index)
+            }
+            guard event.start < window else {
+                throw SoundCompilationError.invalidParameter("Live event starts outside its window")
+            }
+        }
+        var result = finish(rendered)
+        result.playbackMode = .seamlessLoop
+        return result
     }
 
     private func transposed(_ pitch: Pitch?, by semitones: Int) throws -> Pitch {

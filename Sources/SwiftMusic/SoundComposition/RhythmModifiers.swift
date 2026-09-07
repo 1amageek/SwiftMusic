@@ -20,6 +20,10 @@ public extension Sound {
         ModifiedSound(base: self, modifier: .repeated(count))
     }
 
+    func oneShot() -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .oneShot)
+    }
+
     func fast(_ factor: UInt64) -> ModifiedSound {
         ModifiedSound(base: self, modifier: .fast(factor))
     }

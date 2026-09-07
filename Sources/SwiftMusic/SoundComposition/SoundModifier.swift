@@ -1,4 +1,5 @@
 internal enum _SoundModifier: Sendable {
+    case oneShot
     case rhythm(RhythmPattern, MusicalTime, SoundSourceAnchor)
     case offset(MusicalTime)
     case repeated(Int)

@@ -47,21 +47,57 @@ public struct SoundCompiler: Sendable {
         try compile(music.body)
     }
 
+    public func compile<M: Music>(
+        _ music: M,
+        liveLoop policy: LiveLoopPolicy
+    ) throws -> CompiledSound {
+        try compile(music.body, liveLoop: policy)
+    }
+
     public func compile<S: Sound>(_ sound: S) throws -> CompiledSound {
-        var context = _SoundCompilationContext(limits: limits)
+        try compileSound(sound, liveLoop: nil)
+    }
+
+    public func compile<S: Sound>(
+        _ sound: S,
+        liveLoop policy: LiveLoopPolicy
+    ) throws -> CompiledSound {
+        try compileSound(sound, liveLoop: policy)
+    }
+
+    private func compileSound<S: Sound>(
+        _ sound: S,
+        liveLoop policy: LiveLoopPolicy?
+    ) throws -> CompiledSound {
+        var context = _SoundCompilationContext(
+            limits: limits,
+            capturesLiveProgram: policy != nil
+        )
         do {
             let fragment = try context.visit(sound, depth: 0)
+            if let policy {
+                return try context.finishLive(fragment, policy: policy)
+            }
             return context.finish(fragment)
-        } catch let error as RhythmPatternError {
-            throw SoundCompilationError.invalidRhythm(error)
-        } catch let error as NotePatternError {
-            throw SoundCompilationError.invalidNotes(error)
-        } catch let error as GainPatternError {
-            throw SoundCompilationError.invalidGainPattern(error)
-        } catch let error as PanPatternError {
-            throw SoundCompilationError.invalidPanPattern(error)
-        } catch is MusicalTimeError {
-            throw SoundCompilationError.timeOverflow
+        } catch {
+            throw mappedCompilationError(error)
+        }
+    }
+
+    private func mappedCompilationError(_ error: Error) -> Error {
+        switch error {
+        case let error as RhythmPatternError:
+            return SoundCompilationError.invalidRhythm(error)
+        case let error as NotePatternError:
+            return SoundCompilationError.invalidNotes(error)
+        case let error as GainPatternError:
+            return SoundCompilationError.invalidGainPattern(error)
+        case let error as PanPatternError:
+            return SoundCompilationError.invalidPanPattern(error)
+        case is MusicalTimeError:
+            return SoundCompilationError.timeOverflow
+        default:
+            return error
         }
     }
 }

@@ -6,6 +6,7 @@ public struct CompiledSound: Sendable, Equatable {
     public internal(set) var renderNodes: [CompiledRenderNode]
     public internal(set) var rootNodeIDs: [Int]
     public internal(set) var extent: MusicalTime
+    public internal(set) var playbackMode: CompiledPlaybackMode
 
     internal init(
         events: [CompiledSoundEvent],
@@ -13,7 +14,8 @@ public struct CompiledSound: Sendable, Equatable {
         sources: [CompiledSource],
         renderNodes: [CompiledRenderNode],
         rootNodeIDs: [Int],
-        extent: MusicalTime
+        extent: MusicalTime,
+        playbackMode: CompiledPlaybackMode = .finite
     ) {
         self.events = events
         self.tracks = tracks
@@ -21,5 +23,6 @@ public struct CompiledSound: Sendable, Equatable {
         self.renderNodes = renderNodes
         self.rootNodeIDs = rootNodeIDs
         self.extent = extent
+        self.playbackMode = playbackMode
     }
 }

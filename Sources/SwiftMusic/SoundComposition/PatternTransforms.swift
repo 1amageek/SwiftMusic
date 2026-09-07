@@ -140,7 +140,7 @@ internal struct _PatternTransform: Sendable, Equatable {
     }
 }
 
-private func _patternTimeRemainder(_ value: MusicalTime, divisor: MusicalTime) throws -> MusicalTime {
+internal func _patternTimeRemainder(_ value: MusicalTime, divisor: MusicalTime) throws -> MusicalTime {
     guard divisor > .zero else { throw MusicalTimeError.divisionByZero }
     if value < divisor { return value }
     let common = MusicalTime.greatestCommonDivisor(value.denominator, divisor.denominator)

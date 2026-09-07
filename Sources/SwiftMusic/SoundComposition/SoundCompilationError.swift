@@ -14,4 +14,6 @@ public enum SoundCompilationError: Error, Equatable, Sendable {
     case maximumTracksExceeded(limit: Int)
     case maximumSourcesExceeded(limit: Int)
     case maximumRenderNodesExceeded(limit: Int)
+    case liveWindowExceeded(maximum: MusicalTime)
+    case liveEventDurationExceeded(index: Int)
 }
