@@ -5,6 +5,7 @@ public struct LoopEvent: Codable, Sendable, Equatable {
     public let durationBeats: Double
     public let midiNote: Int?
     public let velocity: Int
+    public let patternStepIndex: Int?
 
     public init(
         sourceID: Int,
@@ -12,7 +13,8 @@ public struct LoopEvent: Codable, Sendable, Equatable {
         startBeat: Double,
         durationBeats: Double,
         midiNote: Int?,
-        velocity: Int
+        velocity: Int,
+        patternStepIndex: Int? = nil
     ) {
         self.sourceID = sourceID
         self.label = label
@@ -20,5 +22,6 @@ public struct LoopEvent: Codable, Sendable, Equatable {
         self.durationBeats = durationBeats
         self.midiNote = midiNote
         self.velocity = velocity
+        self.patternStepIndex = patternStepIndex
     }
 }

@@ -25,6 +25,12 @@ final class LoopRendererTests: XCTestCase {
         XCTAssertEqual(loop.events.map(\.label), ["lead", "lead", "lead"])
         XCTAssertEqual(loop.events.map(\.midiNote), [60, 64, 67])
         XCTAssertEqual(loop.events.map(\.durationBeats), [4.0 / 3.0, 4.0 / 3.0, 4.0 / 3.0])
+        XCTAssertEqual(loop.rows.count, 1)
+        XCTAssertEqual(loop.rows[0].sourceID, 0)
+        XCTAssertEqual(loop.rows[0].label, "lead")
+        XCTAssertEqual(loop.rows[0].patternText, "C4 E4 G4")
+        XCTAssertFalse(loop.rows[0].peaks.allSatisfy { $0 == 0 })
+        XCTAssertLessThanOrEqual(loop.rows[0].peaks.count, PreparedLoop.maximumPeakBins)
     }
 
     func testGainPanAndMuteChangeAudiblePCM() throws {
@@ -98,5 +104,55 @@ final class LoopRendererTests: XCTestCase {
         let loop = try renderer.render(sound, bpm: 120, beatsPerBar: 4)
         XCTAssertEqual(loop.events.count, 1)
         XCTAssertEqual(loop.events[0].durationBeats, 0.5, accuracy: 0.000_001)
+    }
+
+    func testLoopEventsCarryPatternStepIndices() throws {
+        let rhythm = try renderer.render(
+            SoundCompiler().compile(Synthesizer(.sine).rhythm("x ~ x")),
+            bpm: 120,
+            beatsPerBar: 4
+        )
+        XCTAssertEqual(rhythm.events.map(\.patternStepIndex), [0, 2])
+
+        let notes = try renderer.render(
+            SoundCompiler().compile(Synthesizer(.sine).notes("C4 ~ G4")),
+            bpm: 120,
+            beatsPerBar: 4
+        )
+        XCTAssertEqual(notes.events.map(\.patternStepIndex), [0, 2])
+    }
+
+    func testRowsRetainSilentSourcesAndPreMixPeaks() throws {
+        struct Session: Sound {
+            var body: some Sound {
+                Track("rest") {
+                    Sample("kick").rhythm(
+                        "~ ~",
+                        fileID: "Session.swift",
+                        line: 12,
+                        column: 17
+                    )
+                }
+                Track("muted") {
+                    Synthesizer(.sine)
+                        .rhythm("x ~", fileID: "Session.swift", line: 20, column: 17)
+                        .muted()
+                }
+            }
+        }
+
+        let sound = try SoundCompiler().compile(Session())
+        let loop = try renderer.render(sound, bpm: 120, beatsPerBar: 4)
+
+        XCTAssertEqual(loop.rows.map(\.label), ["kick", "muted"])
+        XCTAssertEqual(loop.rows.map(\.sourceID), [0, 1])
+        XCTAssertEqual(
+            loop.rows[0].anchor,
+            SoundSourceAnchor(fileID: "Session.swift", line: 12, column: 17)
+        )
+        XCTAssertEqual(loop.rows[0].patternText, "~ ~")
+        XCTAssertTrue(loop.rows[0].peaks.allSatisfy { $0 == 0 })
+        XCTAssertFalse(loop.rows[1].peaks.allSatisfy { $0 == 0 })
+        XCTAssertTrue(loop.samples.allSatisfy { $0 == 0 })
     }
 }

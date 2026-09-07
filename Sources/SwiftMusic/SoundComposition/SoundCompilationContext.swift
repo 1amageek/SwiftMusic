@@ -77,9 +77,10 @@ internal struct _SoundCompilationContext {
         sourceRange: Range<Int>
     ) throws {
         switch modifier {
-        case .rhythm(let pattern, let cycle):
+        case .rhythm(let pattern, let cycle, let anchor):
             guard cycle > .zero else { throw invalid("Rhythm cycle must be positive") }
             let steps = try pattern.steps
+            applyPatternProvenance(anchor, text: pattern.rawValue, to: sourceRange)
             let step = try cycle.divided(by: UInt64(steps.count))
             let hitCount = steps.reduce(0) { $0 + ($1 ? 1 : 0) }
             let count = try expandedCount(fragment.events.count, multiplier: hitCount)
@@ -92,14 +93,16 @@ internal struct _SoundCompilationContext {
                     var event = original
                     event.start = try original.start.adding(start)
                     event.duration = step
+                    event.patternStepIndex = index
                     events.append(event)
                 }
             }
             fragment.events = events
             fragment.extent = try extent(events, minimum: cycle)
-        case .notePattern(let pattern, let cycle):
+        case .notePattern(let pattern, let cycle, let anchor):
             guard cycle > .zero else { throw invalid("Note cycle must be positive") }
             let steps = try pattern.steps
+            applyPatternProvenance(anchor, text: pattern.rawValue, to: sourceRange)
             let step = try cycle.divided(by: UInt64(steps.count))
             let hitCount = steps.reduce(0) { $0 + ($1 == nil ? 0 : 1) }
             let count = try expandedCount(fragment.events.count, multiplier: hitCount)
@@ -114,6 +117,7 @@ internal struct _SoundCompilationContext {
                     event.start = try original.start.adding(start)
                     event.duration = step
                     event.pitch = pitch
+                    event.patternStepIndex = index
                     events.append(event)
                 }
             }
@@ -157,10 +161,12 @@ internal struct _SoundCompilationContext {
                 fragment.events[index].duration = try fragment.events[index].duration.multiplied(by: factor)
             }
             fragment.extent = try fragment.extent.multiplied(by: factor)
-        case .notes(let pitches):
+        case .notes(let pitches, let anchor):
             guard !pitches.isEmpty else { throw invalid("Notes must not be empty") }
+            applyPatternProvenance(anchor, text: nil, to: sourceRange)
             for index in fragment.events.indices {
                 fragment.events[index].pitch = pitches[index % pitches.count]
+                fragment.events[index].patternStepIndex = nil
             }
         case .transpose(let semitones):
             for index in fragment.events.indices {
@@ -249,6 +255,17 @@ internal struct _SoundCompilationContext {
         let (value, overflow) = Int(pitch.midiNote).addingReportingOverflow(semitones)
         guard !overflow, (0...127).contains(value) else { throw SoundCompilationError.pitchOutOfRange }
         return try Pitch(midiNote: UInt8(value))
+    }
+
+    private mutating func applyPatternProvenance(
+        _ anchor: SoundSourceAnchor,
+        text: String?,
+        to sourceRange: Range<Int>
+    ) {
+        for index in sourceRange {
+            sources[index].patternAnchor = anchor
+            sources[index].patternText = text
+        }
     }
 
     private func extent(_ events: [CompiledSoundEvent], minimum: MusicalTime) throws -> MusicalTime {

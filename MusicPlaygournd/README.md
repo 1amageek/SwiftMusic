@@ -1,6 +1,6 @@
 # MusicPlaygournd
 
-A native macOS editor for making music with SwiftMusic. Write a `Session: Music`, press Play, and keep editing while the last valid loop plays. Swift is compiled automatically after a short typing pause. The right-hand rhythm view displays the same prepared loop that supplies audio.
+A native macOS editor for making music with SwiftMusic. Write a `Session: Music`, press Play, and keep editing while the last valid loop plays. Swift is compiled automatically after a short typing pause. The editor highlights playing pattern literals and aligns source waveforms to their Swift lines. A stereo waveform and spectrum monitor follow the adopted audio transport.
 
 ```text
 Swift editor -> prepare -> next bar -> audio + rhythm
@@ -9,7 +9,7 @@ Swift editor -> prepare -> next bar -> audio + rhythm
 
 ## Run
 
-Requires macOS 15+, Swift 6.4 and Xcode command-line tools. The initial dependency fetch requires network access. This app evaluates trusted local Swift code with your user account's permissions; it is not a code sandbox.
+Requires macOS 15+, Swift 6.4 and Xcode command-line tools. This app evaluates trusted local Swift code with your user account's permissions; it is not a code sandbox.
 
 ```sh
 ./Scripts/build-app.sh
@@ -23,7 +23,7 @@ The app bundle includes its evaluation package sources. It retains the installed
 - Play/Pause: Command–Return. Apply immediately: Command–R. Otherwise edits apply automatically after 650 ms without typing.
 - Change BPM (40–240) and quarter-note meter (2/4–7/4) independently of source. Prepared changes switch at a bar boundary.
 - Open/Save UTF-8 Swift sessions: Command–O / Command–S. Keep the entry type named `Session` and conform it to `Music`.
-- Click the diagnostic heading to select a reported Swift source line. Click a rhythm label to find a matching literal `Track` declaration.
+- Click the diagnostic heading to select a reported Swift source line. Direct pattern literals glow while their compiled source events play. The attached timeline scrolls with the code; scroll over either pane.
 - Use the lower-right layout button to put the rhythm view below the code.
 
 ## Playback support
@@ -36,10 +36,10 @@ The app bundle includes its evaluation package sources. It retains the installed
 | Gain, pan, mute | Applied in render-plan order |
 | Other source settings, effects, buses | Explicit unsupported-feature diagnostic; current audio survives |
 
-This first version prepares finite PCM loops offline. Loops are padded to whole bars, bounded to 32 beats and 16 seconds. Source, event and graph limits bound preparation work. Synth voices use short edge fades; sustained effect tails and arbitrary sample files are not implemented. The callback is synchronized and bounded, without a hard real-time latency guarantee. Code-location navigation is not a general Swift source map.
+This first version prepares finite PCM loops offline. Loops are padded to whole bars, bounded to 32 beats and 16 seconds. Source, event and graph limits bound preparation work. Synth voices use short edge fades; sustained effect tails and arbitrary sample files are not implemented. The callback is synchronized and bounded, without a hard real-time latency guarantee. Line anchors come from the Swift compiler. Deleted anchors become unmapped until a new successful evaluation. Escaped, multiline, ambiguous or nonliteral pattern expressions are not assigned guessed text highlights. Only the individual token identified by the currently playing compiled event glows; repeated and shifted events preserve that token association. Source waves are pre-mix (before gain/pan/mute); the bottom stereo waveform and spectrum use the prepared master PCM at the transport cursor, not microphone or hardware loopback.
 
-See [DESIGN.md](DESIGN.md) for ownership and failure contracts. SwiftMusic remains pinned to its published 0.1.0 release.
+See [DESIGN.md](DESIGN.md) for ownership and failure contracts. This development app uses the adjacent SwiftMusic workspace for source provenance, which is not yet in the published 0.1.0 release. The app bundles both source packages so it can evaluate sessions when moved. No new library release is created by this change.
 
 ## Verification
 
-On macOS 27.0 arm64 with Swift 6.4 snapshot 2026-08-14, eight tests passed, including native AVAudioEngine playback while real Swift evaluations fail, time out, are cancelled, exceed diagnostic limits, and recover. PCM callback tests verify stale-update rejection and bar-boundary adoption. This does not claim tested macOS 15 runtime behavior or hard real-time scheduling.
+On macOS 27.0 arm64 with Swift 6.4 snapshot 2026-08-14, 34 SwiftMusic tests and 14 editor-runtime tests passed. These cover compiler token provenance, transformed event timing, PCM peak data, literal ranges, Unicode edit anchors, FFT frequency/amplitude/stereo behavior and native AVAudioEngine playback while real Swift evaluations fail, time out, are cancelled, exceed diagnostic limits and recover. The initial combined app run exceeded its 120-second outer budget; the focused runtime integration passed in 49 seconds. Release builds pass with development-toolchain object verification warnings. This does not claim tested macOS 15 runtime behavior or hard real-time scheduling.

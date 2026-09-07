@@ -22,6 +22,10 @@ final class SessionModel {
     var hasUnsavedChanges = false
     var bottomLayout = false
     var audioError = ""
+    var rowLines: [Int: Int] = [:]
+    var spectrum = [Float](repeating: -90, count: SpectrumAnalyzer.bandCount)
+    private var lineMaps: [UInt64: SourceLineMap] = [:]
+    private var analyzer: SpectrumAnalyzer?
     private var engine: AudioLoopEngine?
     private let evaluator: SourceEvaluator
     private var evaluationTask: Task<Void, Never>?
@@ -29,21 +33,25 @@ final class SessionModel {
 
     init() {
         let bundle = Bundle.main
-        let package = bundle.resourceURL?.appending(path: "MusicPlaygournd")
+        let package = bundle.resourceURL?.appending(path: "SwiftMusic/MusicPlaygournd")
         let sourcePackage = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         let packageURL = package.flatMap { FileManager.default.fileExists(atPath: $0.appending(path: "Package.swift").path) ? $0 : nil } ?? sourcePackage
+        // ponytail: per-process compiler cache; persist a versioned cache if cold-start cost dominates.
         let cache = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appending(path: "MusicPlaygournd/Evaluation-\(ProcessInfo.processInfo.processIdentifier)")
         let swift = bundle.object(forInfoDictionaryKey: "SwiftExecutable") as? String ?? "/usr/bin/swift"
         evaluator = SourceEvaluator(packageURL: packageURL, workspace: cache, swiftExecutable: swift)
+        do { analyzer = try SpectrumAnalyzer() }
+        catch { diagnostic = "Spectrum analyzer could not initialize: \(error)" }
         do { engine = try AudioLoopEngine() }
         catch { audioError = error.localizedDescription; diagnostic = audioError }
     }
 
     func sourceChanged() {
         hasUnsavedChanges = true
+        updateRowLines()
         scheduleEvaluation()
     }
 
@@ -52,6 +60,7 @@ final class SessionModel {
         guard revision < UInt64.max else { diagnostic = "Revision limit reached. Reopen the app."; return }
         revision += 1
         let requested = revision
+        lineMaps = lineMaps.filter { $0.key == currentRevision }
         engine?.beginUpdate(revision: requested)
         let text = source
         let tempo = bpm
@@ -66,6 +75,7 @@ final class SessionModel {
                 try Task.checkCancellation()
                 guard let self, requested == self.revision else { return }
                 guard let engine = self.engine else { throw EvaluationError.invalidResult(self.audioError) }
+                self.lineMaps[requested] = SourceLineMap(source: text, lines: candidate.rows.compactMap { $0.anchor?.line })
                 try engine.submit(loop: candidate, revision: requested)
                 if self.wantsPlayback { try engine.play() }
                 self.isPreparing = false
@@ -106,9 +116,38 @@ final class SessionModel {
         if currentRevision != snapshot.revision {
             currentRevision = snapshot.revision
             loop = snapshot.loop
+            lineMaps = lineMaps.filter { $0.key == currentRevision || $0.key == revision }
+            updateRowLines()
+        }
+        if let loop, let analyzer {
+            spectrum = analyzer.analyze(loop: loop, beat: beatPosition, isPlaying: isPlaying)
         }
         if !isPreparing, diagnostic.isEmpty, snapshot.revision == revision {
             status = isPlaying ? "Live · edit freely" : "Paused"
+        }
+    }
+
+    var activeTokens: [Int: Set<Int>] {
+        guard isPlaying, let loop else { return [:] }
+        var tokens: [Int: Set<Int>] = [:]
+        for event in loop.events where beatPosition >= event.startBeat && beatPosition < event.startBeat + event.durationBeats {
+            if let index = event.patternStepIndex { tokens[event.sourceID, default: []].insert(index) }
+        }
+        return tokens
+    }
+
+    func beforeEdit(range: NSRange, replacement: String) {
+        for key in Array(lineMaps.keys) { lineMaps[key]?.applyEdit(range: range, replacement: replacement) }
+    }
+
+    private func updateRowLines() {
+        rowLines = [:]
+        guard let loop, let currentRevision, let map = lineMaps[currentRevision] else { return }
+        for row in loop.rows {
+            guard let anchor = row.anchor,
+                  anchor.fileID == "Session.swift" || anchor.fileID.hasSuffix("/Session.swift"),
+                  let line = map.currentLine(for: anchor.line, in: source) else { continue }
+            rowLines[row.sourceID] = line
         }
     }
 
@@ -134,6 +173,8 @@ final class SessionModel {
         do {
             let text = try String(contentsOf: url, encoding: .utf8)
             guard text.utf8.count <= 65_536 else { throw EvaluationError.invalidSource("Source exceeds 64 KiB.") }
+            lineMaps = [:]
+            rowLines = [:]
             source = text
             fileURL = url
             hasUnsavedChanges = false

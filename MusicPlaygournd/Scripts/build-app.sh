@@ -4,19 +4,25 @@ package_root="$(cd "$(dirname "$0")/.." && pwd)"
 swift_executable="$(xcrun --find swift)"
 "$swift_executable" build --package-path "$package_root" -c release
 binary_directory="$("$swift_executable" build --package-path "$package_root" -c release --show-bin-path)"
-app_path="$package_root/.build/MusicPlaygournd.app"
-mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources/MusicPlaygournd"
+app_path="${1:-$package_root/.build/MusicPlaygournd.app}"
+bundle_id="${2:-com.1amageek.MusicPlaygournd}"
+resources="$app_path/Contents/Resources/SwiftMusic"
+mkdir -p "$resources"
+cp "$package_root/../Package.swift" "$resources/Package.swift"
+cp -R "$package_root/../Sources" "$resources/"
+cp -R "$package_root/../Tests" "$resources/"
+mkdir -p "$app_path/Contents/MacOS" "$resources/MusicPlaygournd"
 cp "$binary_directory/MusicPlaygournd" "$app_path/Contents/MacOS/MusicPlaygournd"
-cp "$package_root/Package.swift" "$app_path/Contents/Resources/MusicPlaygournd/Package.swift"
-cp -R "$package_root/Sources" "$app_path/Contents/Resources/MusicPlaygournd/"
-cp -R "$package_root/Tests" "$app_path/Contents/Resources/MusicPlaygournd/"
-/usr/bin/python3 - "$app_path" "$swift_executable" <<'PY'
+cp "$package_root/Package.swift" "$resources/MusicPlaygournd/Package.swift"
+cp -R "$package_root/Sources" "$resources/MusicPlaygournd/"
+cp -R "$package_root/Tests" "$resources/MusicPlaygournd/"
+/usr/bin/python3 - "$app_path" "$swift_executable" "$bundle_id" <<'PY'
 import plistlib, sys
 from pathlib import Path
 app = Path(sys.argv[1])
 info = {
     'CFBundleExecutable': 'MusicPlaygournd',
-    'CFBundleIdentifier': 'com.1amageek.MusicPlaygournd',
+    'CFBundleIdentifier': sys.argv[3],
     'CFBundleName': 'MusicPlaygournd',
     'CFBundleDisplayName': 'MusicPlaygournd',
     'CFBundlePackageType': 'APPL',

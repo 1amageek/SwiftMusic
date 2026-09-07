@@ -81,15 +81,17 @@ Both pattern types provide `init(validating:)` to unambiguously request eager va
 
 `notes(_ pattern: NotePattern, cycle: MusicalTime = .whole)` generates a timed sequence. Each pitched step clones every child event, adds the step onset to its start, sets duration to cycle/stepCount and replaces pitch. Rests clone no events; extent is at least the full cycle. Event limits are checked before expansion, and invalid patterns fail even on an empty subtree. Nested pattern modifiers expand inner-to-outer by these same rules. This overload differs intentionally from `[Pitch]` assignment below: a standalone synthesizer with four note tokens emits all four notes.
 
+`rhythm` and note-pattern overloads add defaulted `fileID: String = #fileID`, `line: UInt = #line`, and `column: UInt = #column` parameters without changing existing call syntax. They store a validated `SoundSourceAnchor` on every source in their subtree. Each emitted event also stores the zero-based lexical token index from the pattern expansion that owns the source anchor; rests emit no event. Nested pattern modifiers apply inner-to-outer, so the outermost pattern anchor and emitted step index win; other transforms preserve both. `CompiledSource.patternAnchor` remains present when a pattern emits only rests, and events resolve their row through `sourceID` rather than duplicating source provenance.
+
 Pattern failures are exposed as `SoundCompilationError.invalidRhythm(RhythmPatternError)` and `.invalidNotes(NotePatternError)`. An unexpected thrown preparation error must remain an explicit failure (`unexpectedFailure(String)`), never a default sound.
 
 `notes(_:)` requires a nonempty `[Pitch]` and assigns pitches cyclically in current event order. `transpose(_:)` requires pitched events and checked MIDI 0...127 results. `chord(_:)` requires pitched events and expands fixed intervals in order: `.major` = 0,4,7; `.minor` = 0,3,7; `.power` = 0,7; `.dominantSeventh` = 0,4,7,10. Expanded notes retain source, track, time, and expression.
 
-`CompiledSoundEvent` exposes source ID, optional track ID, start, rhythmic duration, optional pitch, MIDI velocity, and gate ratio. Defaults are velocity 80 and gate 1. `Dynamic` maps `pp`, `p`, `mp`, `mf`, `f`, `ff` to documented fixed velocities. `dynamic` and `velocity` replace velocity; velocity requires 1...127. `gate` replaces gate and requires finite positive input. `staccato` multiplies current gate by 0.5. Expression never changes beat duration or extent.
+`CompiledSoundEvent` exposes source ID, optional track ID, start, rhythmic duration, optional pitch, MIDI velocity, gate ratio, and an optional zero-based `patternStepIndex`. Rhythm and note-pattern expansion records the lexical token index for each emitted event; repeated, tempo, pitch, and other cloning transforms preserve it, while array-based `notes` clears it because no pattern text exists. Defaults are velocity 80 and gate 1. `Dynamic` maps `pp`, `p`, `mp`, `mf`, `f`, `ff` to documented fixed velocities. `dynamic` and `velocity` replace velocity; velocity requires 1...127. `gate` replaces gate and requires finite positive input. `staccato` multiplies current gate by 0.5. Expression never changes beat duration or extent.
 
 ### Source settings
 
-`Tuning(referencePitch:frequencyHz:)`, `Envelope(attackSeconds:decaySeconds:sustainLevel:releaseSeconds:)`, `SampleRegion(startFraction:endFraction:)`, and `Unison(voices:detuneCents:)` have throwing initializers. Frequencies are finite positive; time and detune are finite nonnegative; normalized fields are 0...1; region start is less than end; unison is 1...16 voices.
+`Tuning(referencePitch:frequencyHz:)`, `Envelope(attackSeconds:decaySeconds:sustainLevel:releaseSeconds:)`, `SampleRegion(startFraction:endFraction:)`, and `Unison(voices:detuneCents:)` have throwing initializers. Frequencies are finite positive; time and detune are finite nonnegative; normalized fields are 0...1; region start is less than end; unison is 1...16 voices. `CompiledSource` also exposes its optional pattern anchor; source ID remains the join key for events and client rows.
 
 Tuning and envelope support both sources. Sample region supports only Sample; unison only Synthesizer. An incompatible source anywhere in the modifier subtree is a typed compilation failure. Repeated settings apply inner-to-outer, so outer replaces the same field. `CompiledSource` exposes snapshot ID, source kind, and explicit optional settings.
 
@@ -147,6 +149,7 @@ Declaration construction and client getter execution before a value returns are 
 |---|---|
 | Migration/composition | External Music and Sound bodies, branches, loops, empties, parallel siblings work; old Score symbols are absent |
 | Rhythm | Parser failures, hits/rests, trailing extent, offset, repeat, fast, slow, nested order, overflow, event bound |
+| Source provenance | Default call-site file/line/column, outermost-pattern and emitted-step precedence, rest indices, transform preservation, all-rest anchors, unchanged unannotated calls |
 | Pitch/harmony | Notes cycle, transpose MIDI bounds, all chord intervals/order, unpitched errors |
 | Expression | Dynamic, velocity/gate validation, stacked staccato fields with unchanged extent |
 | Sources | Both descriptors, common settings, region/unison capability success and failure |

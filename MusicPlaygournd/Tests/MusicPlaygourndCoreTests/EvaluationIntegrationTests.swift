@@ -19,6 +19,10 @@ final class EvaluationIntegrationTests: XCTestCase {
         """
         let first = try await evaluator.evaluate(source: source, bpm: 120, beatsPerBar: 4)
         XCTAssertEqual(first.events.count, 6)
+        XCTAssertEqual(first.rows.map { $0.anchor?.line }, [3, 4])
+        XCTAssertEqual(first.rows.map { $0.patternText }, ["x ~ x ~", "C2 Eb2 G2 Bb2"])
+        XCTAssertTrue(first.rows.allSatisfy { $0.anchor?.fileID.hasSuffix("Session.swift") == true })
+        XCTAssertTrue(first.rows.allSatisfy { $0.peaks.contains { $0 > 0 } })
         XCTAssertEqual(first.events.compactMap(\.midiNote), [36, 39, 43, 46])
         XCTAssertTrue(first.samples.contains { abs($0) > 0.01 })
         let engine = try AudioLoopEngine()

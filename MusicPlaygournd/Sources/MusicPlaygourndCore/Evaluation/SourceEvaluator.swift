@@ -38,7 +38,7 @@ public actor SourceEvaluator {
             name: "MusicPlaygourndEvaluation",
             platforms: [.macOS(.v15)],
             dependencies: [
-                .package(url: "https://github.com/1amageek/SwiftMusic.git", exact: "0.1.0"),
+                .package(path: \(Self.swiftLiteral(packageURL.deletingLastPathComponent().path))),
                 .package(path: \(Self.swiftLiteral(packageURL.path)))
             ],
             targets: [.executableTarget(name: "Evaluation", dependencies: [
@@ -167,7 +167,7 @@ public actor SourceEvaluator {
     marker = b"\\nOutput exceeded the 1 MiB diagnostic limit.\\n"
     accepted = 0
     while True:
-        chunk = child.stdout.read(65536)
+        chunk = child.stdout.read1(65536)
         if not chunk:
             break
         room = limit - len(marker) - accepted

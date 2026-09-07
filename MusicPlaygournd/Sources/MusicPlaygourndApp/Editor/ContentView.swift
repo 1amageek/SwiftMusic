@@ -2,6 +2,8 @@ import SwiftUI
 
 struct ContentView: View {
     @Bindable var model: SessionModel
+    @State private var lineRects: [Int: CGRect] = [:]
+    @State private var timelineScroll: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,7 +24,7 @@ struct ContentView: View {
                 }
                 Picker("Meter", selection: $model.beatsPerBar) {
                     ForEach(2...7, id: \.self) { Text("\($0)/4").tag($0) }
-                }.frame(width: 88)
+                }.labelsHidden().frame(width: 64).help("Time signature")
                     .onChange(of: model.beatsPerBar) { _, _ in model.scheduleEvaluation() }
                 Button { model.togglePlayback() } label: {
                     Label(model.isPlaying ? "Pause" : "Play", systemImage: model.isPlaying ? "pause.fill" : "play.fill")
@@ -35,8 +37,14 @@ struct ContentView: View {
             if model.bottomLayout {
                 VSplitView { editor; rhythm }
             } else {
-                HSplitView { editor; rhythm }
+                HSplitView {
+                    editor
+                    TimelineView(loop: model.loop, rowLines: model.rowLines, lineRects: lineRects, beatPosition: model.beatPosition, isPlaying: model.isPlaying, onScroll: { timelineScroll += $0 })
+                        .frame(minWidth: 340)
+                }
             }
+            Divider()
+            SpectrumView(bands: model.spectrum, loop: model.loop, beatPosition: model.beatPosition, isPlaying: model.isPlaying)
             Divider()
             HStack(spacing: 10) {
                 if model.isPreparing { ProgressView().controlSize(.mini) }
@@ -44,7 +52,7 @@ struct ContentView: View {
                 Text(model.status).font(.system(size: 11))
                 Spacer()
                 if let revision = model.currentRevision {
-                    Text("PLAYING r\(revision) / EDIT r\(model.revision)").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                    Text("LOOP r\(revision) / EDIT r\(model.revision)").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
                 }
                 Button { model.bottomLayout.toggle() } label: {
                     Image(systemName: model.bottomLayout ? "rectangle.split.2x1" : "rectangle.split.1x2")
@@ -71,9 +79,14 @@ struct ContentView: View {
                 if model.hasUnsavedChanges { Circle().fill(.secondary).frame(width: 5, height: 5) }
                 Spacer()
                 Text("SWIFT MUSIC").font(.system(size: 9, weight: .medium, design: .monospaced)).foregroundStyle(.secondary)
-            }.font(.system(size: 12)).padding(.horizontal, 20).padding(.vertical, 12)
+            }.font(.system(size: 12)).padding(.horizontal, 21).frame(height: 40)
             Divider()
-            CodeEditor(text: $model.source, selectionLine: model.selectionLine, selectionToken: model.selectionToken, onEdit: model.sourceChanged)
+            CodeEditor(text: $model.source, selectionLine: model.selectionLine, selectionToken: model.selectionToken,
+                rhythmLines: Array(Set(model.rowLines.values)).sorted(), rowLines: model.rowLines,
+                patternTexts: Dictionary(uniqueKeysWithValues: (model.loop?.rows ?? []).compactMap { row in row.patternText.map { (row.sourceID, $0) } }),
+                activeTokens: model.activeTokens,
+                scrollDelta: timelineScroll, onLayout: { lineRects = $0 },
+                beforeEdit: model.beforeEdit, onEdit: model.sourceChanged)
             if !model.diagnostic.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     Button { model.revealDiagnostic() } label: {

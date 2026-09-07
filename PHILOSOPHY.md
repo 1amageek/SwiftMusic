@@ -121,4 +121,4 @@ MusicPlaygourndでは、コードとリズムの可視化を一体の制作体�
 
 文字列リテラルと更新候補の検証・採用状態はSwiftMusicが担う。`LiveMusicUpdate.prepare`が基盤の`SoundCompiler`を利用し、`LiveMusicState`が採用済み内容を更新失敗から保護する。これは音声の準備・再生ではなく、音楽データの更新管理である。
 
-[MusicPlaygournd](MusicPlaygournd/DESIGN.md)は別のmacOS packageとして、Swiftコードの評価、対応音源のPCM準備、小節境界での更新、再生中のリズム表示を実装している。対応する音源・処理と上限は同packageの設計を正本とする。一般的なコード位置の対応付け、コード内表示、エフェクト実行と余韻の引き継ぎは未実装である。
+[MusicPlaygournd](MusicPlaygournd/DESIGN.md)は別のmacOS packageとして、Swiftコードの評価、対応音源のPCM準備、小節境界での更新、再生中のリズム表示を実装している。対応する音源・処理と上限は同packageの設計を正本とする。パターン呼び出し位置の追跡、発音中の文字の強調、行に沿った波形とミックス音声のスペクトラム表示を備える。任意のSwift式や複数行文字列内の強調、エフェクト実行と余韻の引き継ぎは未実装である。

@@ -15,7 +15,7 @@ SwiftMusic.CompiledSound -> LoopRenderer -> PreparedLoop -> AudioLoopEngine
 ```
 
 ## Contracts and Invariants
-PreparedLoop is Codable and Sendable, stereo interleaved Float PCM at 44100 Hz. Fields: sampleRate Double, bpm Double, beatsPerBar Int, beatCount Double, samples [Float], events [LoopEvent]. LoopEvent fields: sourceID Int, label String, startBeat Double, durationBeats Double, midiNote Int?, velocity Int. Validate decoded data before playback.
+PreparedLoop is Codable and Sendable, stereo interleaved Float PCM at 44100 Hz. It retains events plus one `LoopRow` per compiled source. A row owns sourceID, label, optional file/line/column anchor, and a bounded pre-mix peak envelope derived from that source's actual PCM; all-rest rows remain present with zero peaks. Events join rows by sourceID. Validate decoded data before playback. `SourceLineMap` owns bounded pure UTF-16 edit transforms. `SpectrumAnalyzer` owns bounded stereo-power analysis of adopted post-mix PCM and never runs in the audio callback.
 
 ## Failure, Concurrency, and Constraints
 Failure is reported as a diagnostic or typed error; the last adopted loop survives edit failures. Mutable host state is MainActor- or Mutex-isolated.

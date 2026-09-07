@@ -1,4 +1,5 @@
 # Progress
 
-- [x] MP-01 Implement native MusicPlaygournd against published SwiftMusic 0.1.0; preserve library source and adopted playback across failed edits; 8 integration tests and app Debug/Release builds passed, with designer targeted re-review PASS `depends:none` `parallel:none` `commit:HEAD`
-- [ ] MP-INT Verify compiler-to-audio-to-rhythm integration, failed-edit continuity, recovery and visible app; record exact platform evidence and completion commit `depends:MP-01` `parallel:none`
+- [x] MP-01 Implement native MusicPlaygournd against published SwiftMusic 0.1.0; preserve adopted playback across failed edits; 8 tests including real evaluation/audio integration and app Debug/Release builds passed with designer targeted re-review PASS `depends:none` `parallel:none` `commit:9f5116567ca806bab8cf1f7bb7c1d7138a475d85`
+- [x] MP-02 Align player rows with compiler-proven `.rhythm` and `.notes` call sites, illuminate exact active pattern tokens, synchronize editor scrolling, and show adopted audio waveforms and spectrum; 34 library tests and 14 app tests passed, Release passed, visible token/wave/spectrum evidence and designer comprehensive/targeted review PASS `depends:MP-01` `parallel:none` `commit:HEAD`
+- [ ] MP-INT Verify exact source-line rows and active tokens, synchronized scrolling, adopted wave/spectrum behavior, compiler-to-audio continuity, failed/stale edit retention, recovery, open/save, and the visible movable app; record exact platform evidence and completion commit `depends:MP-02` `parallel:none`

@@ -22,3 +22,6 @@ Failure is reported as a diagnostic or typed error; the last adopted loop surviv
 
 ## Verification and Change Impact
 Integration tests execute success, syntax error, invalid pattern, runtime timeout, cancellation and recovery. Native compiler/build process failure is visible, never an empty successful result. Compiler cache is a process-specific local Application Support directory, excluded from Git. Normal app termination cancels evaluation, awaits child cleanup, then shutdown removes that workspace. Crash leftovers are not automatically pruned.
+
+### Source line anchors
+SourceLineMap owns UTF-16 offsets for compiler-provided Session.swift lines. Native edit ranges are applied before text mutation; unaffected anchors shift by the replacement length delta, anchors removed by an edit become unmapped, and current line lookup uses native newline semantics. Source is bounded by the editor 64 KiB evaluation limit. Tests cover insertion, deletion, Unicode and stale-revision mappings. App owns maps for current and pending revisions; opening a different document clears associations.

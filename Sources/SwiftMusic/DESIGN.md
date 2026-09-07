@@ -2,7 +2,7 @@
 
 ## Purpose and Scope
 
-This module exports one declarative sound and render-plan model. Its parent is the [package design](../../DESIGN.md); its components are [`SoundComposition`](SoundComposition/DESIGN.md) and [`LiveUpdates`](LiveUpdates/DESIGN.md).
+This module exports one declarative sound and render-plan model, including optional compiler source provenance for pattern-generated rows. Its parent is the [package design](../../DESIGN.md); its components are [`SoundComposition`](SoundComposition/DESIGN.md) and [`LiveUpdates`](LiveUpdates/DESIGN.md).
 
 ## Responsibilities and Boundaries
 
@@ -30,6 +30,7 @@ Composition source belongs to `SoundComposition/`; live update value-state sourc
 - Previous `Score` declarations and compiled types are absent after migration.
 - Declarations and prepared results are immutable `Sendable` values; `LiveMusicState` is a mutable value isolated by its host.
 - Tempo remains independent from declarations and compiled output.
+- `SoundSourceAnchor` is immutable value metadata captured by pattern-modifier default arguments. `CompiledSource.patternAnchor` is canonical, including all-rest patterns; events continue to join sources by `sourceID`.
 
 ## Failure, Concurrency, and Constraints
 

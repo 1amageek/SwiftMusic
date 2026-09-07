@@ -5,6 +5,8 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
     public static let maximumDurationSeconds = 16.0
     public static let maximumBeatCount = 32.0
     public static let maximumEvents = 1_024
+    public static let maximumRows = 32
+    public static let maximumPeakBins = 512
 
     public let sampleRate: Double
     public let bpm: Double
@@ -12,6 +14,7 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
     public let beatCount: Double
     public let samples: [Float]
     public let events: [LoopEvent]
+    public let rows: [LoopRow]
 
     public init(
         sampleRate: Double,
@@ -19,7 +22,8 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
         beatsPerBar: Int,
         beatCount: Double,
         samples: [Float],
-        events: [LoopEvent]
+        events: [LoopEvent],
+        rows: [LoopRow] = []
     ) {
         self.sampleRate = sampleRate
         self.bpm = bpm
@@ -27,6 +31,7 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
         self.beatCount = beatCount
         self.samples = samples
         self.events = events
+        self.rows = rows
     }
 
     public func validate() throws {
@@ -70,6 +75,35 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
             }
         }
 
+        guard rows.count <= Self.maximumRows else {
+            throw PreparedLoopValidationError.tooManyRows(limit: Self.maximumRows)
+        }
+        var rowIDs = Set<Int>()
+        for (index, row) in rows.enumerated() {
+            guard row.sourceID >= 0 else {
+                throw PreparedLoopValidationError.invalidRow(index: index, reason: "negative source ID")
+            }
+            guard rowIDs.insert(row.sourceID).inserted else {
+                throw PreparedLoopValidationError.invalidRow(index: index, reason: "duplicate source ID")
+            }
+            guard !row.label.isEmpty else {
+                throw PreparedLoopValidationError.invalidRow(index: index, reason: "empty label")
+            }
+            if let anchor = row.anchor {
+                guard !anchor.fileID.isEmpty, anchor.line > 0, anchor.column > 0 else {
+                    throw PreparedLoopValidationError.invalidRow(index: index, reason: "invalid source anchor")
+                }
+            }
+            guard row.peaks.count <= Self.maximumPeakBins else {
+                throw PreparedLoopValidationError.invalidRow(index: index, reason: "peak envelope exceeds 512 bins")
+            }
+            for peak in row.peaks {
+                guard peak.isFinite, peak >= 0 else {
+                    throw PreparedLoopValidationError.invalidRow(index: index, reason: "peak envelope contains an invalid value")
+                }
+            }
+        }
+
         guard events.count <= Self.maximumEvents else {
             throw PreparedLoopValidationError.tooManyEvents(limit: Self.maximumEvents)
         }
@@ -98,6 +132,30 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
             guard (1...127).contains(event.velocity) else {
                 throw PreparedLoopValidationError.invalidEvent(index: index, reason: "velocity is out of range")
             }
+            if let patternStepIndex = event.patternStepIndex {
+                guard patternStepIndex >= 0 else {
+                    throw PreparedLoopValidationError.invalidEvent(index: index, reason: "negative pattern step index")
+                }
+                guard patternStepIndex < Self.maximumPatternTokenCount else {
+                    throw PreparedLoopValidationError.invalidEvent(index: index, reason: "pattern step index exceeds 1023")
+                }
+                if let row = rows.first(where: { $0.sourceID == event.sourceID }),
+                   let patternText = row.patternText {
+                    let tokenCount = patternText.split(whereSeparator: Self.isASCIIWhitespace).count
+                    guard patternStepIndex < tokenCount else {
+                        throw PreparedLoopValidationError.invalidEvent(index: index, reason: "pattern step index is outside pattern text")
+                    }
+                }
+            }
+        }
+    }
+
+    private static let maximumPatternTokenCount = 1_024
+
+    private static func isASCIIWhitespace(_ character: Character) -> Bool {
+        switch character.asciiValue {
+        case 9, 10, 11, 12, 13, 32: true
+        default: false
         }
     }
 }

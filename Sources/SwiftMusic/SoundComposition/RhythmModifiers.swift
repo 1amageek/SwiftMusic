@@ -1,6 +1,15 @@
 public extension Sound {
-    func rhythm(_ pattern: RhythmPattern, cycle: MusicalTime = .whole) -> ModifiedSound {
-        ModifiedSound(base: self, modifier: .rhythm(pattern, cycle))
+    func rhythm(
+        _ pattern: RhythmPattern,
+        cycle: MusicalTime = .whole,
+        fileID: String = #fileID,
+        line: Int = #line,
+        column: Int = #column
+    ) -> ModifiedSound {
+        ModifiedSound(
+            base: self,
+            modifier: .rhythm(pattern, cycle, SoundSourceAnchor(fileID: fileID, line: line, column: column))
+        )
     }
 
     func offset(_ value: MusicalTime) -> ModifiedSound {

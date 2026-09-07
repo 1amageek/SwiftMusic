@@ -7,6 +7,8 @@ public enum PreparedLoopValidationError: Error, Codable, Sendable, Equatable, Cu
     case nonFiniteSample(index: Int)
     case tooManySamples(limit: Int)
     case tooManyEvents(limit: Int)
+    case tooManyRows(limit: Int)
+    case invalidRow(index: Int, reason: String)
     case invalidEvent(index: Int, reason: String)
 
     public var description: String {
@@ -19,6 +21,8 @@ public enum PreparedLoopValidationError: Error, Codable, Sendable, Equatable, Cu
         case .nonFiniteSample(let index): "Sample at index \(index) is not finite"
         case .tooManySamples(let limit): "Sample count exceeds limit \(limit)"
         case .tooManyEvents(let limit): "Event count exceeds limit \(limit)"
+        case .tooManyRows(let limit): "Row count exceeds limit \(limit)"
+        case .invalidRow(let index, let reason): "Invalid row \(index): \(reason)"
         case .invalidEvent(let index, let reason): "Invalid event \(index): \(reason)"
         }
     }

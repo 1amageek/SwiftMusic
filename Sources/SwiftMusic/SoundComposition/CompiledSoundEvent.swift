@@ -7,6 +7,7 @@ public struct CompiledSoundEvent: Sendable, Equatable {
     public internal(set) var pitch: Pitch?
     public internal(set) var velocity: Int
     public internal(set) var gate: Double
+    public internal(set) var patternStepIndex: Int?
 
     internal init(
         sourceID: Int,
@@ -15,7 +16,8 @@ public struct CompiledSoundEvent: Sendable, Equatable {
         duration: MusicalTime,
         pitch: Pitch?,
         velocity: Int = 80,
-        gate: Double = 1
+        gate: Double = 1,
+        patternStepIndex: Int? = nil
     ) {
         self.sourceID = sourceID
         self.trackID = trackID
@@ -24,5 +26,6 @@ public struct CompiledSoundEvent: Sendable, Equatable {
         self.pitch = pitch
         self.velocity = velocity
         self.gate = gate
+        self.patternStepIndex = patternStepIndex
     }
 }

@@ -84,7 +84,17 @@ public struct LoopRenderer: Sendable {
                 startBeat: startBeat,
                 durationBeats: audibleDuration,
                 midiNote: event.pitch.map { Int($0.midiNote) },
-                velocity: event.velocity
+                velocity: event.velocity,
+                patternStepIndex: event.patternStepIndex
+            )
+        }
+        let rows = sound.sources.enumerated().map { index, source in
+            LoopRow(
+                sourceID: source.id,
+                label: self.label(for: source.id, in: sound),
+                anchor: source.patternAnchor,
+                peaks: context.sourcePeakEnvelopes[index],
+                patternText: source.patternText
             )
         }
 
@@ -94,7 +104,8 @@ public struct LoopRenderer: Sendable {
             beatsPerBar: beatsPerBar,
             beatCount: beatCount,
             samples: samples,
-            events: events
+            events: events,
+            rows: rows
         )
         do {
             try prepared.validate()
@@ -132,6 +143,18 @@ public struct LoopRenderer: Sendable {
             case .noise: "noise"
             }
         }
+    }
+
+    private func label(for sourceID: Int, in sound: CompiledSound) -> String {
+        guard let source = sound.sources.first(where: { $0.id == sourceID }) else {
+            return "source \(sourceID)"
+        }
+        if let event = sound.events.first(where: { $0.sourceID == sourceID }),
+           let trackID = event.trackID,
+           let track = sound.tracks.first(where: { $0.id == trackID }) {
+            return track.name
+        }
+        return label(for: source.kind)
     }
 }
 
@@ -198,6 +221,7 @@ private struct RenderContext: Sendable {
     let frameCount: Int
     let secondsPerBeat: Double
     var nodeStates: [UInt8]
+    var sourcePeakEnvelopes: [[Float]]
 
     init(sound: CompiledSound, bpm: Double, beatCount: Double, frameCount: Int) throws {
         self.sound = sound
@@ -206,6 +230,10 @@ private struct RenderContext: Sendable {
         self.frameCount = frameCount
         self.secondsPerBeat = 60 / bpm
         self.nodeStates = Array(repeating: 0, count: sound.renderNodes.count)
+        self.sourcePeakEnvelopes = Array(
+            repeating: [Float](repeating: 0, count: 1),
+            count: sound.sources.count
+        )
 
         for source in sound.sources {
             // FIXME(INCOMPLETE_IMPLEMENTATION): tuning rendering is unavailable in editor evaluation; require PCM behavior tests before enabling it.
@@ -304,7 +332,7 @@ private struct RenderContext: Sendable {
         }
     }
 
-    private func renderSource(_ sourceID: Int) throws -> StereoBuffer {
+    private mutating func renderSource(_ sourceID: Int) throws -> StereoBuffer {
         let source = sound.sources[sourceID]
         var output = StereoBuffer(frameCount: frameCount)
         let sourceEvents = sound.events.enumerated().filter { $0.element.sourceID == sourceID }
@@ -335,7 +363,24 @@ private struct RenderContext: Sendable {
                 output.right[frame] += value
             }
         }
+        sourcePeakEnvelopes[sourceID] = peakEnvelope(for: output)
         return output
+    }
+
+    private func peakEnvelope(for buffer: StereoBuffer) -> [Float] {
+        let frameCount = buffer.left.count
+        let binCount = min(PreparedLoop.maximumPeakBins, max(1, frameCount))
+        var envelope = [Float](repeating: 0, count: binCount)
+        for bin in 0..<binCount {
+            let start = bin * frameCount / binCount
+            let end = max(start + 1, (bin + 1) * frameCount / binCount)
+            var peak: Float = 0
+            for frame in start..<min(end, frameCount) {
+                peak = max(peak, abs(buffer.left[frame]), abs(buffer.right[frame]))
+            }
+            envelope[bin] = peak
+        }
+        return envelope
     }
 
     private func sample(_ kind: SourceKind, pitch: Pitch?, time: Double) -> Float {
