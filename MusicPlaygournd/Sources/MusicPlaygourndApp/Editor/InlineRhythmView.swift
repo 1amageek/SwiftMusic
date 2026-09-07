@@ -82,12 +82,14 @@ final class InlineRhythmView: NSView {
             path.stroke()
         }
         for event in events {
-            let active = playing && event.gain > 0 && beat >= event.startBeat && beat < event.startBeat + event.durationBeats
+            let active = playing && event.gain > 0 && event.isActive(at: beat, in: beats)
             let y = area.minY + CGFloat(high - (event.midiNote ?? high)) * laneHeight
-            let rect = CGRect(x: area.minX + event.startBeat * scale, y: y + 1,
-                              width: max(2, min(event.durationBeats, beats - event.startBeat) * scale - 2), height: max(2, laneHeight - 2))
             NSColor.systemMint.withAlphaComponent(active ? 1 : (event.gain > 0 ? 0.45 : 0.12)).setFill()
-            NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2).fill()
+            event.forEachBeatRange(in: beats) { range in
+                let rect = CGRect(x: area.minX + range.lowerBound * scale, y: y + 1,
+                    width: max(2, (range.upperBound - range.lowerBound) * scale - 2), height: max(2, laneHeight - 2))
+                NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2).fill()
+            }
         }
         let cursor = NSBezierPath()
         let x = area.minX + beat * scale

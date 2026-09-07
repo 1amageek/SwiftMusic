@@ -49,14 +49,16 @@ struct RhythmView: View {
                                     context.stroke(path, with: .color(.white.opacity(beat % loop.beatsPerBar == 0 ? 0.16 : 0.06)))
                                 }
                                 for event in events {
-                                    let rect = CGRect(x: event.startBeat * scale + 1, y: 8,
-                                        width: max(3, min(event.durationBeats, loop.beatCount - event.startBeat) * scale - 3), height: size.height - 16)
-                                    let active = isPlaying && event.gain > 0 && beatPosition >= event.startBeat && beatPosition < event.startBeat + event.durationBeats
-                                    context.fill(Path(roundedRect: rect, cornerRadius: 5), with: .color(colors[index % colors.count].opacity(active ? 1 : 0.5)))
-                                    if let note = event.midiNote, rect.width > 23 {
-                                        let pitchNames = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"]
-                                        let label = Text("\(pitchNames[note % 12])\(note / 12 - 1)").font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundColor(.black.opacity(0.8))
-                                        context.draw(label, at: CGPoint(x: rect.midX, y: rect.midY))
+                                    event.forEachBeatRange(in: loop.beatCount) { range in
+                                        let rect = CGRect(x: range.lowerBound * scale + 1, y: 8,
+                                            width: max(3, (range.upperBound - range.lowerBound) * scale - 3), height: size.height - 16)
+                                        let active = isPlaying && event.gain > 0 && event.isActive(at: beatPosition, in: loop.beatCount)
+                                        context.fill(Path(roundedRect: rect, cornerRadius: 5), with: .color(colors[index % colors.count].opacity(active ? 1 : 0.5)))
+                                        if let note = event.midiNote, rect.width > 23 {
+                                            let pitchNames = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"]
+                                            let label = Text("\(pitchNames[note % 12])\(note / 12 - 1)").font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundColor(.black.opacity(0.8))
+                                            context.draw(label, at: CGPoint(x: rect.midX, y: rect.midY))
+                                        }
                                     }
                                 }
                                 var cursor = Path()

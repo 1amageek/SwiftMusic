@@ -124,8 +124,16 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
             guard event.startBeat.isFinite,
                   event.durationBeats.isFinite,
                   event.startBeat >= 0,
-                  event.durationBeats > 0,
-                  event.startBeat + event.durationBeats <= beatCount + 1e-9 else {
+                  event.startBeat < beatCount,
+                  event.durationBeats > 0 else {
+                throw PreparedLoopValidationError.invalidEvent(index: index, reason: "invalid timing")
+            }
+            let end = event.startBeat + event.durationBeats
+            if event.wrapsLoopBoundary {
+                guard event.durationBeats <= beatCount, end > beatCount else {
+                    throw PreparedLoopValidationError.invalidEvent(index: index, reason: "invalid loop boundary continuation")
+                }
+            } else if end > beatCount + 1e-9 {
                 throw PreparedLoopValidationError.invalidEvent(index: index, reason: "invalid timing")
             }
             guard event.startBeat + 1e-9 >= previousStart else {

@@ -42,14 +42,18 @@ struct TimelineView: View {
                             let height = max(8, rect.height - 4)
                             context.draw(Text("\(line)").font(.system(size: 9, design: .monospaced)).foregroundColor(.secondary), at: CGPoint(x: 16, y: center))
                             for event in loop.events where event.sourceID == row.sourceID {
-                                let box = CGRect(x: inset + event.startBeat * scale, y: center - height / 2,
-                                    width: max(2, event.durationBeats * scale - 1), height: height)
-                                let active = isPlaying && event.gain > 0 && beatPosition >= event.startBeat && beatPosition < event.startBeat + event.durationBeats
-                                context.fill(Path(roundedRect: box, cornerRadius: 3), with: .color(color.opacity(active ? 0.28 : 0.09)))
-                                var onset = Path()
-                                onset.move(to: CGPoint(x: box.minX, y: box.minY))
-                                onset.addLine(to: CGPoint(x: box.minX, y: box.maxY))
-                                context.stroke(onset, with: .color(color.opacity(0.7)))
+                                event.forEachBeatRange(in: loop.beatCount) { range in
+                                    let box = CGRect(x: inset + range.lowerBound * scale, y: center - height / 2,
+                                        width: max(2, (range.upperBound - range.lowerBound) * scale - 1), height: height)
+                                    let active = isPlaying && event.gain > 0 && event.isActive(at: beatPosition, in: loop.beatCount)
+                                    context.fill(Path(roundedRect: box, cornerRadius: 3), with: .color(color.opacity(active ? 0.28 : 0.09)))
+                                    if range.lowerBound == event.startBeat {
+                                        var onset = Path()
+                                        onset.move(to: CGPoint(x: box.minX, y: box.minY))
+                                        onset.addLine(to: CGPoint(x: box.minX, y: box.maxY))
+                                        context.stroke(onset, with: .color(color.opacity(0.7)))
+                                    }
+                                }
                             }
                             let peakScale = max(0.000001, row.peaks.max() ?? 0)
                             var wave = Path()

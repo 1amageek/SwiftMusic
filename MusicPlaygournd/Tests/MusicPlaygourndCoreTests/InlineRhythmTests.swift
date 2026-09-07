@@ -7,6 +7,29 @@ extension NativeHostTests {
     @MainActor
     struct InlineRhythmTests {
         @Test(.timeLimit(.minutes(3)))
+        func testContinuationIsVisibleAndActiveOnBothSidesOfTheInlineCard() throws {
+            let card = InlineRhythmView(frame: CGRect(x: 0, y: 0, width: 400, height: 100))
+            let row = LoopRow(sourceID: 0, label: "tone", anchor: nil, peaks: [])
+            let event = LoopEvent(sourceID: 0, label: "tone", startBeat: 3, durationBeats: 2,
+                midiNote: 60, velocity: 80, wrapsLoopBoundary: true)
+            func pixels(at beat: Double) throws -> [NSColor] {
+                card.update(row: row, events: [event], beats: 4, meter: 4, beat: beat, playing: true)
+                card.layoutSubtreeIfNeeded()
+                let bitmap = try #require(card.bitmapImageRepForCachingDisplay(in: card.bounds))
+                card.cacheDisplay(in: card.bounds, to: bitmap)
+                return try [100.0, 350.0].map { x in
+                    let color = try #require(bitmap.colorAt(
+                        x: Int(x * Double(bitmap.pixelsWide) / 400),
+                        y: Int(50 * Double(bitmap.pixelsHigh) / 100)))
+                    return try #require(color.usingColorSpace(.deviceRGB))
+                }
+            }
+            let active = try pixels(at: 0.5)
+            let inactive = try pixels(at: 2)
+            #expect(zip(active, inactive).allSatisfy { $0.greenComponent > $1.greenComponent + 0.1 })
+        }
+
+        @Test(.timeLimit(.minutes(3)))
         func testViewportAlignmentIncludesDocumentFrameAndBounds() {
             let scroll = NSScrollView(frame: CGRect(x: 0, y: 0, width: 500, height: 200))
             let editor = CompletionTextView(frame: CGRect(x: 0, y: 0, width: 500, height: 800))

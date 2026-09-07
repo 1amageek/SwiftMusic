@@ -174,7 +174,7 @@ final class SessionModel {
     var activeTokens: [Int: Set<Int>] {
         guard isPlaying, let loop else { return [:] }
         var tokens: [Int: Set<Int>] = [:]
-        for event in loop.events where event.gain > 0 && beatPosition >= event.startBeat && beatPosition < event.startBeat + event.durationBeats {
+        for event in loop.events where event.gain > 0 && event.isActive(at: beatPosition, in: loop.beatCount) {
             if let index = event.patternStepIndex { tokens[event.sourceID, default: []].insert(index) }
         }
         return tokens
