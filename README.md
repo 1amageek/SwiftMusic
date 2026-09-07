@@ -2,6 +2,8 @@
 
 SwiftMusic declares immutable `Sound` trees. Sibling declarations are parallel; modifiers transform only the subtree on which they are written.
 
+The live music-making experience and the planned MusicPlaygournd editor are defined in [PHILOSOPHY.md](PHILOSOPHY.md). The example below uses the currently implemented foundation API.
+
 ```swift
 import SwiftMusic
 

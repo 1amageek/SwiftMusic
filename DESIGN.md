@@ -1,5 +1,7 @@
 # SwiftMusic
 
+Product direction and the intended live-editing experience are owned by [PHILOSOPHY.md](PHILOSOPHY.md). This document describes the current implementation boundary; its exclusions are not permanent product limitations.
+
 ## Purpose and Scope
 
 SwiftMusic declares immutable `Sound` trees and compiles them into deterministic beat-domain events plus an ordered render plan. This file is both system and package design because the roots are the same. The package contains one module, [`Sources/SwiftMusic/DESIGN.md`](Sources/SwiftMusic/DESIGN.md).
