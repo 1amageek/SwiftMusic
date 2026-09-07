@@ -86,6 +86,24 @@ public extension Sound {
         ModifiedSound(base: self, modifier: .sampleRegion(value))
     }
 
+    func sampleSelection(
+        _ pattern: SampleSelectionPattern,
+        cycle: MusicalTime = .whole
+    ) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .sampleSelection(pattern, cycle))
+    }
+
+    func sampleReversed() -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .sampleReversed)
+    }
+
+    func samplePlaybackRate(_ rate: Double) throws -> ModifiedSound {
+        guard rate.isFinite, rate > 0 else {
+            throw SampleDescriptorError.invalidPlaybackRate(rate)
+        }
+        return ModifiedSound(base: self, modifier: .samplePlaybackRate(rate))
+    }
+
     func unison(_ value: Unison) -> ModifiedSound {
         ModifiedSound(base: self, modifier: .unison(value))
     }

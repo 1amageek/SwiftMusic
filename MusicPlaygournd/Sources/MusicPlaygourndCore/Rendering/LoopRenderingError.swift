@@ -12,6 +12,7 @@ public enum LoopRenderingError: Error, Sendable, Equatable, CustomStringConverti
     case unsupportedSourceSetting(sourceID: Int, setting: String)
     case unsupportedEventSetting(index: Int, setting: String)
     case unsupportedRenderNode(index: Int, operation: String)
+    case sampleCacheLimitExceeded(limit: Int)
     case invalidSound(String)
     case invalidEvent(index: Int, reason: String)
     case overflow
@@ -30,6 +31,7 @@ public enum LoopRenderingError: Error, Sendable, Equatable, CustomStringConverti
         case .unsupportedSourceSetting(let sourceID, let setting): "Unsupported source setting on \(sourceID): \(setting)"
         case .unsupportedEventSetting(let index, let setting): "Unsupported event setting on \(index): \(setting)"
         case .unsupportedRenderNode(let index, let operation): "Unsupported render node \(index): \(operation)"
+        case .sampleCacheLimitExceeded(let limit): "Decoded sample cache exceeds limit \(limit)"
         case .invalidSound(let reason): "Invalid compiled sound: \(reason)"
         case .invalidEvent(let index, let reason): "Invalid event \(index): \(reason)"
         case .overflow: "Audio rendering arithmetic overflow"

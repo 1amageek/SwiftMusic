@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 import SwiftMusic
 
@@ -187,9 +188,10 @@ struct SoundCompositionTests {
         )
         let region = try SampleRegion(startFraction: 0.1, endFraction: 0.9)
         let unison = try Unison(voices: 3, detuneCents: 12)
+        let fileSample = try Sample(file: URL(fileURLWithPath: "/tmp/piano.caf"))
 
         let sample = try SoundCompiler().compile(
-            Sample("piano")
+            fileSample
                 .tuning(tuning)
                 .envelope(envelope)
                 .sampleRegion(region)

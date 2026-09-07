@@ -9,6 +9,7 @@ public struct CompiledSoundEvent: Sendable, Equatable {
     public internal(set) var gate: Double
     public internal(set) var gain: Double
     public internal(set) var pan: Double?
+    public internal(set) var sampleKey: String?
     public internal(set) var pitchOffsetSemitones: Double
     public internal(set) var cutoffHz: Double?
     public internal(set) var envelope: Envelope?
@@ -24,6 +25,7 @@ public struct CompiledSoundEvent: Sendable, Equatable {
         gate: Double = 1,
         gain: Double = 1,
         pan: Double? = nil,
+        sampleKey: String? = nil,
         pitchOffsetSemitones: Double = 0,
         cutoffHz: Double? = nil,
         envelope: Envelope? = nil,
@@ -38,6 +40,7 @@ public struct CompiledSoundEvent: Sendable, Equatable {
         self.gate = gate
         self.gain = gain
         self.pan = pan
+        self.sampleKey = sampleKey
         self.pitchOffsetSemitones = pitchOffsetSemitones
         self.cutoffHz = cutoffHz
         self.envelope = envelope

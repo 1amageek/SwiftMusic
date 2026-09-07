@@ -6,9 +6,11 @@ public enum SoundCompilationError: Error, Equatable, Sendable {
     case invalidPitchPattern(PitchPatternError)
     case invalidCutoffPattern(CutoffPatternError)
     case invalidEnvelopePattern(EnvelopePatternError)
+    case invalidSampleSelection(SampleSelectionPatternError)
     case unexpectedFailure(String)
     case invalidParameter(String)
     case unsupportedSourceSetting(String)
+    case unknownSampleKey(key: String, utf8Offset: Int?)
     case missingPitch
     case pitchOutOfRange
     case timeOverflow

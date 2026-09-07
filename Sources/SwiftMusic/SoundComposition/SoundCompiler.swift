@@ -100,6 +100,8 @@ public struct SoundCompiler: Sendable {
             return SoundCompilationError.invalidCutoffPattern(error)
         case let error as EnvelopePatternError:
             return SoundCompilationError.invalidEnvelopePattern(error)
+        case let error as SampleSelectionPatternError:
+            return SoundCompilationError.invalidSampleSelection(error)
         case is MusicalTimeError:
             return SoundCompilationError.timeOverflow
         default:

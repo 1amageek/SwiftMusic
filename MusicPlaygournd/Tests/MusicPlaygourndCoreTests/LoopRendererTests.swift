@@ -99,11 +99,10 @@ struct LoopRendererTests {
         }
 
         let region = try SampleRegion(startFraction: 0.1, endFraction: 0.9)
-        let configured = try SoundCompiler().compile(Sample("kick").sampleRegion(region))
         #expect {
-            try renderer.render(configured, bpm: 120, beatsPerBar: 4)
+            try SoundCompiler().compile(Sample("kick").sampleRegion(region))
         } throws: { error in
-            if case .unsupportedSourceSetting(_, "sampleRegion") = error as? LoopRenderingError { return true }
+            if case .unsupportedSourceSetting = error as? SoundCompilationError { return true }
             return false
         }
     }

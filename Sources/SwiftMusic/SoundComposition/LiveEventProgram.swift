@@ -46,7 +46,8 @@ internal struct _LiveEventProgram {
             guard period != nil else { return .finite(finite) }
             return Self(operation: .seeds(finite.events), period: finite.extent,
                         finiteExtent: nil, sourceIDs: sourceIDs, recurringSourceIDs: sourceIDs)
-        case .tuning, .sampleRegion, .unison, .effect, .gain, .pan, .muted, .send, .output,
+        case .tuning, .sampleRegion, .sampleReversed, .samplePlaybackRate, .unison,
+             .effect, .gain, .pan, .muted, .send, .output,
              .pitchEnvelope, .filterEnvelope:
             return self
         default:
@@ -62,6 +63,8 @@ internal struct _LiveEventProgram {
             case .cutoffPattern(_, let pattern, let cycle, _, _):
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
             case .envelopePattern(let pattern, let cycle):
+                period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
+            case .sampleSelection(let pattern, let cycle):
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
             case .fast(let factor):
                 period = try period.divided(by: factor)
@@ -103,8 +106,12 @@ internal struct _LiveEventProgram {
     }
 
     /// Materializes one complete parameter period before copying its proven periodic values.
-    func emit(through horizon: MusicalTime, limits: SoundCompiler.Limits) throws -> [CompiledSoundEvent] {
-        let events = try canonical(limits: limits)
+    func emit(
+        through horizon: MusicalTime,
+        limits: SoundCompiler.Limits,
+        sources: [CompiledSource]
+    ) throws -> [CompiledSoundEvent] {
+        let events = try canonical(limits: limits, sources: sources)
         guard let period, !events.isEmpty else { return events }
         let ratio = try _scalePatternTime(horizon, by: MusicalTime(
             numerator: period.denominator, denominator: period.numerator))
@@ -134,13 +141,18 @@ internal struct _LiveEventProgram {
         return output
     }
 
-    private func canonical(limits: SoundCompiler.Limits) throws -> [CompiledSoundEvent] {
+    private func canonical(
+        limits: SoundCompiler.Limits,
+        sources: [CompiledSource]
+    ) throws -> [CompiledSoundEvent] {
         switch operation {
         case .seeds(let events): return events
         case .group(let children):
             var events: [CompiledSoundEvent] = []
             for child in children {
-                let next = try child.emit(through: period ?? .quarter, limits: limits)
+                let next = try child.emit(
+                    through: period ?? .quarter, limits: limits, sources: sources
+                )
                 guard next.count <= limits.maximumEvents - events.count else {
                     throw SoundCompilationError.maximumEventsExceeded(limit: limits.maximumEvents)
                 }
@@ -148,18 +160,32 @@ internal struct _LiveEventProgram {
             }
             return events
         case .generator(let child, let modifier):
-            let events = try child.emit(through: period ?? .quarter, limits: limits)
+            let events = try child.emit(
+                through: period ?? .quarter, limits: limits, sources: sources
+            )
             return try _SoundCompilationContext.applyEvents(
-                modifier, events: events, extent: .zero, limits: limits).events
+                modifier,
+                events: events,
+                extent: .zero,
+                limits: limits,
+                sources: sources,
+                sourceIDs: sourceIDs
+            ).events
         case .modifier(let child, let modifier):
             let horizon: MusicalTime
             switch modifier {
             case .fast, .slow: horizon = child.period ?? .quarter
             default: horizon = period ?? .quarter
             }
-            let events = try child.emit(through: horizon, limits: limits)
+            let events = try child.emit(through: horizon, limits: limits, sources: sources)
             return try _SoundCompilationContext.applyEvents(
-                modifier, events: events, extent: .zero, limits: limits).events
+                modifier,
+                events: events,
+                extent: .zero,
+                limits: limits,
+                sources: sources,
+                sourceIDs: sourceIDs
+            ).events
         }
     }
 

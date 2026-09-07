@@ -21,7 +21,10 @@ internal enum _SoundModifier: Sendable {
     case fixedFilter(FilterKind, Frequency, Double, FilterSlope)
     case cutoffPattern(FilterKind, CutoffPattern, MusicalTime, Double, FilterSlope)
     case envelopePattern(EnvelopePattern, MusicalTime)
+    case sampleSelection(SampleSelectionPattern, MusicalTime)
     case sampleRegion(SampleRegion)
+    case sampleReversed
+    case samplePlaybackRate(Double)
     case unison(Unison)
     case effect(AudioEffect)
     case gain(Double)

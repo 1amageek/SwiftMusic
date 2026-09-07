@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 import SwiftMusic
 
@@ -94,8 +95,9 @@ struct SoundPipelineTests {
         let region = try SampleRegion(startFraction: 0.25, endFraction: 0.75)
         let unison = try Unison(voices: 3, detuneCents: 7)
         let tuning = try Tuning(referencePitch: Pitch(midiNote: 69), frequencyHz: 442)
+        let fileSample = try Sample(file: URL(fileURLWithPath: "/tmp/kick.caf"))
         let configured = try compiler.compile(Track("configured") {
-            Sample("kick").sampleRegion(region)
+            fileSample.sampleRegion(region)
             Synthesizer(.saw).unison(unison).tuning(tuning)
         }.envelope(envelope))
         #expect(configured.sources.map(\.envelope) == [envelope, envelope])

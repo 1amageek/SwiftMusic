@@ -23,6 +23,10 @@ internal struct _SoundCompilationContext {
         case .sample(let name):
             try validateName(name)
             return try source(.sample(name), pitch: nil)
+        case .fileSample(let fileURL, let rootPitch):
+            return try source(.fileSample(fileURL: fileURL, rootPitch: rootPitch), pitch: .middleC)
+        case .sampleBank(let bank):
+            return try source(.sampleBank(bank), pitch: .middleC, sampleKey: bank.firstKey)
         case .synthesizer(let waveform):
             return try source(.synthesizer(waveform), pitch: .middleC)
         case .group(let children):
@@ -60,7 +64,11 @@ internal struct _SoundCompilationContext {
         }
     }
 
-    private mutating func source(_ kind: SourceKind, pitch: Pitch?) throws -> _SoundFragment {
+    private mutating func source(
+        _ kind: SourceKind,
+        pitch: Pitch?,
+        sampleKey: String? = nil
+    ) throws -> _SoundFragment {
         guard sources.count < limits.maximumSources else {
             throw SoundCompilationError.maximumSourcesExceeded(limit: limits.maximumSources)
         }
@@ -73,7 +81,8 @@ internal struct _SoundCompilationContext {
         var fragment = _SoundFragment(
             events: [CompiledSoundEvent(
                 sourceID: id, trackID: currentTrackID, start: .zero,
-                duration: .quarter, pitch: pitch, velocity: 80, gate: 1
+                duration: .quarter, pitch: pitch, velocity: 80, gate: 1,
+                sampleKey: sampleKey
             )],
             roots: [root], extent: .quarter
         )
@@ -84,7 +93,8 @@ internal struct _SoundCompilationContext {
     private mutating func apply(
         _ modifier: _SoundModifier,
         to fragment: inout _SoundFragment,
-        sourceRange: Range<Int>
+        sourceRange: Range<Int>,
+        sourceIDs: Set<Int>? = nil
     ) throws {
         switch modifier {
         case .oneShot:
@@ -236,6 +246,37 @@ internal struct _SoundCompilationContext {
                 let leaf = try sampledLeaf(resolved, period: period, at: fragment.events[index].start)
                 fragment.events[index].envelope = try pattern.value(at: leaf)
             }
+        case .sampleSelection(let pattern, let cycle):
+            guard cycle > .zero else { throw invalid("Sample selection cycle must be positive") }
+            let resolved = try pattern.resolvedTransform(cycle: cycle)
+            let leaves = resolved.program.leaves
+            let resolvedCycle = try resolved.period
+            let keys = try leaves.map { try pattern.value(at: $0) }
+            let affectedSources = sourceIDs ?? Set(sourceRange)
+            for sourceID in affectedSources {
+                guard sources.indices.contains(sourceID) else {
+                    throw invalid("Sample selection source is missing")
+                }
+                guard case .sampleBank(let bank) = sources[sourceID].kind else {
+                    throw SoundCompilationError.unsupportedSourceSetting(
+                        "Sample selection requires a sample bank source"
+                    )
+                }
+                for (index, key) in keys.enumerated() where !bank.contains(key) {
+                    throw SoundCompilationError.unknownSampleKey(
+                        key: key, utf8Offset: leaves[index].offset
+                    )
+                }
+            }
+            for index in fragment.events.indices {
+                let eventStart = fragment.events[index].start
+                guard let leafPosition = _patternLeafIndex(
+                    at: eventStart, cycle: resolvedCycle, leaves: leaves
+                ) else {
+                    throw invalid("Sample selection phase did not resolve to a leaf")
+                }
+                fragment.events[index].sampleKey = keys[leafPosition]
+            }
         case .chord(let chord):
             let count = try expandedCount(fragment.events.count, multiplier: chord.intervals.count)
             try replaceEventCount(fragment.events.count, with: count)
@@ -275,10 +316,48 @@ internal struct _SoundCompilationContext {
             for index in sourceRange { sources[index].filterEnvelope = modulation }
         case .sampleRegion(let region):
             for index in sourceRange {
-                guard case .sample = sources[index].kind else {
-                    throw SoundCompilationError.unsupportedSourceSetting("Sample region requires a sample source")
+                guard sources.indices.contains(index) else {
+                    throw invalid("Sample region source is missing")
                 }
-                sources[index].sampleRegion = region
+                switch sources[index].kind {
+                case .fileSample, .sampleBank:
+                    sources[index].sampleRegion = region
+                default:
+                    throw SoundCompilationError.unsupportedSourceSetting(
+                        "Sample region requires a file or sample bank source"
+                    )
+                }
+            }
+        case .sampleReversed:
+            for index in sourceRange {
+                guard sources.indices.contains(index) else {
+                    throw invalid("Sample reversal source is missing")
+                }
+                switch sources[index].kind {
+                case .fileSample, .sampleBank:
+                    sources[index].sampleReversed = true
+                default:
+                    throw SoundCompilationError.unsupportedSourceSetting(
+                        "Sample reversal requires a file or sample bank source"
+                    )
+                }
+            }
+        case .samplePlaybackRate(let rate):
+            guard rate.isFinite, rate > 0 else {
+                throw SampleDescriptorError.invalidPlaybackRate(rate)
+            }
+            for index in sourceRange {
+                guard sources.indices.contains(index) else {
+                    throw invalid("Sample playback source is missing")
+                }
+                switch sources[index].kind {
+                case .fileSample, .sampleBank:
+                    sources[index].samplePlaybackRate = rate
+                default:
+                    throw SoundCompilationError.unsupportedSourceSetting(
+                        "Sample playback rate requires a file or sample bank source"
+                    )
+                }
             }
         case .unison(let unison):
             for index in sourceRange {
@@ -368,12 +447,14 @@ internal struct _SoundCompilationContext {
         _ modifier: _SoundModifier,
         events: [CompiledSoundEvent],
         extent: MusicalTime,
-        limits: SoundCompiler.Limits
+        limits: SoundCompiler.Limits,
+        sources: [CompiledSource] = [],
+        sourceIDs: Set<Int>? = nil
     ) throws -> _SoundFragment {
-        var context = Self(limits: limits)
+        var context = Self(limits: limits, sources: sources)
         context.eventCount = events.count
         var fragment = _SoundFragment(events: events, extent: extent)
-        try context.apply(modifier, to: &fragment, sourceRange: 0..<0)
+        try context.apply(modifier, to: &fragment, sourceRange: 0..<0, sourceIDs: sourceIDs)
         return fragment
     }
 
@@ -383,7 +464,7 @@ internal struct _SoundCompilationContext {
         }
         let window = try program.window(policy: policy)
         var rendered = fragment
-        rendered.events = try program.emit(through: window, limits: limits)
+        rendered.events = try program.emit(through: window, limits: limits, sources: sources)
         rendered.extent = window
         let beats = Double(window.numerator) / Double(window.denominator)
         for (index, event) in rendered.events.enumerated() {

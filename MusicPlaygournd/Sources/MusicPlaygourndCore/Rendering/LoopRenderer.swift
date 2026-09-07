@@ -2,7 +2,11 @@ import Foundation
 import SwiftMusic
 
 public struct LoopRenderer: Sendable {
-    public init() {}
+    private let sampleLoader: any SampleLoading
+
+    public init(sampleLoader: any SampleLoading = AVAudioFileSampleLoader()) {
+        self.sampleLoader = sampleLoader
+    }
 
     public func render(
         _ sound: CompiledSound,
@@ -33,11 +37,26 @@ public struct LoopRenderer: Sendable {
             throw LoopRenderingError.extentTooLong(extent)
         }
 
+        let preparedSamples = try SamplePreparation(sound: sound, loader: sampleLoader)
+        var sampleFrames: [Int: Int] = [:]
+        let maximumSeconds = min(PreparedLoop.maximumDurationSeconds, PreparedLoop.maximumBeatCount * 60 / bpm)
+        for (index, voice) in preparedSamples.voices {
+            let event = sound.events[index]
+            let source = sound.sources[event.sourceID]
+            let available = sound.playbackMode == .seamlessLoop ? extent * 60 / bpm
+                : max(0, maximumSeconds - (try beatValue(event.start)) * 60 / bpm)
+            let frames = try voice.frames(event: event, source: source, secondsPerBeat: 60 / bpm,
+                                          limit: Int((available * PreparedLoop.requiredSampleRate).rounded(.down)))
+            sampleFrames[index] = frames
+            if sound.playbackMode == .finite {
+                extent = max(extent, try beatValue(event.start) + Double(frames) / PreparedLoop.requiredSampleRate * bpm / 60)
+            }
+        }
         for (index, event) in sound.events.enumerated() {
             guard sound.sources.indices.contains(event.sourceID) else {
                 throw LoopRenderingError.invalidEvent(index: index, reason: "source ID is out of range")
             }
-            if let envelope = VoiceEnvelope.amplitude(event: event, source: sound.sources[event.sourceID],
+            if sampleFrames[index] == nil, let envelope = VoiceEnvelope.amplitude(event: event, source: sound.sources[event.sourceID],
                                                        secondsPerBeat: 60 / bpm) {
                 let span = envelope.duration * bpm / 60
                 guard span.isFinite, span > 0 else {
@@ -73,7 +92,9 @@ public struct LoopRenderer: Sendable {
             sound: sound,
             bpm: bpm,
             beatCount: beatCount,
-            frameCount: frameCount
+            frameCount: frameCount,
+            preparedSamples: preparedSamples,
+            sampleFrames: sampleFrames
         )
         var output = try context.renderRoots()
         output.clamp(to: -1...1)
@@ -87,8 +108,9 @@ public struct LoopRenderer: Sendable {
             let source = sound.sources[event.sourceID]
             let startBeat = try beatValue(event.start)
             let durationBeats = try beatValue(event.duration)
-            let fullDuration = VoiceEnvelope.amplitude(event: event, source: source, secondsPerBeat: 60 / bpm)
-                .map { $0.duration * bpm / 60 } ?? durationBeats * event.gate
+            let fullDuration = sampleFrames[index].map { Double($0) / PreparedLoop.requiredSampleRate * bpm / 60 }
+                ?? VoiceEnvelope.amplitude(event: event, source: source, secondsPerBeat: 60 / bpm)
+                    .map { $0.duration * bpm / 60 } ?? durationBeats * event.gate
             let audibleDuration: Double
             let wrapsLoopBoundary: Bool
             if sound.playbackMode == .seamlessLoop {
@@ -179,6 +201,8 @@ public struct LoopRenderer: Sendable {
     private func label(for kind: SourceKind) -> String {
         switch kind {
         case .sample(let name): name
+        case .fileSample(let url, _): url.lastPathComponent
+        case .sampleBank: "Sample bank"
         case .synthesizer(let waveform):
             switch waveform {
             case .sine: "sine"
@@ -267,8 +291,13 @@ private struct RenderContext: Sendable {
     let secondsPerBeat: Double
     var nodeStates: [UInt8]
     var sourcePeakEnvelopes: [[Float]]
+    let preparedSamples: SamplePreparation
+    let sampleFrames: [Int: Int]
 
-    init(sound: CompiledSound, bpm: Double, beatCount: Double, frameCount: Int) throws {
+    init(sound: CompiledSound, bpm: Double, beatCount: Double, frameCount: Int,
+         preparedSamples: SamplePreparation, sampleFrames: [Int: Int]) throws {
+        self.preparedSamples = preparedSamples
+        self.sampleFrames = sampleFrames
         self.sound = sound
         self.bpm = bpm
         self.beatCount = beatCount
@@ -296,16 +325,12 @@ private struct RenderContext: Sendable {
             if source.filterEnvelope != nil, source.filter == nil {
                 throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "filterEnvelope requires a source filter")
             }
-            // FIXME(INCOMPLETE_IMPLEMENTATION): procedural sample pitch traversal remains unavailable in editor evaluation until P03.3 provides rate/phase PCM tests.
+            // Procedural samples have no decoded asset or root pitch; rooted file/bank sources support pitch traversal.
             if case .sample = source.kind,
                source.tuning != nil || source.pitchEnvelope != nil || sound.events.contains(where: {
                    $0.sourceID == source.id && $0.pitchOffsetSemitones != 0
                }) {
                 throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "sample pitch traversal")
-            }
-            // FIXME(INCOMPLETE_IMPLEMENTATION): sampleRegion rendering is unavailable in editor evaluation; require PCM behavior tests before enabling it.
-            guard source.sampleRegion == nil else {
-                throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "sampleRegion")
             }
             // FIXME(INCOMPLETE_IMPLEMENTATION): unison rendering is unavailable in editor evaluation; require PCM behavior tests before enabling it.
             guard source.unison == nil else {
@@ -316,7 +341,7 @@ private struct RenderContext: Sendable {
                 break
             case .sample(let name):
                 throw LoopRenderingError.unsupportedSource(sourceID: source.id, kind: "sample(\(name))")
-            case .synthesizer:
+            case .synthesizer, .fileSample, .sampleBank:
                 break
             }
         }
@@ -418,9 +443,16 @@ private struct RenderContext: Sendable {
             let naturalDuration = durationBeats * secondsPerBeat
             let amplitudeEnvelope = VoiceEnvelope.amplitude(event: event, source: source,
                                                              secondsPerBeat: secondsPerBeat)
-            let fullDuration = amplitudeEnvelope?.duration ?? naturalDuration * event.gate
+            let sampleVoice = preparedSamples.voices[eventIndex]
+            let fullDuration = sampleFrames[eventIndex].map { Double($0) / PreparedLoop.requiredSampleRate }
+                ?? amplitudeEnvelope?.duration ?? naturalDuration * event.gate
             let eventFrames: Int
-            if seamless {
+            if let count = sampleFrames[eventIndex] {
+                guard count > 0, count <= (seamless ? frameCount : frameCount - startFrame) else {
+                    throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "sample frames exceed loop")
+                }
+                eventFrames = count
+            } else if seamless {
                 let fullGatedDuration = fullDuration
                 guard fullGatedDuration.isFinite,
                       fullGatedDuration > 0,
@@ -460,7 +492,7 @@ private struct RenderContext: Sendable {
             let rightGain = event.pan.map { Float(sin(($0 + 1) * .pi / 4)) } ?? 1
             let edgeFrames = min(128, max(1, eventFrames / 2))
             if amplitudeEnvelope == nil, source.tuning == nil, source.pitchEnvelope == nil,
-               source.filter == nil, source.filterEnvelope == nil, event.pitchOffsetSemitones == 0 {
+               source.filter == nil, source.filterEnvelope == nil, event.pitchOffsetSemitones == 0, sampleVoice == nil {
             for offset in 0..<eventFrames {
                 let frame = seamless ? (startFrame + offset) % frameCount : startFrame + offset
                 let time = Double(offset) / PreparedLoop.requiredSampleRate
@@ -491,6 +523,7 @@ private struct RenderContext: Sendable {
                     try validateFrequency(frequency, depth: pitchDepth, eventIndex: eventIndex)
                 }
                 var filter = source.filter.map(VoiceFilter.init)
+                var rightFilter = source.filter.map(VoiceFilter.init)
                 if filter != nil {
                     guard let cutoff = event.cutoffHz else {
                         throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "source filter requires event cutoff")
@@ -500,10 +533,14 @@ private struct RenderContext: Sendable {
                     throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "cutoff requires a source filter")
                 }
                 var phase = 0.0
+                var samplePosition = 0.0
+                let fixedIncrement = try sampleVoice?.increment(event: event, source: source, time: 0,
+                                                                secondsPerBeat: secondsPerBeat)
                 for offset in 0..<eventFrames {
                     let frame = seamless ? (startFrame + offset) % frameCount : startFrame + offset
                     let time = Double(offset) / PreparedLoop.requiredSampleRate
                     var raw: Double
+                    var right: Double?
                     switch source.kind {
                     case .synthesizer(let waveform):
                         let currentFrequency = frequency * pow(2, pitchDepth * (pitchContour?.value(at: time) ?? 0) / 12)
@@ -514,11 +551,23 @@ private struct RenderContext: Sendable {
                             .truncatingRemainder(dividingBy: 1)
                     case .sample:
                         raw = Double(sample(source.kind, pitch: event.pitch, time: time))
+                    case .fileSample, .sampleBank:
+                        guard let sampleVoice, let fixedIncrement else {
+                            throw LoopRenderingError.invalidSound("file event has no decoded sample")
+                        }
+                        raw = sampleVoice.value(at: samplePosition, reversed: source.sampleReversed, channel: 0)
+                        right = sampleVoice.value(at: samplePosition, reversed: source.sampleReversed, channel: 1)
+                        samplePosition += source.pitchEnvelope == nil ? fixedIncrement
+                            : try sampleVoice.increment(event: event, source: source, time: time,
+                                                        secondsPerBeat: secondsPerBeat)
                     }
                     if filter != nil, let cutoff = event.cutoffHz {
                         let frequency = cutoff * pow(2, filterDepth * (filterContour?.value(at: time) ?? 0) / 12)
                         if let filtered = try filter?.process(raw, cutoff: frequency, eventIndex: eventIndex) {
                             raw = filtered
+                        }
+                        if let value = right, let filtered = try rightFilter?.process(value, cutoff: frequency, eventIndex: eventIndex) {
+                            right = filtered
                         }
                     }
                     let contour: Double
@@ -533,7 +582,11 @@ private struct RenderContext: Sendable {
                         throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "non-finite source PCM")
                     }
                     output.left[frame] += Float(value) * leftGain
-                    output.right[frame] += Float(value) * rightGain
+                    let rightValue = (right ?? raw) * Double(amplitude) * contour
+                    guard rightValue.isFinite, abs(rightValue) <= Double(Float.greatestFiniteMagnitude) else {
+                        throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "non-finite stereo sample PCM")
+                    }
+                    output.right[frame] += Float(rightValue) * rightGain
                 }
             }
         }
@@ -564,6 +617,8 @@ private struct RenderContext: Sendable {
             let frequency = 440 * pow(2, (midi - 69) / 12)
             let phase = (time * frequency).truncatingRemainder(dividingBy: 1)
             return oscillator(waveform, phase: phase, time: time)
+        case .fileSample, .sampleBank:
+            preconditionFailure("Decoded file voices use the sample traversal path")
         case .sample(let name):
             let decay: Double
             switch name {

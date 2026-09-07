@@ -7,6 +7,8 @@ public struct CompiledSource: Sendable, Equatable {
     public internal(set) var pitchEnvelope: EnvelopeModulation?
     public internal(set) var filterEnvelope: EnvelopeModulation?
     public internal(set) var sampleRegion: SampleRegion?
+    public internal(set) var sampleReversed: Bool
+    public internal(set) var samplePlaybackRate: Double
     public internal(set) var filter: SourceFilter?
     public internal(set) var unison: Unison?
     public internal(set) var patternAnchor: SoundSourceAnchor?
@@ -20,6 +22,8 @@ public struct CompiledSource: Sendable, Equatable {
         pitchEnvelope: EnvelopeModulation? = nil,
         filterEnvelope: EnvelopeModulation? = nil,
         sampleRegion: SampleRegion? = nil,
+        sampleReversed: Bool = false,
+        samplePlaybackRate: Double = 1,
         unison: Unison? = nil,
         filter: SourceFilter? = nil,
         patternAnchor: SoundSourceAnchor? = nil,
@@ -32,6 +36,8 @@ public struct CompiledSource: Sendable, Equatable {
         self.pitchEnvelope = pitchEnvelope
         self.filterEnvelope = filterEnvelope
         self.sampleRegion = sampleRegion
+        self.sampleReversed = sampleReversed
+        self.samplePlaybackRate = samplePlaybackRate
         self.unison = unison
         self.filter = filter
         self.patternAnchor = patternAnchor
