@@ -4,6 +4,29 @@ SwiftMusic declares immutable `Sound` trees. Sibling declarations are parallel, 
 
 The live music-making experience and the planned MusicPlaygournd editor are defined in [PHILOSOPHY.md](PHILOSOPHY.md). The example below uses the declarative foundation API.
 
+## Requirements
+
+SwiftMusic requires Swift tools 6.4. The 0.1.0 preview was verified with `swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-08-14-a` (compiler `424cae54c1a10da`) on macOS 27.0 arm64. The package deployment target is macOS 14; runtime behavior on macOS 14 is untested. This preview makes no stable API promise.
+
+## SwiftPM installation
+
+Add SwiftMusic as an exact-version dependency and link its library product:
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/1amageek/SwiftMusic.git", exact: "0.1.0")
+],
+
+targets: [
+    .target(
+        name: "YourTarget",
+        dependencies: [
+            .product(name: "SwiftMusic", package: "SwiftMusic")
+        ]
+    )
+]
+```
+
 ```swift
 import SwiftMusic
 
@@ -57,3 +80,7 @@ edit -> beginUpdate -> prepare -> receive -> pending -> host boundary -> current
 `RhythmPattern` accepts whitespace-separated `x` and `~`; `NotePattern` accepts scientific pitch names and `~` rests. Their default cycle is four quarter-note beats. C4 is MIDI 60. Note-pattern literals generate a timed sequence; `notes([Pitch])` assigns pitches to existing events. To validate text immediately, use `try RhythmPattern(validating: text)` or `try NotePattern(validating: text)`. Literal conversion itself does not throw.
 
 Preparation is synchronous and returns immutable beat events and an ordered render plan. An audio host prepares backend resources before calling `receive`, delivering one final success or failure per revision, then adopts at its chosen boundary. The host owns revision allocation, state isolation, clocking, and rendering. `LiveMusicState` handles plan adoption only: no audio backend, automatic bar synchronization, Swift source evaluator, or Editor UI is implemented yet.
+
+## License
+
+SwiftMusic is available under the [MIT License](LICENSE).
