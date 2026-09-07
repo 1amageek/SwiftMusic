@@ -10,6 +10,16 @@ public struct MusicalTime: Sendable, Hashable, Comparable, CustomStringConvertib
     public static let eighth = MusicalTime(uncheckedNumerator: 1, denominator: 2)
     public static let sixteenth = MusicalTime(uncheckedNumerator: 1, denominator: 4)
 
+    public static func beats(_ count: UInt64) -> Self {
+        Self(uncheckedNumerator: count, denominator: 1)
+    }
+
+    /// Resolves bars immediately using the caller's explicit quarter-note beat count.
+    public static func bars(_ count: UInt64, beatsPerBar: Int) throws -> Self {
+        guard beatsPerBar > 0 else { throw MusicalTimeError.invalidBeatsPerBar(beatsPerBar) }
+        return .beats(try checkedMultiply(count, UInt64(beatsPerBar)))
+    }
+
     public init(numerator: UInt64, denominator: UInt64) throws {
         guard denominator != 0 else {
             throw MusicalTimeError.zeroDenominator

@@ -1,4 +1,12 @@
 public enum AudioEffect: Sendable, Equatable, Hashable {
+    public static func equalizer(frequency: Frequency, gain: Decibels, q: Double) -> Self {
+        .equalizer(frequencyHz: frequency.hertz, gainDecibels: gain.value, q: q)
+    }
+
+    public static func compressor(threshold: Decibels, ratio: Double) -> Self {
+        .compressor(thresholdDecibels: threshold.value, ratio: ratio)
+    }
+
     case equalizer(frequencyHz: Double, gainDecibels: Double, q: Double)
     case filter(kind: FilterKind, cutoffHz: Double, resonance: Double)
     case compressor(thresholdDecibels: Double, ratio: Double)

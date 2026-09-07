@@ -5,6 +5,7 @@ public struct CompiledSource: Sendable, Equatable {
     public internal(set) var tuning: Tuning?
     public internal(set) var envelope: Envelope?
     public internal(set) var sampleRegion: SampleRegion?
+    public internal(set) var filter: SourceFilter?
     public internal(set) var unison: Unison?
     public internal(set) var patternAnchor: SoundSourceAnchor?
     public internal(set) var patternText: String?
@@ -16,6 +17,7 @@ public struct CompiledSource: Sendable, Equatable {
         envelope: Envelope? = nil,
         sampleRegion: SampleRegion? = nil,
         unison: Unison? = nil,
+        filter: SourceFilter? = nil,
         patternAnchor: SoundSourceAnchor? = nil,
         patternText: String? = nil
     ) {
@@ -25,6 +27,7 @@ public struct CompiledSource: Sendable, Equatable {
         self.envelope = envelope
         self.sampleRegion = sampleRegion
         self.unison = unison
+        self.filter = filter
         self.patternAnchor = patternAnchor
         self.patternText = patternText
     }

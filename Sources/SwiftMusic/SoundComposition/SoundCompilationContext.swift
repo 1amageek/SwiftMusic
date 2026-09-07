@@ -141,6 +141,7 @@ internal struct _SoundCompilationContext {
                             event.start = try original.start.adding(start)
                             event.duration = duration
                             event.pitch = pitch
+                            try validateEffectivePitch(event)
                             event.patternStepIndex = leaf.index
                             events.append(event)
                         }
@@ -194,11 +195,40 @@ internal struct _SoundCompilationContext {
             applyPatternProvenance(anchor, text: nil, to: sourceRange)
             for index in fragment.events.indices {
                 fragment.events[index].pitch = pitches[index % pitches.count]
+                try validateEffectivePitch(fragment.events[index])
                 fragment.events[index].patternStepIndex = nil
             }
         case .transpose(let semitones):
             for index in fragment.events.indices {
                 fragment.events[index].pitch = try transposed(fragment.events[index].pitch, by: semitones)
+                try validateEffectivePitch(fragment.events[index])
+            }
+        case .pitchPattern(let pattern, let cycle):
+            guard cycle > .zero else { throw invalid("Pitch pattern cycle must be positive") }
+            let resolved = try pattern.resolvedTransform(cycle: cycle)
+            let period = try resolved.period
+            for index in fragment.events.indices {
+                let leaf = try sampledLeaf(resolved, period: period, at: fragment.events[index].start)
+                fragment.events[index].pitchOffsetSemitones += try pattern.value(at: leaf).value
+                try validateEffectivePitch(fragment.events[index])
+            }
+        case .cutoffPattern(let pattern, let cycle, let resonanceQ, let slope):
+            guard cycle > .zero else { throw invalid("Cutoff pattern cycle must be positive") }
+            let filter = try SourceFilter(resonanceQ: resonanceQ, slope: slope)
+            let resolved = try pattern.resolvedTransform(cycle: cycle)
+            let period = try resolved.period
+            for index in sourceRange { sources[index].filter = filter }
+            for index in fragment.events.indices {
+                let leaf = try sampledLeaf(resolved, period: period, at: fragment.events[index].start)
+                fragment.events[index].cutoffHz = try pattern.value(at: leaf).hertz
+            }
+        case .envelopePattern(let pattern, let cycle):
+            guard cycle > .zero else { throw invalid("Envelope pattern cycle must be positive") }
+            let resolved = try pattern.resolvedTransform(cycle: cycle)
+            let period = try resolved.period
+            for index in fragment.events.indices {
+                let leaf = try sampledLeaf(resolved, period: period, at: fragment.events[index].start)
+                fragment.events[index].envelope = try pattern.value(at: leaf)
             }
         case .chord(let chord):
             let count = try expandedCount(fragment.events.count, multiplier: chord.intervals.count)
@@ -209,6 +239,7 @@ internal struct _SoundCompilationContext {
                 for interval in chord.intervals {
                     var event = original
                     event.pitch = try transposed(original.pitch, by: interval)
+                    try validateEffectivePitch(event)
                     events.append(event)
                 }
             }
@@ -231,6 +262,7 @@ internal struct _SoundCompilationContext {
             for index in sourceRange { sources[index].tuning = tuning }
         case .envelope(let envelope):
             for index in sourceRange { sources[index].envelope = envelope }
+            for index in fragment.events.indices { fragment.events[index].envelope = nil }
         case .sampleRegion(let region):
             for index in sourceRange {
                 guard case .sample = sources[index].kind else {
@@ -356,6 +388,23 @@ internal struct _SoundCompilationContext {
         var result = finish(rendered)
         result.playbackMode = .seamlessLoop
         return result
+    }
+
+    private func sampledLeaf(
+        _ resolved: _PatternResolvedTransform, period: MusicalTime, at start: MusicalTime
+    ) throws -> _PatternTimedLeaf {
+        guard let index = _patternLeafIndex(at: start, cycle: period, leaves: resolved.program.leaves) else {
+            throw invalid("Parameter pattern phase did not resolve to a leaf")
+        }
+        return resolved.program.leaves[index]
+    }
+
+    private func validateEffectivePitch(_ event: CompiledSoundEvent) throws {
+        guard let pitch = event.pitch else { throw SoundCompilationError.missingPitch }
+        let effective = Double(pitch.midiNote) + event.pitchOffsetSemitones
+        guard effective.isFinite, (0...127).contains(effective) else {
+            throw SoundCompilationError.pitchOutOfRange
+        }
     }
 
     private func transposed(_ pitch: Pitch?, by semitones: Int) throws -> Pitch {

@@ -7,6 +7,19 @@ public extension Sound {
         ModifiedSound(base: self, modifier: .envelope(value))
     }
 
+    func envelope(_ pattern: EnvelopePattern, cycle: MusicalTime = .whole) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .envelopePattern(pattern, cycle))
+    }
+
+    func lowPass(
+        _ pattern: CutoffPattern,
+        cycle: MusicalTime = .whole,
+        resonanceQ: Double = 0.7071067811865476,
+        slope: FilterSlope = .twelve
+    ) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .cutoffPattern(pattern, cycle, resonanceQ, slope))
+    }
+
     func sampleRegion(_ value: SampleRegion) -> ModifiedSound {
         ModifiedSound(base: self, modifier: .sampleRegion(value))
     }

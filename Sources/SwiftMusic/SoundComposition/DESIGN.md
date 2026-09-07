@@ -277,13 +277,92 @@ Sample("fill").rhythm("x ~").oneShot().repeated(2) // exactly two live copies
 
 Compiler tests prove all four domain transforms over flat, nested and alternating programs; exact phase/reversal/repetition order; zero/overflow failures; byte-for-byte-equivalent finite compile behavior; automatic rhythm/note periods and nested LCM composition; post-generator gain/pan alternation and fractional-rate contributions; the contrasting pre-generator inherited value; both gain/repeated orderings and their future eight-beat sequences; a twice-repeated eight-beat pattern yielding a sixteen-beat template; nested-generator Cartesian order; source/render-node counts independent of occurrence count; one evaluation of a custom body; complete onset resampling; recurring offset phase without duplicate streams; finite and terminal-oneShot offset without wrap; pre-generator offset normalized only when a later outer generator establishes recurrence; all-rest recurrence; oneShot ordering; finite repeated behavior; deterministic output; no recurrence on bare siblings; preserved full duration and lexical identity for one boundary-crossing note; and typed window/event/duration overflow. Native rendering and seamless playback of the fully compiled window belong to the Rendering contract.
 
+## Typed Pitch, Cutoff, and Envelope Patterns
+
+
+P02.4 adds domain-specific values where Swift has no suitable unit type: `Frequency(hertz:)` requires a finite positive Double, `Decibels(value:)` and `Semitones(value:)` require finite signed Doubles. Their labeled throwing initializers avoid literal-overload ambiguity. Wall-clock envelope input uses the standard-library `Duration`; a new labeled `Envelope(attack:decay:sustainLevel:release:)` converts nonnegative, finitely representable durations into the existing public seconds fields, so the current `attackSeconds` initializer and equality remain source compatible. `MusicalTime` remains the only beat-domain value and adds `beats(_:)` plus checked `bars(_:beatsPerBar:)`; bars require an explicit positive meter and reduce to exact quarter-note beats rather than introducing a meter-dependent stored duration. Typed `Frequency` and `Decibels` overloads construct existing `Tuning`, equalizer and compressor descriptors without changing their stored Double cases.
+
+`PitchPattern`, `CutoffPattern`, and `EnvelopePattern` are separate immutable domains and reuse only the bounded internal mini-pattern/timing machinery. `PitchPattern` is a string literal of finite signed semitone leaves and also accepts an eagerly validated `[Semitones]`. `CutoffPattern` is a string literal of finite positive hertz leaves and also accepts `[Frequency]`. `EnvelopePattern` accepts `[Envelope]` for a flat typed sequence, or `init(_ notation: String, values: [String: Envelope])` for brackets, alternatives and repetition over caller-named typed envelopes; every non-rest token must resolve in the nonempty value map, and `~` is invalid. This avoids a new punctuation grammar for four envelope fields. All three domains expose the P02.3 `fast`, `slow`, `phase`, `reversed` and `repeated` operations, the 64 KiB/1,024-leaf/32-depth bounds, exact UTF-8 source errors for textual input, and typed nil-location failures for typed-value or transform errors. There is no public generic pattern protocol or type-erased parameter container.
+
+```swift
+let twoBars = try MusicalTime.bars(2, beatsPerBar: 4)
+let pitch: PitchPattern = "0 <7 12>"
+let cutoff: CutoffPattern = "400 <800 1600>"
+let tight = try Envelope(
+    attack: .milliseconds(5), decay: .milliseconds(80),
+    sustainLevel: 0.5, release: .milliseconds(120)
+)
+let envelopes = try EnvelopePattern("tight [tight open]", values: [
+    "tight": tight,
+    "open": try Envelope(
+        attack: .milliseconds(20), decay: .milliseconds(200),
+        sustainLevel: 0.8, release: .milliseconds(500)
+    )
+])
+
+Synthesizer(.saw)
+    .notes("C3 E3 G3")
+    .transpose(pitch, cycle: twoBars)
+    .lowPass(cutoff, cycle: twoBars)
+    .envelope(envelopes, cycle: twoBars)
+```
+
+`transpose(_:cycle:)` requires every current event to have a base pitch, samples at its onset and adds the selected semitone value to `CompiledSoundEvent.pitchOffsetSemitones`, whose default is zero. Whenever any modifier writes or expands pitch—including patterned or static transpose, array notes, NotePattern, and chord—the compiler validates the effective fractional MIDI value `Double(pitch.midiNote) + pitchOffsetSemitones` as finite and within 0...127. An unpitched event or out-of-range effective value is a typed compilation failure; values are never clamped. Existing `transpose(Int)` continues to change the base seven-bit `Pitch` while retaining the patterned offset. Thus a retained +1 offset followed by `notes([Pitch(midiNote: 127)])`, a C4 chord expansion reaching past 127, or an equivalent NotePattern replacement fails at the pitch-writing modifier. Fractional offsets remain metadata for P03 native pitch rendering.
+
+`lowPass(_:cycle:resonanceQ:slope:)` is explicitly a per-voice low-pass declaration, avoiding an implicit filter-kind choice. P02.4 `SourceFilter` stores the existing `FilterKind.lowPass`, positive finite resonance Q and `FilterSlope` of 12 or 24 dB per octave; cutoff exists only on each sampled `CompiledSoundEvent.cutoffHz`, so the descriptor has no duplicate or guessed base cutoff. The modifier replaces the subtree's source-filter descriptor and current event cutoffs and uses no post-mix `AudioEffect.filter`. Other `FilterKind` cases become constructible only with their owning P03 contract.
+
+`envelope(_:cycle:)` samples a complete `Envelope` into `CompiledSoundEvent.envelope`; the current static `.envelope(Envelope)` remains the source fallback. An outer static envelope clears inner event overrides, while an outer envelope pattern replaces them; this preserves inner-to-outer value replacement. `_LiveEventProgram` records the outer clear operation so canonical emission cannot restore an inner envelope value. Period analysis deliberately retains the complete periods of earlier declared envelope, cutoff, pitch, gain and pan samplers even when a later modifier replaces or clears their values; declaration-order replacement is not also a clock-pruning optimization. The outermost low-pass declaration likewise replaces filter configuration and event cutoff values while earlier sampler periods remain in the checked live LCM.
+
+Each parameter pattern preserves rhythm/note `patternAnchor`, `patternText` and `patternStepIndex`; P02.4 adds no parameter-provenance placeholder. It never creates, removes, retimes or relabels an event. Before a generator it resolves against current finite onsets and contributes no future clock. After a generator it is an ordered `_LiveEventProgram` sampler, contributes its complete transformed natural period to the checked live LCM, and is re-evaluated over the full canonical sampler period before periodic values are copied. `Sound.repeated` closes these clocks under the P02.3 template rule. Empty/all-rest subtrees still validate patterns, units and cycles.
+
+P02.4 ends at immutable compiler metadata. Until P03 implements native pitch offset, low-pass and per-event envelope DSP, LoopRenderer must reject any compiled sound using these new fields with a typed unsupported-feature error before PCM allocation; it must not ignore metadata or return unchanged audio. Existing sounds whose new fields retain defaults render byte-for-byte through the prior path. Compiler tests own unit conversion, eager/deferred and located failures, typed/text parity, transform order, static-versus-pattern envelope/filter replacement, provenance preservation, pre/post-generator clocks, repeated closure, live LCM and bounds. Client tests own explicit rejection of every new nondefault field and unchanged rendering for defaults. All tests use Swift Testing.
+
 ## Native Source Performance
 
 P03 turns existing source descriptors into audible native behavior while keeping musical compilation independent of file and audio I/O. SwiftMusic validates and emits immutable source/event policy; MusicPlaygournd resolves files, allocates voices, and renders PCM. No compiler API reads a file, opens an audio device, or silently substitutes a built-in sound.
 
-Existing `Envelope` remains the amplitude ADSR descriptor and its current initializer remains source compatible. Additive defaults describe linear attack/decay/release curves and release anchored at the gated note end. `EnvelopeCurve` supports bounded linear and exponential shapes; `EnvelopeReleaseAnchor` selects gated note end or ungated event end. Attack and decay begin at event onset, sustain follows decay, and release begins only at the selected anchor. The P02.4 `EnvelopePattern` may replace the source envelope per event onset; outermost assignment wins. `pitchEnvelope(_:depth:)` and `filterEnvelope(_:depth:)` reuse the same normalized ADSR contour with signed semitone depth, returning to zero modulation after release. Static source settings remain the fallback when an event has no patterned override.
+Existing `Envelope` remains the amplitude ADSR descriptor and both current initializers remain source compatible. `EnvelopeCurve` is `.linear` or `.exponential(exponent: Double)` with finite exponent greater than zero. `EnvelopeReleaseAnchor` is `.gateEnd` or `.eventEnd`. Additive Envelope initializers accept attack, decay and release curves plus a release anchor, defaulting all curves to linear and the anchor to gateEnd; existing values therefore keep their prior metadata. For a segment from `a` to `b`, normalized local time `t` uses `a + (b - a) * pow(t, exponent)`, with linear equivalent to exponent one. Attack runs 0 to 1, decay 1 to sustainLevel, sustain holds, and release starts at the selected anchor from the contour's actual value at that instant and reaches zero over releaseSeconds. Zero-length segments take their ending value without division.
 
-`SourceFilter` owns low-pass, high-pass, or band-pass kind, positive cutoff, positive resonance Q, and `FilterSlope` of 12 or 24 dB per octave. `.filter(_:)` applies it to source descriptors; the P02.4 cutoff pattern supplies an optional per-event cutoff. Cutoff must be finite and positive at compilation and below the native Nyquist frequency at rendering. A cutoff pattern without a source filter is a typed compilation failure after the complete modifier subtree is known, so modifier order does not create a false failure. Existing `AudioEffect.filter` remains a post-mix render node owned by P04 and is not reinterpreted as this per-voice source filter.
+`pitchEnvelope(_ envelope: Envelope, depth: Semitones)` and `filterEnvelope(_ envelope: Envelope, depth: Semitones)` replace the corresponding optional source modulation descriptor; their signed finite depth multiplies the normalized ADSR contour. Pitch adds that value in semitones. Filter modulation multiplies cutoff by `pow(2, depth * contour / 12)`, so zero depth is neutral and negative depth lowers cutoff. The P02.4 event envelope overrides only amplitude Envelope; source amplitude envelope is its fallback. Pitch/filter modulation each owns its supplied Envelope and does not reuse the amplitude event override. Outer declarations replace the same descriptor, and all metadata remains immutable.
+
+`SourceFilter` retains its P02.4 kind/Q/slope shape. P03 permits `.lowPass`, `.highPass` and `.bandPass`, rejects `.notch`, requires finite resonance Q in `0.1...32`, and keeps `FilterSlope.twelve` and `.twentyFour`. `lowPass`, `highPass` and `bandPass` each have overloads accepting a fixed `Frequency` or a `CutoffPattern`, with `cycle: MusicalTime = .whole`, `resonanceQ: Double = 0.7071067811865476` and `slope: FilterSlope = .twelve`; fixed values are represented as one event cutoff without a separate clock. Every event under a source filter must have finite positive cutoff below the renderer sample-rate Nyquist limit after filter-envelope modulation. Invalid kind, Q, base cutoff or reachable modulated endpoint is a typed failure; no value is clamped. Existing `AudioEffect.filter` remains a post-mix render node owned by P04 and is not reinterpreted as this per-voice filter.
+
+The additive public surface is fixed as follows; the existing four-argument Envelope calls remain valid because the new arguments default as shown.
+
+```swift
+public enum EnvelopeCurve { case linear; case exponential(exponent: Double) }
+public enum EnvelopeReleaseAnchor { case gateEnd; case eventEnd }
+public struct EnvelopeModulation {
+    public let envelope: Envelope
+    public let depth: Semitones
+}
+
+public init(
+    attackSeconds: Double, decaySeconds: Double, sustainLevel: Double, releaseSeconds: Double,
+    attackCurve: EnvelopeCurve = .linear, decayCurve: EnvelopeCurve = .linear,
+    releaseCurve: EnvelopeCurve = .linear, releaseAnchor: EnvelopeReleaseAnchor = .gateEnd
+) throws
+public init(
+    attack: Duration, decay: Duration, sustainLevel: Double, release: Duration,
+    attackCurve: EnvelopeCurve = .linear, decayCurve: EnvelopeCurve = .linear,
+    releaseCurve: EnvelopeCurve = .linear, releaseAnchor: EnvelopeReleaseAnchor = .gateEnd
+) throws
+
+public func pitchEnvelope(_ envelope: Envelope, depth: Semitones) -> ModifiedSound
+public func filterEnvelope(_ envelope: Envelope, depth: Semitones) -> ModifiedSound
+public func lowPass(_ cutoff: Frequency, resonanceQ: Double = 0.7071067811865476,
+                    slope: FilterSlope = .twelve) -> ModifiedSound
+public func highPass(_ cutoff: Frequency, resonanceQ: Double = 0.7071067811865476,
+                     slope: FilterSlope = .twelve) -> ModifiedSound
+public func bandPass(_ cutoff: Frequency, resonanceQ: Double = 0.7071067811865476,
+                     slope: FilterSlope = .twelve) -> ModifiedSound
+public func highPass(_ cutoff: CutoffPattern, cycle: MusicalTime = .whole,
+                     resonanceQ: Double = 0.7071067811865476,
+                     slope: FilterSlope = .twelve) -> ModifiedSound
+public func bandPass(_ cutoff: CutoffPattern, cycle: MusicalTime = .whole,
+                     resonanceQ: Double = 0.7071067811865476,
+                     slope: FilterSlope = .twelve) -> ModifiedSound
+```
 
 ```text
 oscillator/sample frame

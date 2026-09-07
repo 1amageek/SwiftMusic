@@ -4,6 +4,19 @@ public struct Envelope: Sendable, Equatable, Hashable {
     public let sustainLevel: Double
     public let releaseSeconds: Double
 
+    /// Accepts standard-library durations while retaining the existing seconds representation.
+    public init(attack: Duration, decay: Duration, sustainLevel: Double, release: Duration) throws {
+        guard attack >= .zero, decay >= .zero, release >= .zero else {
+            throw SoundParameterError.invalidValue("envelope duration")
+        }
+        func seconds(_ duration: Duration) -> Double {
+            let parts = duration.components
+            return Double(parts.seconds) + Double(parts.attoseconds) / 1e18
+        }
+        try self.init(attackSeconds: seconds(attack), decaySeconds: seconds(decay),
+                      sustainLevel: sustainLevel, releaseSeconds: seconds(release))
+    }
+
     public init(
         attackSeconds: Double,
         decaySeconds: Double,

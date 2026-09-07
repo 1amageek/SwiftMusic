@@ -8,6 +8,7 @@ internal enum _SoundModifier: Sendable {
     case notes([Pitch], SoundSourceAnchor)
     case notePattern(NotePattern, MusicalTime, SoundSourceAnchor)
     case transpose(Int)
+    case pitchPattern(PitchPattern, MusicalTime)
     case chord(Chord)
     case dynamic(Dynamic)
     case velocity(Int)
@@ -15,6 +16,8 @@ internal enum _SoundModifier: Sendable {
     case staccato
     case tuning(Tuning)
     case envelope(Envelope)
+    case cutoffPattern(CutoffPattern, MusicalTime, Double, FilterSlope)
+    case envelopePattern(EnvelopePattern, MusicalTime)
     case sampleRegion(SampleRegion)
     case unison(Unison)
     case effect(AudioEffect)

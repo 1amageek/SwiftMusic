@@ -258,7 +258,25 @@ private struct RenderContext: Sendable {
             count: sound.sources.count
         )
 
+        for (index, event) in sound.events.enumerated() {
+            // FIXME(INCOMPLETE_IMPLEMENTATION): editor evaluation cannot render pitch offsets yet; require pitch PCM tests before enabling.
+            guard event.pitchOffsetSemitones == 0 else {
+                throw LoopRenderingError.unsupportedEventSetting(index: index, setting: "pitchOffsetSemitones")
+            }
+            // FIXME(INCOMPLETE_IMPLEMENTATION): editor evaluation cannot render event cutoff yet; require per-voice filter PCM tests before enabling.
+            guard event.cutoffHz == nil else {
+                throw LoopRenderingError.unsupportedEventSetting(index: index, setting: "cutoffHz")
+            }
+            // FIXME(INCOMPLETE_IMPLEMENTATION): editor evaluation cannot render event envelopes yet; require ADSR PCM tests before enabling.
+            guard event.envelope == nil else {
+                throw LoopRenderingError.unsupportedEventSetting(index: index, setting: "envelope")
+            }
+        }
         for source in sound.sources {
+            // FIXME(INCOMPLETE_IMPLEMENTATION): editor evaluation cannot render source filters yet; require per-voice filter PCM tests before enabling.
+            guard source.filter == nil else {
+                throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "filter")
+            }
             // FIXME(INCOMPLETE_IMPLEMENTATION): tuning rendering is unavailable in editor evaluation; require PCM behavior tests before enabling it.
             guard source.tuning == nil else {
                 throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "tuning")
