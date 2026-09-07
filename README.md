@@ -89,6 +89,8 @@ These additions are not included in the published 0.1.0 tag. Gain and pan use se
 
 All pattern domains support bracket subdivisions, cycle alternatives such as `<a b>`, and leaf repetition such as `x*8`. Rhythm and notes allow `~` rests; notes also allow simultaneous pitches such as `C4,E4,G4`. Nested alternatives advance independently: `<a <b c>>` produces `a, b, a, c`. Rhythm and notes compile the complete finite period; gain and pan sample their alternatives at each absolute note onset. Pattern errors expose `utf8Offset` for source diagnostics. Expansion is bounded to 1,024 realized leaves or pitches, with typed failures instead of truncation.
 
+Each domain pattern also supports ordered `fast`, `slow`, `phase`, `reversed`, and `repeated` transforms. Phase advances onsets within each selected cycle; reversal preserves alternation-cycle order. Pattern `repeated(2)` fits two local cycles into the caller's cycle, while `Sound.repeated(2)` creates two finite copies. For example, `("<C4 D4>" as NotePattern).repeated(2)` places C4 and D4 inside one four-beat cycle. The `steps` getter retains its source-notation view; compilation resolves transforms against the caller's cycle.
+
 ```swift
 Synthesizer(.sine)
     .notes("C4 C4 C4 C4")

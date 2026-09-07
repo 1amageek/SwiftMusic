@@ -2,13 +2,13 @@
 public struct PanPattern: Sendable, Equatable, ExpressibleByStringLiteral {
     /// The source text retained by a literal or an eagerly validated value.
     public let rawValue: String
-    private let phase: _PatternPhaseScale
+    private let transform: _PatternTransform
 
     /// Creates and eagerly validates a pattern from dynamic text.
     public init(_ value: String) throws {
         _ = try Self.parse(value)
         rawValue = value
-        phase = .identity
+        transform = .identity
     }
 
     /// Requests eager validation explicitly, including when the argument is a literal.
@@ -31,13 +31,13 @@ public struct PanPattern: Sendable, Equatable, ExpressibleByStringLiteral {
             }
         }
         rawValue = steps.map { String($0) }.joined(separator: " ")
-        phase = .identity
+        transform = .identity
     }
 
     /// Retains literal input without validating it during Swift source evaluation.
     public init(stringLiteral value: String) {
         rawValue = value
-        phase = .identity
+        transform = .identity
     }
 
     /// Resolves the source text into flat pan values.
@@ -47,22 +47,37 @@ public struct PanPattern: Sendable, Equatable, ExpressibleByStringLiteral {
 
     /// Defers a phase-speed transformation until the pattern is resolved.
     public func fast(_ factor: UInt64) -> Self {
-        Self(rawValue: rawValue, phase: phase.fast(factor))
+        Self(rawValue: rawValue, transform: transform.fast(factor))
     }
 
     /// Defers a phase-slowing transformation until the pattern is resolved.
     public func slow(_ factor: UInt64) -> Self {
-        Self(rawValue: rawValue, phase: phase.slow(factor))
+        Self(rawValue: rawValue, transform: transform.slow(factor))
     }
 
     /// Defers a rational phase-speed transformation until the pattern is resolved.
     public func fast(_ rate: PatternRate) -> Self {
-        Self(rawValue: rawValue, phase: phase.fast(rate))
+        Self(rawValue: rawValue, transform: transform.fast(rate))
     }
 
     /// Defers a rational phase-slowing transformation until the pattern is resolved.
     public func slow(_ rate: PatternRate) -> Self {
-        Self(rawValue: rawValue, phase: phase.slow(rate))
+        Self(rawValue: rawValue, transform: transform.slow(rate))
+    }
+
+    /// Advances pattern sampling by an exact non-negative offset.
+    public func phase(_ offset: MusicalTime) -> Self {
+        Self(rawValue: rawValue, transform: transform.phase(offset))
+    }
+
+    /// Mirrors leaves within each local cycle while retaining source indices.
+    public func reversed() -> Self {
+        Self(rawValue: rawValue, transform: transform.reversed())
+    }
+
+    /// Fits successive local pattern cycles into one caller cycle.
+    public func repeated(_ count: UInt64) -> Self {
+        Self(rawValue: rawValue, transform: transform.repeated(count))
     }
 
     /// Resolves the source text into its bounded natural-period program.
@@ -75,24 +90,28 @@ public struct PanPattern: Sendable, Equatable, ExpressibleByStringLiteral {
         get throws { try timedProgram.leaves }
     }
 
-    internal func resolvedCycle(from cycle: MusicalTime, naturalPeriod: Int = 1) throws -> MusicalTime {
+    /// Resolves the source and its deferred domain transforms for the compiler.
+    internal func resolvedTransform(cycle: MusicalTime) throws -> _PatternResolvedTransform {
         do {
-            let transformed = try phase.resolvedCycle(from: cycle)
-            return try transformed.multiplied(by: UInt64(naturalPeriod))
-        } catch _PatternPhaseFailure.zeroFactor {
-            throw PanPatternError.zeroFactor
-        } catch _PatternPhaseFailure.invalidRate(let error) {
-            throw PanPatternError.invalidRate(error)
-        } catch _PatternPhaseFailure.overflow {
-            throw PanPatternError.timingOverflow()
+            let result = try transform.resolve(
+                try Self.parseTimedProgram(rawValue),
+                cycle: cycle,
+                splitWrappedLeaves: true
+            )
+            _ = try result.period
+            return result
+        } catch let error as PanPatternError {
+            throw error
+        } catch let error as _PatternPhaseFailure {
+            throw Self.map(error)
         } catch is MusicalTimeError {
             throw PanPatternError.timingOverflow()
         }
     }
 
-    private init(rawValue: String, phase: _PatternPhaseScale) {
+    private init(rawValue: String, transform: _PatternTransform) {
         self.rawValue = rawValue
-        self.phase = phase
+        self.transform = transform
     }
 
     private static func parse(_ value: String) throws -> [Double] {
@@ -143,6 +162,14 @@ public struct PanPattern: Sendable, Equatable, ExpressibleByStringLiteral {
         case .tooManyLeaves(let limit, let offset): return .tooManyLeaves(limit: limit, offset: offset)
         case .nestingTooDeep(let limit, let offset): return .nestingTooDeep(limit: limit, offset: offset)
         case .timingOverflow(let offset): return .timingOverflow(offset: offset)
+        }
+    }
+
+    private static func map(_ error: _PatternPhaseFailure) -> PanPatternError {
+        switch error {
+        case .zeroFactor: return .zeroFactor
+        case .invalidRate(let rate): return .invalidRate(rate)
+        case .overflow: return .timingOverflow()
         }
     }
 }

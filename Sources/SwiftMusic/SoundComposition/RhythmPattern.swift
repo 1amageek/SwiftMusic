@@ -2,11 +2,13 @@
 public struct RhythmPattern: Sendable, Equatable, ExpressibleByStringLiteral {
     /// The source text retained by a literal or an eagerly validated value.
     public let rawValue: String
+    private let transform: _PatternTransform
 
     /// Creates and eagerly validates a pattern from dynamic text.
     public init(_ value: String) throws {
         _ = try Self.parse(value)
         rawValue = value
+        transform = .identity
     }
 
     /// Requests eager validation explicitly, including when the argument is a literal.
@@ -23,11 +25,13 @@ public struct RhythmPattern: Sendable, Equatable, ExpressibleByStringLiteral {
             throw RhythmPatternError.tooManyLeaves(limit: _MiniPatternParser.maximumLeaves, offset: 0)
         }
         rawValue = steps.map { $0 ? "x" : "~" }.joined(separator: " ")
+        transform = .identity
     }
 
     /// Retains literal input without validating it during Swift source evaluation.
     public init(stringLiteral value: String) {
         rawValue = value
+        transform = .identity
     }
 
     /// Resolves the source text for the compiler.
@@ -35,6 +39,41 @@ public struct RhythmPattern: Sendable, Equatable, ExpressibleByStringLiteral {
         get throws {
             try Self.parse(rawValue)
         }
+    }
+
+    /// Defers a phase-speed transformation until the pattern is resolved.
+    public func fast(_ factor: UInt64) -> Self {
+        Self(rawValue: rawValue, transform: transform.fast(factor))
+    }
+
+    /// Defers a phase-slowing transformation until the pattern is resolved.
+    public func slow(_ factor: UInt64) -> Self {
+        Self(rawValue: rawValue, transform: transform.slow(factor))
+    }
+
+    /// Defers a rational phase-speed transformation until the pattern is resolved.
+    public func fast(_ rate: PatternRate) -> Self {
+        Self(rawValue: rawValue, transform: transform.fast(rate))
+    }
+
+    /// Defers a rational phase-slowing transformation until the pattern is resolved.
+    public func slow(_ rate: PatternRate) -> Self {
+        Self(rawValue: rawValue, transform: transform.slow(rate))
+    }
+
+    /// Advances pattern sampling by an exact non-negative offset.
+    public func phase(_ offset: MusicalTime) -> Self {
+        Self(rawValue: rawValue, transform: transform.phase(offset))
+    }
+
+    /// Mirrors leaves within each local cycle while retaining source indices.
+    public func reversed() -> Self {
+        Self(rawValue: rawValue, transform: transform.reversed())
+    }
+
+    /// Fits successive local pattern cycles into one caller cycle.
+    public func repeated(_ count: UInt64) -> Self {
+        Self(rawValue: rawValue, transform: transform.repeated(count))
     }
 
     /// Resolves the source text into its bounded natural-period program.
@@ -45,6 +84,19 @@ public struct RhythmPattern: Sendable, Equatable, ExpressibleByStringLiteral {
     /// Resolves the source text into exact recursive leaf timings for compilation.
     internal var timedLeaves: [_PatternTimedLeaf] {
         get throws { try timedProgram.leaves }
+    }
+
+    /// Resolves the source and its deferred domain transforms for the compiler.
+    internal func resolvedTransform(cycle: MusicalTime) throws -> _PatternResolvedTransform {
+        do {
+            let result = try transform.resolve(try Self.parseTimedProgram(rawValue), cycle: cycle)
+            _ = try result.period
+            return result
+        } catch let error as _PatternPhaseFailure {
+            throw Self.map(error)
+        } catch is MusicalTimeError {
+            throw RhythmPatternError.timingOverflow()
+        }
     }
 
     private static func parse(_ value: String) throws -> [Bool] {
@@ -92,5 +144,18 @@ public struct RhythmPattern: Sendable, Equatable, ExpressibleByStringLiteral {
         case .nestingTooDeep(let limit, let offset): return .nestingTooDeep(limit: limit, offset: offset)
         case .timingOverflow(let offset): return .timingOverflow(offset: offset)
         }
+    }
+
+    private static func map(_ error: _PatternPhaseFailure) -> RhythmPatternError {
+        switch error {
+        case .zeroFactor: return .zeroFactor
+        case .invalidRate(let rate): return .invalidRate(rate)
+        case .overflow: return .timingOverflow()
+        }
+    }
+
+    private init(rawValue: String, transform: _PatternTransform) {
+        self.rawValue = rawValue
+        self.transform = transform
     }
 }

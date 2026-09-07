@@ -12,6 +12,8 @@ public enum RhythmPatternError: Error, Equatable, Sendable {
     case tooManyLeaves(limit: Int, offset: Int = 0)
     case nestingTooDeep(limit: Int, offset: Int = 0)
     case timingOverflow(offset: Int? = nil)
+    case zeroFactor
+    case invalidRate(PatternRateError)
 
     /// The zero-based UTF-8 source position, or nil for a non-source transform failure.
     public var utf8Offset: Int? {
@@ -28,6 +30,7 @@ public enum RhythmPatternError: Error, Equatable, Sendable {
         case .inputTooLong(_, let offset),
              .tooManyLeaves(_, let offset),
              .nestingTooDeep(_, let offset): offset
+        case .zeroFactor, .invalidRate: nil
         }
     }
 }

@@ -5,6 +5,21 @@ import Testing
 
 struct CyclePatternRenderingTests {
     @Test(.timeLimit(.minutes(3)))
+    func orderedNoteTransformsReachTheSamePCMAsExplicitNotes() throws {
+        let notes: NotePattern = "C4 D4"
+        let compiler = SoundCompiler()
+        let renderer = LoopRenderer()
+        let transformed = try renderer.render(compiler.compile(
+            Synthesizer(.sine).notes(notes.reversed().repeated(2))
+        ), bpm: 120, beatsPerBar: 4)
+        let explicit = try renderer.render(compiler.compile(
+            Synthesizer(.sine).notes("D4 C4 D4 C4")
+        ), bpm: 120, beatsPerBar: 4)
+        #expect(transformed.samples == explicit.samples)
+        #expect(transformed.events.map(\.patternStepIndex) == [1, 0, 1, 0])
+    }
+
+    @Test(.timeLimit(.minutes(3)))
     func completeAlternationAndChordsReachPCMAndLexicalMetadata() throws {
         let compiler = SoundCompiler()
         let renderer = LoopRenderer()

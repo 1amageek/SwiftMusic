@@ -80,9 +80,9 @@ internal struct _SoundCompilationContext {
         case .rhythm(let pattern, let cycle, let anchor):
             guard cycle > .zero else { throw invalid("Rhythm cycle must be positive") }
             do {
-                let program = try pattern.timedProgram
-                let leaves = program.leaves
-                let period = try cycle.multiplied(by: UInt64(program.naturalPeriod))
+                let resolved = try pattern.resolvedTransform(cycle: cycle)
+                let leaves = resolved.program.leaves
+                let period = try resolved.period
                 applyPatternProvenance(anchor, text: pattern.rawValue, to: sourceRange)
                 let hitCount = leaves.reduce(0) { $0 + ($1.token == "x" ? 1 : 0) }
                 let count = try expandedCount(fragment.events.count, multiplier: hitCount)
@@ -108,9 +108,9 @@ internal struct _SoundCompilationContext {
         case .notePattern(let pattern, let cycle, let anchor):
             guard cycle > .zero else { throw invalid("Note cycle must be positive") }
             do {
-                let program = try pattern.timedProgram
-                let leaves = program.leaves
-                let period = try cycle.multiplied(by: UInt64(program.naturalPeriod))
+                let resolved = try pattern.resolvedTransform(cycle: cycle)
+                let leaves = resolved.program.leaves
+                let period = try resolved.period
                 applyPatternProvenance(anchor, text: pattern.rawValue, to: sourceRange)
                 let pitches = try leaves.map { leaf in
                     leaf.token == "~" ? [] : try NotePattern.pitches(from: leaf)
@@ -245,9 +245,9 @@ internal struct _SoundCompilationContext {
             }
         case .gainPattern(let pattern, let cycle):
             guard cycle > .zero else { throw invalid("Gain pattern cycle must be positive") }
-            let program = try pattern.timedProgram
-            let leaves = program.leaves
-            let resolvedCycle = try pattern.resolvedCycle(from: cycle, naturalPeriod: program.naturalPeriod)
+            let resolved = try pattern.resolvedTransform(cycle: cycle)
+            let leaves = resolved.program.leaves
+            let resolvedCycle = try resolved.period
             for index in fragment.events.indices {
                 let eventStart = fragment.events[index].start
                 guard let leafPosition = _patternLeafIndex(
@@ -274,9 +274,9 @@ internal struct _SoundCompilationContext {
             }
         case .panPattern(let pattern, let cycle):
             guard cycle > .zero else { throw invalid("Pan pattern cycle must be positive") }
-            let program = try pattern.timedProgram
-            let leaves = program.leaves
-            let resolvedCycle = try pattern.resolvedCycle(from: cycle, naturalPeriod: program.naturalPeriod)
+            let resolved = try pattern.resolvedTransform(cycle: cycle)
+            let leaves = resolved.program.leaves
+            let resolvedCycle = try resolved.period
             for index in fragment.events.indices {
                 let eventStart = fragment.events[index].start
                 guard let leafPosition = _patternLeafIndex(
