@@ -7,13 +7,13 @@ internal enum EffectProcessor {
 
     static func tailFrames(_ effect: AudioEffect, bpm: Double, node: Int) throws -> Int {
         switch effect {
-        case .equalizer, .saturation, .distortion: return 0
+        case .equalizer, .saturation, .distortion, .compressor, .sidechainCompressor, .noiseGate, .limiter: return 0
         case .delay(let time, let feedback, let wet):
             return wet == 0 ? 0 : try delay(time, feedback: feedback, bpm: bpm).last
         case .reverb(let size, let wet):
             return wet == 0 ? 0 : Int(((0.1 + 2.9 * size) * PreparedLoop.requiredSampleRate).rounded(.up)) - 1
         // FIXME(INCOMPLETE_IMPLEMENTATION): These descriptors reach the ordered renderer; their dedicated DSP sprints must prove audible behavior before enabling them.
-        case .filter, .compressor, .chorus:
+        case .filter, .chorus:
             throw LoopRenderingError.unsupportedRenderNode(index: node, operation: "effect")
         }
     }
@@ -41,6 +41,8 @@ internal enum EffectProcessor {
             throw LoopRenderingError.invalidSound("invalid effect input PCM")
         }
         switch effect {
+        case .compressor, .sidechainCompressor, .noiseGate, .limiter:
+            try DynamicsProcessor(effect).process(&buffer, seamless: seamless)
         case .equalizer(let frequency, let gain, let q):
             let eq = try PeakingEqualizer(frequency: frequency, gain: gain, q: q)
             try eq.process(&buffer.left, horizon: inputHorizon, circular: seamless)

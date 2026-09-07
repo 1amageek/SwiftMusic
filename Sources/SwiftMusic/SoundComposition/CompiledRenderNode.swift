@@ -3,6 +3,7 @@ public enum CompiledRenderNode: Sendable, Equatable {
     case source(sourceID: Int)
     case mix(inputs: [Int])
     case effect(input: Int, effect: AudioEffect)
+    case sidechainEffect(input: Int, sidechain: Int, compressor: SidechainCompressor)
     case gain(input: Int, value: Double)
     case gainAutomation(input: Int, automation: GainAutomation)
     case pan(input: Int, value: Double)
@@ -12,5 +13,6 @@ public enum CompiledRenderNode: Sendable, Equatable {
     case send(input: Int, bus: String, level: Double)
     case trackSend(input: Int, bus: String, level: Double, trackID: Int, placement: TrackSendPlacement)
     case busReturn(bus: String, inputs: [Int])
+    case eventDuck(input: Int, rules: [Int])
     case output(input: Int, bus: String)
 }

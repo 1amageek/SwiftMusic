@@ -4,6 +4,7 @@ internal struct _SoundCompilationContext {
     var sources: [CompiledSource] = []
     var tracks: [CompiledTrack] = []
     var nodes: [CompiledRenderNode] = []
+    var sidechainBuses: [Int: String] = [:]
     var currentTrackID: Int?
     var eventCount = 0
 
@@ -126,11 +127,28 @@ internal struct _SoundCompilationContext {
             return result
         case .modified(let content, let modifier):
             let firstSource = sources.count
-            var fragment = try visit(content, depth: childDepth(depth))
-            let childProgram = fragment.liveProgram
-            try apply(modifier, to: &fragment, sourceRange: firstSource..<sources.count)
-            if let childProgram {
-                fragment.liveProgram = try childProgram.applying(modifier, finite: fragment)
+            var modifiers: [_SoundModifier] = [modifier]
+            var base: any Sound = content
+            var baseDepth = try childDepth(depth)
+
+            // Peel only contiguous modifier wrappers so a long modifier chain cannot consume
+            // the task stack. The depth guard remains applied once per wrapper.
+            while let primitive = base as? any _SoundPrimitive {
+                guard case .modified(let next, let nextModifier) = primitive._node else {
+                    break
+                }
+                modifiers.append(nextModifier)
+                base = next
+                baseDepth = try childDepth(baseDepth)
+            }
+
+            var fragment = try visit(base, depth: baseDepth)
+            for modifier in modifiers.reversed() {
+                let childProgram = fragment.liveProgram
+                try apply(modifier, to: &fragment, sourceRange: firstSource..<sources.count)
+                if let childProgram {
+                    fragment.liveProgram = try childProgram.applying(modifier, finite: fragment)
+                }
             }
             return fragment
         }
@@ -180,6 +198,7 @@ internal struct _SoundCompilationContext {
                 applyPatternProvenance(anchor, text: pattern.rawValue, to: sourceRange)
                 let hitCount = leaves.reduce(0) { $0 + ($1.token == "x" ? 1 : 0) }
                 let count = try expandedCount(fragment.events.count, multiplier: hitCount)
+                try validateEventDuckRuleBudget(fragment.events, copies: hitCount)
                 try replaceEventCount(fragment.events.count, with: count)
                 var events: [CompiledSoundEvent] = []
                 events.reserveCapacity(count)
@@ -211,6 +230,7 @@ internal struct _SoundCompilationContext {
                 }
                 let hitCount = pitches.reduce(0) { $0 + $1.count }
                 let count = try expandedCount(fragment.events.count, multiplier: hitCount)
+                try validateEventDuckRuleBudget(fragment.events, copies: hitCount)
                 try replaceEventCount(fragment.events.count, with: count)
                 var events: [CompiledSoundEvent] = []
                 events.reserveCapacity(count)
@@ -242,6 +262,7 @@ internal struct _SoundCompilationContext {
         case .repeated(let repetitions):
             guard repetitions > 0 else { throw invalid("Repeat count must be positive") }
             let count = try expandedCount(fragment.events.count, multiplier: repetitions)
+            try validateEventDuckRuleBudget(fragment.events, copies: repetitions)
             let newExtent = try fragment.extent.multiplied(by: UInt64(repetitions))
             try replaceEventCount(fragment.events.count, with: count)
             var events: [CompiledSoundEvent] = []
@@ -393,6 +414,7 @@ internal struct _SoundCompilationContext {
             }
         case .chord(let chord):
             let count = try expandedCount(fragment.events.count, multiplier: chord.intervals.count)
+            try validateEventDuckRuleBudget(fragment.events, copies: chord.intervals.count)
             try replaceEventCount(fragment.events.count, with: count)
             var events: [CompiledSoundEvent] = []
             events.reserveCapacity(count)
@@ -492,7 +514,16 @@ internal struct _SoundCompilationContext {
         case .effect(let effect):
             try validate(effect)
             if let root = try processingRoot(fragment.roots) {
-                fragment.roots = [try appendNode(.effect(input: root, effect: effect))]
+                if case .sidechainCompressor(let compressor) = effect,
+                   let sidechainBus = compressor.sidechainBus {
+                    let node = try appendNode(
+                        .sidechainEffect(input: root, sidechain: -1, compressor: compressor)
+                    )
+                    sidechainBuses[node] = sidechainBus
+                    fragment.roots = [node]
+                } else {
+                    fragment.roots = [try appendNode(.effect(input: root, effect: effect))]
+                }
             }
         case .gain(let gain):
             try nonnegative(gain, "Gain")
@@ -555,6 +586,26 @@ internal struct _SoundCompilationContext {
         case .panAutomation(let automation):
             if let root = try processingRoot(fragment.roots) {
                 fragment.roots = [try appendNode(.panAutomation(input: root, automation: automation))]
+            }
+        case .duck(let targetBus, let depth, let attack, let recovery):
+            try validateBusName(targetBus)
+            let attackSeconds = try _dynamicsDurationSeconds(attack)
+            let recoverySeconds = try _dynamicsDurationSeconds(recovery)
+            guard depth.value <= 0 else {
+                throw invalid("Duck depth must be finite and nonpositive")
+            }
+            guard recoverySeconds > 0 else {
+                throw invalid("Duck recovery must be finite and positive")
+            }
+            let pending = _PendingEventDuck(
+                targetBus: targetBus,
+                depthDecibels: depth.value,
+                attackSeconds: attackSeconds,
+                recoverySeconds: recoverySeconds
+            )
+            try validateEventDuckRuleBudget(fragment.events, additionalPerEvent: 1)
+            for index in fragment.events.indices {
+                fragment.events[index].pendingEventDucks.append(pending)
             }
         case .muted:
             if let root = try processingRoot(fragment.roots) {
@@ -728,6 +779,25 @@ internal struct _SoundCompilationContext {
         return result
     }
 
+    static func eventDuckRuleCount(_ events: [CompiledSoundEvent]) -> Int {
+        events.reduce(into: 0) { result, event in
+            result = min(1_025, result + event.pendingEventDucks.count)
+        }
+    }
+
+    private func validateEventDuckRuleBudget(
+        _ events: [CompiledSoundEvent], copies: Int = 1, additionalPerEvent: Int = 0
+    ) throws {
+        let existing = Self.eventDuckRuleCount(events)
+        let (copied, copiedOverflow) = existing.multipliedReportingOverflow(by: copies)
+        let (added, addedOverflow) = events.count.multipliedReportingOverflow(by: additionalPerEvent)
+        let (combined, combinedOverflow) = copied.addingReportingOverflow(added)
+        guard !copiedOverflow, !addedOverflow, !combinedOverflow,
+              combined <= 1_024 else {
+            throw SoundCompilationError.invalidParameter("Maximum event duck rule count exceeded")
+        }
+    }
+
     private mutating func mixedRoots(_ roots: [Int]) throws -> [Int] {
         var outputs: [Int] = []
         var main: [Int] = []
@@ -821,6 +891,38 @@ internal struct _SoundCompilationContext {
         case .compressor(let threshold, let ratio):
             guard threshold.isFinite else { throw invalid("Compressor threshold must be finite") }
             guard ratio.isFinite, ratio >= 1 else { throw invalid("Compressor ratio must be at least one") }
+        case .sidechainCompressor(let compressor):
+            guard compressor.thresholdDecibels.isFinite else {
+                throw invalid("Compressor threshold must be finite")
+            }
+            guard compressor.ratio.isFinite, compressor.ratio >= 1 else {
+                throw invalid("Compressor ratio must be at least one")
+            }
+            guard compressor.attackSeconds.isFinite, compressor.attackSeconds >= 0,
+                  compressor.releaseSeconds.isFinite, compressor.releaseSeconds >= 0 else {
+                throw invalid("Compressor attack and release must be finite and nonnegative")
+            }
+            guard compressor.kneeDecibels.isFinite, compressor.kneeDecibels >= 0 else {
+                throw invalid("Compressor knee must be finite and nonnegative")
+            }
+            if let bus = compressor.sidechainBus {
+                try validateBusName(bus)
+            }
+        case .noiseGate(let gate):
+            guard gate.thresholdDecibels.isFinite else {
+                throw invalid("Gate threshold must be finite")
+            }
+            guard gate.attackSeconds.isFinite, gate.attackSeconds >= 0,
+                  gate.releaseSeconds.isFinite, gate.releaseSeconds >= 0 else {
+                throw invalid("Gate attack and release must be finite and nonnegative")
+            }
+        case .limiter(let limiter):
+            guard limiter.ceilingDecibels.isFinite, limiter.ceilingDecibels <= 0 else {
+                throw invalid("Limiter ceiling must be finite and at most zero")
+            }
+            guard limiter.releaseSeconds.isFinite, limiter.releaseSeconds >= 0 else {
+                throw invalid("Limiter release must be finite and nonnegative")
+            }
         case .saturation(let drive):
             try nonnegative(drive, "Saturation drive")
         case .distortion(let drive):
@@ -845,7 +947,10 @@ internal struct _SoundCompilationContext {
         let tracks: [CompiledTrack]
     }
 
-    private func resolvedGraph(rootNodeIDs: [Int]) throws -> ResolvedGraph {
+    private func resolvedGraph(
+        rootNodeIDs: [Int],
+        eventDucks: [CompiledEventDuck] = []
+    ) throws -> ResolvedGraph {
         var returnIDs: [String: Int] = [:]
         var sendIDs: [String: [Int]] = [:]
         var busNames = Set<String>()
@@ -892,10 +997,62 @@ internal struct _SoundCompilationContext {
             }
         }
 
+        guard eventDucks.count <= 1_024 else {
+            throw SoundCompilationError.invalidParameter("Maximum event duck rule count exceeded")
+        }
+        var duckRulesByReturnID: [Int: [Int]] = [:]
+        for (ruleID, rule) in eventDucks.enumerated() {
+            try validateBusName(rule.targetBus)
+            guard let returnID = returnIDs[rule.targetBus] else {
+                throw SoundCompilationError.invalidBusRouting(.missingReturn(rule.targetBus))
+            }
+            guard rule.triggerEventIndex >= 0 else {
+                throw SoundCompilationError.invalidParameter("Event duck trigger index is invalid")
+            }
+            duckRulesByReturnID[returnID, default: []].append(ruleID)
+        }
+
         var resolvedNodes = nodes
         for (id, node) in nodes.enumerated() {
-            guard case .busReturn(let bus, _) = node else { continue }
-            resolvedNodes[id] = .busReturn(bus: bus, inputs: sendIDs[bus] ?? [])
+            switch node {
+            case .busReturn(let bus, _):
+                resolvedNodes[id] = .busReturn(bus: bus, inputs: sendIDs[bus] ?? [])
+            case .sidechainEffect(let input, let sidechain, let compressor):
+                if sidechain < 0 {
+                    guard let bus = sidechainBuses[id], let returnID = returnIDs[bus] else {
+                        let bus = sidechainBuses[id] ?? ""
+                        throw SoundCompilationError.invalidBusRouting(.missingReturn(bus))
+                    }
+                    resolvedNodes[id] = .sidechainEffect(
+                        input: input, sidechain: returnID, compressor: compressor
+                    )
+                }
+            default:
+                break
+            }
+        }
+
+        var eventDuckReplacements: [Int: Int] = [:]
+        let originalNodeCount = resolvedNodes.count
+        for returnID in duckRulesByReturnID.keys.sorted() {
+            guard resolvedNodes.count < limits.maximumRenderNodes else {
+                throw SoundCompilationError.maximumRenderNodesExceeded(limit: limits.maximumRenderNodes)
+            }
+            let nodeID = resolvedNodes.count
+            resolvedNodes.append(
+                .eventDuck(input: returnID, rules: duckRulesByReturnID[returnID] ?? [])
+            )
+            eventDuckReplacements[returnID] = nodeID
+        }
+        for id in 0..<originalNodeCount {
+            resolvedNodes[id] = replacingBusConsumers(
+                in: resolvedNodes[id], replacements: eventDuckReplacements
+            )
+        }
+        guard resolvedNodes.reduce(into: 0, { count, node in
+            if isDynamicsNode(node) { count += 1 }
+        }) <= 32 else {
+            throw SoundCompilationError.invalidParameter("Maximum dynamics node count exceeded")
         }
 
         var dependencies = [[Int]]()
@@ -908,8 +1065,11 @@ internal struct _SoundCompilationContext {
                 inputs = []
             case .mix(let values):
                 inputs = values
-            case .effect(let input, _),
-                 .gain(let input, _),
+            case .effect(let input, _):
+                inputs = [input]
+            case .sidechainEffect(let input, let sidechain, _):
+                inputs = [input, sidechain]
+            case .gain(let input, _),
                  .gainAutomation(let input, _),
                  .pan(let input, _),
                  .panAutomation(let input, _),
@@ -921,6 +1081,11 @@ internal struct _SoundCompilationContext {
                 inputs = [input]
             case .busReturn(_, let values):
                 inputs = values
+            case .eventDuck(let input, let rules):
+                guard rules.allSatisfy({ eventDucks.indices.contains($0) }) else {
+                    throw SoundCompilationError.invalidParameter("Event duck rule index is invalid")
+                }
+                inputs = [input]
             }
             let (updatedEdges, overflow) = edgeCount.addingReportingOverflow(inputs.count)
             guard !overflow else {
@@ -976,10 +1141,11 @@ internal struct _SoundCompilationContext {
         }
         let remappedNodes = order.map { remappedNode(resolvedNodes[$0], using: remap) }
         let remappedRoots = try rootNodeIDs.map { root in
-            guard remap.indices.contains(root) else {
+            let effectiveRoot = eventDuckReplacements[root] ?? root
+            guard remap.indices.contains(effectiveRoot) else {
                 throw SoundCompilationError.invalidParameter("Render graph root is invalid")
             }
-            return remap[root]
+            return remap[effectiveRoot]
         }
         let remappedTracks = try tracks.map { track in
             var copy = track
@@ -994,6 +1160,66 @@ internal struct _SoundCompilationContext {
         return ResolvedGraph(nodes: remappedNodes, roots: remappedRoots, tracks: remappedTracks)
     }
 
+    private func replacingBusConsumers(
+        in node: CompiledRenderNode,
+        replacements: [Int: Int]
+    ) -> CompiledRenderNode {
+        func replace(_ id: Int) -> Int { replacements[id] ?? id }
+        switch node {
+        case .source:
+            return node
+        case .mix(let inputs):
+            return .mix(inputs: inputs.map(replace))
+        case .effect(let input, let effect):
+            return .effect(input: replace(input), effect: effect)
+        case .sidechainEffect(let input, let sidechain, let compressor):
+            return .sidechainEffect(
+                input: replace(input), sidechain: replace(sidechain), compressor: compressor
+            )
+        case .gain(let input, let value):
+            return .gain(input: replace(input), value: value)
+        case .gainAutomation(let input, let automation):
+            return .gainAutomation(input: replace(input), automation: automation)
+        case .pan(let input, let value):
+            return .pan(input: replace(input), value: value)
+        case .panAutomation(let input, let automation):
+            return .panAutomation(input: replace(input), automation: automation)
+        case .mute(let input):
+            return .mute(input: replace(input))
+        case .track(let input, let trackID):
+            return .track(input: replace(input), trackID: trackID)
+        case .send(let input, let bus, let level):
+            return .send(input: replace(input), bus: bus, level: level)
+        case .trackSend(let input, let bus, let level, let trackID, let placement):
+            return .trackSend(
+                input: replace(input), bus: bus, level: level,
+                trackID: trackID, placement: placement
+            )
+        case .busReturn(let bus, let inputs):
+            return .busReturn(bus: bus, inputs: inputs)
+        case .eventDuck(let input, let rules):
+            return .eventDuck(input: input, rules: rules)
+        case .output(let input, let bus):
+            return .output(input: replace(input), bus: bus)
+        }
+    }
+
+    private func isDynamicsNode(_ node: CompiledRenderNode) -> Bool {
+        switch node {
+        case .sidechainEffect, .eventDuck:
+            return true
+        case .effect(_, let effect):
+            switch effect {
+            case .compressor, .sidechainCompressor, .noiseGate, .limiter:
+                return true
+            default:
+                return false
+            }
+        default:
+            return false
+        }
+    }
+
     private func remappedNode(
         _ node: CompiledRenderNode,
         using remap: [Int]
@@ -1006,6 +1232,10 @@ internal struct _SoundCompilationContext {
             return .mix(inputs: inputs.map(id))
         case .effect(let input, let effect):
             return .effect(input: id(input), effect: effect)
+        case .sidechainEffect(let input, let sidechain, let compressor):
+            return .sidechainEffect(
+                input: id(input), sidechain: id(sidechain), compressor: compressor
+            )
         case .gain(let input, let value):
             return .gain(input: id(input), value: value)
         case .gainAutomation(let input, let automation):
@@ -1026,23 +1256,42 @@ internal struct _SoundCompilationContext {
             )
         case .busReturn(let bus, let inputs):
             return .busReturn(bus: bus, inputs: inputs.map(id))
+        case .eventDuck(let input, let rules):
+            return .eventDuck(input: id(input), rules: rules)
         case .output(let input, let bus):
             return .output(input: id(input), bus: bus)
         }
     }
 
     func finish(_ fragment: _SoundFragment) throws -> CompiledSound {
-        let events = fragment.events.enumerated().sorted {
+        var events = fragment.events.enumerated().sorted {
             if $0.element.start != $1.element.start { return $0.element.start < $1.element.start }
             return $0.offset < $1.offset
         }.map(\.element)
         for event in events {
             try validateRetainedPitchAutomation(event)
         }
-        let graph = try resolvedGraph(rootNodeIDs: fragment.roots)
+        var eventDucks: [CompiledEventDuck] = []
+        for index in events.indices {
+            let pending = events[index].pendingEventDucks
+            guard pending.count <= 1_024 - eventDucks.count else {
+                throw SoundCompilationError.invalidParameter("Maximum event duck rule count exceeded")
+            }
+            for rule in pending {
+                eventDucks.append(CompiledEventDuck(
+                    triggerEventIndex: index,
+                    targetBus: rule.targetBus,
+                    depthDecibels: rule.depthDecibels,
+                    attackSeconds: rule.attackSeconds,
+                    recoverySeconds: rule.recoverySeconds
+                ))
+            }
+            events[index].pendingEventDucks.removeAll(keepingCapacity: false)
+        }
+        let graph = try resolvedGraph(rootNodeIDs: fragment.roots, eventDucks: eventDucks)
         return CompiledSound(
             events: events, tracks: graph.tracks, sources: sources, renderNodes: graph.nodes,
-            rootNodeIDs: graph.roots, extent: fragment.extent
+            rootNodeIDs: graph.roots, eventDucks: eventDucks, extent: fragment.extent
         )
     }
 }

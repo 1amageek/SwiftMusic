@@ -35,6 +35,7 @@ internal enum _SoundModifier: Sendable {
     case pan(Double)
     case panPattern(PanPattern, MusicalTime)
     case panAutomation(PanAutomation)
+    case duck(String, Decibels, Duration, Duration)
     case pitchAutomation(PitchAutomation)
     case cutoffAutomation(FilterKind, CutoffAutomation, Double, FilterSlope)
     case muted

@@ -447,6 +447,8 @@ private struct RenderContext {
         switch node {
         case .source: return []
         case .mix(let inputs), .busReturn(_, let inputs): return inputs
+        case .eventDuck(let input, _): return [input]
+        case .sidechainEffect(let input, let sidechain, _): return [input, sidechain]
         case .effect(let input, _), .gain(let input, _), .pan(let input, _),
              .gainAutomation(let input, _), .panAutomation(let input, _),
              .track(let input, _), .mute(let input), .send(let input, _, _),
@@ -465,6 +467,19 @@ private struct RenderContext {
                 }
             }
             switch node {
+            case .eventDuck(let input, let rules):
+                guard case .busReturn(let bus, _) = sound.renderNodes[input],
+                      !rules.isEmpty, Set(rules).count == rules.count,
+                      rules.allSatisfy({ sound.eventDucks.indices.contains($0) && sound.eventDucks[$0].targetBus == bus }) else {
+                    throw LoopRenderingError.invalidSound("invalid duck return boundary")
+                }
+            case .sidechainEffect(_, let sidechain, let compressor):
+                let boundary: Int
+                if case .eventDuck(let input, _) = sound.renderNodes[sidechain] { boundary = input }
+                else { boundary = sidechain }
+                guard case .busReturn(let bus, _) = sound.renderNodes[boundary], compressor.sidechainBus == bus else {
+                    throw LoopRenderingError.invalidSound("invalid sidechain return boundary")
+                }
             case .source(let id):
                 guard sound.sources.indices.contains(id), sourceNodes.insert(id).inserted else {
                     throw LoopRenderingError.invalidSound("invalid or duplicate source node")
@@ -504,6 +519,28 @@ private struct RenderContext {
         guard returns.keys.allSatisfy({ sends[$0] != nil }) else {
             throw LoopRenderingError.invalidSound("bus return has no sends")
         }
+        let dynamicsCount = sound.renderNodes.filter { node in
+            switch node {
+            case .eventDuck, .sidechainEffect,
+                 .effect(_, .compressor), .effect(_, .sidechainCompressor),
+                 .effect(_, .noiseGate), .effect(_, .limiter): return true
+            default: return false
+            }
+        }.count
+        guard dynamicsCount <= 32, sound.eventDucks.count <= 1_024 else {
+            throw LoopRenderingError.invalidSound("dynamics node or duck rule limit exceeded")
+        }
+        var usedRules = Set<Int>()
+        for node in sound.renderNodes {
+            if case .eventDuck(_, let rules) = node {
+                for rule in rules where !usedRules.insert(rule).inserted {
+                    throw LoopRenderingError.invalidSound("duplicate duck rule identity")
+                }
+            }
+        }
+        guard usedRules.count == sound.eventDucks.count else {
+            throw LoopRenderingError.invalidSound("unresolved duck rules")
+        }
         var pending = sound.rootNodeIDs
         while let node = pending.popLast() {
             guard sound.renderNodes.indices.contains(node) else {
@@ -532,6 +569,7 @@ private struct RenderContext {
             else { preallocatedSource = false }
             let effectWorkspace: Int
             switch sound.renderNodes[index] {
+            case .eventDuck: effectWorkspace = 1
             case .effect(_, .delay(_, _, let wet)), .effect(_, .reverb(_, let wet)):
                 effectWorkspace = wet == 0 ? 0 : 1
             default: effectWorkspace = 0
@@ -576,6 +614,7 @@ private struct RenderContext {
                  .send(let input, _, _), .trackSend(let input, _, _, _, _), .output(let input, _):
                 value = try horizon(input)
             case .busReturn(_, let inputs): value = try inputs.reduce(0) { max($0, try horizon($1)) }
+            case .eventDuck(let input, _), .sidechainEffect(let input, _, _): value = try horizon(input)
             case .effect(let input, let effect):
                 let tail = try EffectProcessor.tailFrames(effect, bpm: bpm, node: index)
                 value = try horizon(input) + tail
@@ -731,6 +770,17 @@ private struct RenderContext {
             try EffectProcessor.apply(effect, to: &output, inputHorizon: nodeHorizons[input],
                                       bpm: bpm, seamless: sound.playbackMode == .seamlessLoop,
                                       node: nodeID, convolver: convolver)
+            return output
+        case .eventDuck(let input, let rules):
+            var output = try takeNode(input)
+            try DynamicsProcessor.duck(&output, rules: rules, sound: sound,
+                                       secondsPerBeat: secondsPerBeat, seamless: sound.playbackMode == .seamlessLoop)
+            return output
+        case .sidechainEffect(let input, let sidechain, let compressor):
+            var output = try takeNode(input)
+            let detector = try takeNode(sidechain)
+            try DynamicsProcessor(.sidechainCompressor(compressor)).process(&output, sidechain: detector,
+                seamless: sound.playbackMode == .seamlessLoop)
             return output
         case .send(let input, _, _), .trackSend(let input, _, _, _, _), .output(let input, _):
             return try takeNode(input)

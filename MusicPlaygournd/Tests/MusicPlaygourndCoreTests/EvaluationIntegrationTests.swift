@@ -32,6 +32,9 @@ extension NativeHostTests {
                 let envelope: Envelope
                 let tuning: Tuning
                 let depth: Semitones
+                let duckDepth: Decibels
+                let compressor: SidechainCompressor
+                let limiter: Limiter
                 init() throws {
                     let url = URL(fileURLWithPath: \(url.path.debugDescription))
                     bank = try SampleBank([
@@ -42,6 +45,11 @@ extension NativeHostTests {
                         sustainLevel: 0.8, release: .milliseconds(50))
                     tuning = try Tuning(referencePitch: Pitch(midiNote: 69), frequencyHz: 442)
                     depth = try Semitones(value: 1)
+                    duckDepth = try Decibels(value: -6)
+                    compressor = try SidechainCompressor(threshold: Decibels(value: -24), ratio: 2,
+                        attack: .milliseconds(1), release: .milliseconds(20),
+                        knee: Decibels(value: 6), sidechainBus: "room")
+                    limiter = try Limiter(ceiling: Decibels(value: -1), release: .milliseconds(10))
                 }
                 var body: some Sound {
                     Track("Bank voices") {
@@ -55,6 +63,7 @@ extension NativeHostTests {
                             .gate(1.2)
                             .envelope(envelope)
                             .voicePolicy(.monophonic)
+                            .duck(targetBus: "room", depth: duckDepth, attack: .milliseconds(2), recovery: .milliseconds(100))
                     }
                     .trackLevel(0.8)
                     .trackPan(-0.25)
@@ -64,7 +73,9 @@ extension NativeHostTests {
                     .effect(.delay(time: .quarter, feedback: 0.2, wet: 0.1))
                     .effect(.reverb(roomSize: 0.2, wet: 0.15))
                     BusReturn("room")
+                        .effect(.sidechainCompressor(compressor))
                         .effect(.reverb(roomSize: 0.1, wet: 1))
+                        .effect(.limiter(limiter))
                 }
             }
             """
@@ -113,6 +124,13 @@ extension NativeHostTests {
                         with: "BusReturn(\"room\").send(to: \"room\", level: 1)"), bpm: 120, beatsPerBar: 4)
                     Issue.record("A cyclic bus must fail evaluation")
                 } catch { #expect(error.localizedDescription.lowercased().contains("cycle")) }
+                #expect(engine.snapshot().revision == 51)
+                #expect(engine.snapshot().isPlaying)
+                do {
+                    _ = try await evaluator.evaluate(source: source.replacingOccurrences(of: "recovery: .milliseconds(100)",
+                        with: "recovery: .zero"), bpm: 120, beatsPerBar: 4)
+                    Issue.record("An invalid duck recovery must fail evaluation")
+                } catch { #expect(error.localizedDescription.lowercased().contains("recovery")) }
                 #expect(engine.snapshot().revision == 51)
                 #expect(engine.snapshot().isPlaying)
                 do {

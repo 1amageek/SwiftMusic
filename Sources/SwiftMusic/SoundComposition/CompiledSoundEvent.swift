@@ -14,6 +14,7 @@ public struct CompiledSoundEvent: Sendable, Equatable {
     public internal(set) var cutoffHz: Double?
     public internal(set) var envelope: Envelope?
     public internal(set) var patternStepIndex: Int?
+    internal var pendingEventDucks: [_PendingEventDuck]
 
     internal init(
         sourceID: Int,
@@ -29,7 +30,8 @@ public struct CompiledSoundEvent: Sendable, Equatable {
         pitchOffsetSemitones: Double = 0,
         cutoffHz: Double? = nil,
         envelope: Envelope? = nil,
-        patternStepIndex: Int? = nil
+        patternStepIndex: Int? = nil,
+        pendingEventDucks: [_PendingEventDuck] = []
     ) {
         self.sourceID = sourceID
         self.trackID = trackID
@@ -45,5 +47,6 @@ public struct CompiledSoundEvent: Sendable, Equatable {
         self.cutoffHz = cutoffHz
         self.envelope = envelope
         self.patternStepIndex = patternStepIndex
+        self.pendingEventDucks = pendingEventDucks
     }
 }

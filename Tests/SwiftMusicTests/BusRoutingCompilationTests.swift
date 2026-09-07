@@ -286,8 +286,12 @@ struct BusRoutingCompilationTests {
                 return true
             case .mix(let inputs):
                 return inputs.allSatisfy { $0 >= 0 && $0 < nodeID }
-            case .effect(let input, _),
-                 .gain(let input, _),
+            case .effect(let input, _):
+                return input >= 0 && input < nodeID
+            case .sidechainEffect(let input, let sidechain, _):
+                return input >= 0 && input < nodeID
+                    && sidechain >= 0 && sidechain < nodeID
+            case .gain(let input, _),
                  .gainAutomation(let input, _),
                  .pan(let input, _),
                  .panAutomation(let input, _),
@@ -299,6 +303,8 @@ struct BusRoutingCompilationTests {
                 return input >= 0 && input < nodeID
             case .busReturn(_, let inputs):
                 return inputs.allSatisfy { $0 >= 0 && $0 < nodeID }
+            case .eventDuck(let input, _):
+                return input >= 0 && input < nodeID
             }
         })
     }

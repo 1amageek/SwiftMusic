@@ -5,6 +5,7 @@ public struct CompiledSound: Sendable, Equatable {
     public internal(set) var sources: [CompiledSource]
     public internal(set) var renderNodes: [CompiledRenderNode]
     public internal(set) var rootNodeIDs: [Int]
+    public internal(set) var eventDucks: [CompiledEventDuck]
     public internal(set) var extent: MusicalTime
     public internal(set) var playbackMode: CompiledPlaybackMode
 
@@ -14,6 +15,7 @@ public struct CompiledSound: Sendable, Equatable {
         sources: [CompiledSource],
         renderNodes: [CompiledRenderNode],
         rootNodeIDs: [Int],
+        eventDucks: [CompiledEventDuck] = [],
         extent: MusicalTime,
         playbackMode: CompiledPlaybackMode = .finite
     ) {
@@ -22,6 +24,7 @@ public struct CompiledSound: Sendable, Equatable {
         self.sources = sources
         self.renderNodes = renderNodes
         self.rootNodeIDs = rootNodeIDs
+        self.eventDucks = eventDucks
         self.extent = extent
         self.playbackMode = playbackMode
     }

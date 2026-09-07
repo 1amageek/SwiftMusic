@@ -136,6 +136,22 @@ internal struct _LiveEventProgram {
             throw SoundCompilationError.maximumEventsExceeded(limit: limits.maximumEvents)
         }
         guard recurringCount > 0 else { return events }
+        let totalRules = _SoundCompilationContext.eventDuckRuleCount(events)
+        let recurringRules = events.reduce(into: 0) { result, event in
+            if recurringSourceIDs.contains(event.sourceID) {
+                result += event.pendingEventDucks.count
+            }
+        }
+        let finiteRules = totalRules - recurringRules
+        let (expandedRecurringRules, rulesOverflow) = recurringRules.multipliedReportingOverflow(
+            by: Int(ratio.numerator)
+        )
+        guard !rulesOverflow, finiteRules <= 1_024,
+              expandedRecurringRules <= 1_024 - finiteRules else {
+            throw SoundCompilationError.invalidParameter(
+                "Maximum event duck rule count exceeded"
+            )
+        }
         var output: [CompiledSoundEvent] = []
         output.reserveCapacity(finiteCount + recurringCount * Int(ratio.numerator))
         for iteration in 0..<ratio.numerator {
@@ -167,6 +183,13 @@ internal struct _LiveEventProgram {
                 )
                 guard next.count <= limits.maximumEvents - events.count else {
                     throw SoundCompilationError.maximumEventsExceeded(limit: limits.maximumEvents)
+                }
+                let existingRules = _SoundCompilationContext.eventDuckRuleCount(events)
+                let nextRules = _SoundCompilationContext.eventDuckRuleCount(next)
+                guard nextRules <= 1_024 - existingRules else {
+                    throw SoundCompilationError.invalidParameter(
+                        "Maximum event duck rule count exceeded"
+                    )
                 }
                 events.append(contentsOf: next)
             }

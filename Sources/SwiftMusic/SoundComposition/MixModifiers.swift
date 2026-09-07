@@ -23,6 +23,18 @@ public extension Sound {
         ModifiedSound(base: self, modifier: .panAutomation(automation))
     }
 
+    func duck(
+        targetBus: String,
+        depth: Decibels,
+        attack: Duration,
+        recovery: Duration
+    ) -> ModifiedSound {
+        ModifiedSound(
+            base: self,
+            modifier: .duck(targetBus, depth, attack, recovery)
+        )
+    }
+
     func muted() -> ModifiedSound {
         ModifiedSound(base: self, modifier: .muted)
     }
