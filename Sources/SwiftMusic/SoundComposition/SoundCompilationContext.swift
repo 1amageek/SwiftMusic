@@ -583,6 +583,30 @@ internal struct _SoundCompilationContext {
                     fragment.roots = [try appendNode(.effect(input: root, effect: effect))]
                 }
             }
+        case .tremolo(let rate, let depth, let waveform):
+            guard depth.isFinite, (0...1).contains(depth) else {
+                throw invalid("Tremolo depth must be finite and in 0...1")
+            }
+            let lfo = try LFO(waveform: waveform, rate: rate)
+            guard depth != 0 else { break }
+            let automation = try GainAutomation(
+                .lfo(lfo), from: 1 - depth, to: 1
+            )
+            if let root = try processingRoot(fragment.roots) {
+                fragment.roots = [try appendNode(.gainAutomation(input: root, automation: automation))]
+            }
+        case .vibrato(let rate, let depth, let waveform):
+            guard depth.value.isFinite, depth.value >= 0 else {
+                throw invalid("Vibrato depth must be finite and nonnegative")
+            }
+            let lfo = try LFO(waveform: waveform, rate: rate)
+            guard depth.value != 0 else { break }
+            let automation = try PitchAutomation(
+                .lfo(lfo),
+                from: try Semitones(value: -depth.value),
+                to: depth
+            )
+            try apply(.pitchAutomation(automation), to: &fragment, sourceRange: sourceRange)
         case .gain(let gain):
             try nonnegative(gain, "Gain")
             if let root = try processingRoot(fragment.roots) {
@@ -997,6 +1021,31 @@ internal struct _SoundCompilationContext {
             try positive(rate, "Chorus rate")
             try normalized(depth, "Chorus depth")
             try normalized(wet, "Chorus wet")
+        case .flanger(let rate, let delay, let depth, let feedback, let wet):
+            try positive(rate, "Flanger rate")
+            try positive(delay, "Flanger delay")
+            try nonnegative(depth, "Flanger depth")
+            guard delay > depth else { throw invalid("Flanger delay must exceed depth") }
+            guard feedback.isFinite, abs(feedback) < 1 else {
+                throw invalid("Flanger feedback must have absolute value below one")
+            }
+            try normalized(wet, "Flanger wet")
+        case .phaser(let rate, let minimum, let maximum, let stages, let feedback, let wet):
+            try positive(rate, "Phaser rate")
+            try positive(minimum, "Phaser minimum frequency")
+            try positive(maximum, "Phaser maximum frequency")
+            guard minimum < maximum else {
+                throw invalid("Phaser minimum frequency must be below maximum frequency")
+            }
+            guard (1...32).contains(stages) else {
+                throw invalid("Phaser stages must be in 1...32")
+            }
+            guard feedback.isFinite, abs(feedback) < 1 else {
+                throw invalid("Phaser feedback must have absolute value below one")
+            }
+            try normalized(wet, "Phaser wet")
+        case .stereoWidth(let width):
+            try nonnegative(width, "Stereo width")
         }
     }
 
@@ -1112,6 +1161,11 @@ internal struct _SoundCompilationContext {
             if isDynamicsNode(node) { count += 1 }
         }) <= 32 else {
             throw SoundCompilationError.invalidParameter("Maximum dynamics node count exceeded")
+        }
+        guard resolvedNodes.reduce(into: 0, { count, node in
+            if isModulationNode(node) { count += 1 }
+        }) <= 32 else {
+            throw SoundCompilationError.invalidParameter("Maximum modulation effect node count exceeded")
         }
 
         var dependencies = [[Int]]()
@@ -1274,6 +1328,16 @@ internal struct _SoundCompilationContext {
             default:
                 return false
             }
+        default:
+            return false
+        }
+    }
+
+    private func isModulationNode(_ node: CompiledRenderNode) -> Bool {
+        guard case .effect(_, let effect) = node else { return false }
+        switch effect {
+        case .chorus, .flanger, .phaser, .stereoWidth:
+            return true
         default:
             return false
         }

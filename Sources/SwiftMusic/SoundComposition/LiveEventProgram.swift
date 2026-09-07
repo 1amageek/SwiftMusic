@@ -51,7 +51,7 @@ internal struct _LiveEventProgram {
         case .portamento, .tuning, .sampleRegion, .sampleReversed, .samplePlaybackRate, .unison,
              .voicePolicy, .chokeGroup,
              .effect, .gain, .pan, .muted, .send, .output,
-             .pitchEnvelope, .filterEnvelope:
+             .pitchEnvelope, .filterEnvelope, .tremolo, .vibrato:
             return self
         default:
             var period = self.period
@@ -218,7 +218,7 @@ internal struct _LiveEventProgram {
             ).events
         case .modifier(let child, let modifier):
             switch modifier {
-            case .gainAutomation, .panAutomation, .pitchAutomation:
+            case .gainAutomation, .panAutomation, .pitchAutomation, .tremolo, .vibrato:
                 return try child.emit(through: period ?? .quarter, limits: limits, sources: sources)
             case .cutoffAutomation(_, let automation, _, _):
                 var events = try child.emit(through: period ?? .quarter, limits: limits, sources: sources)

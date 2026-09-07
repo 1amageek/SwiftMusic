@@ -527,6 +527,15 @@ private struct RenderContext {
             default: return false
             }
         }.count
+        let modulationCount = sound.renderNodes.reduce(into: 0) { count, node in
+            switch node {
+            case .effect(_, .chorus), .effect(_, .flanger), .effect(_, .phaser), .effect(_, .stereoWidth): count += 1
+            default: break
+            }
+        }
+        guard modulationCount <= 32 else {
+            throw LoopRenderingError.invalidSound("modulation node count exceeds 32")
+        }
         guard dynamicsCount <= 32, sound.eventDucks.count <= 1_024 else {
             throw LoopRenderingError.invalidSound("dynamics node or duck rule limit exceeded")
         }
@@ -569,6 +578,8 @@ private struct RenderContext {
             else { preallocatedSource = false }
             let effectWorkspace: Int
             switch sound.renderNodes[index] {
+            case .effect(_, .chorus(_, _, let wet)): effectWorkspace = wet == 0 ? 0 : 1
+            case .effect(_, .flanger(_, _, _, _, let wet)): effectWorkspace = wet == 0 ? 0 : 2
             case .eventDuck: effectWorkspace = 1
             case .effect(_, .delay(_, _, let wet)), .effect(_, .reverb(_, let wet)):
                 effectWorkspace = wet == 0 ? 0 : 1

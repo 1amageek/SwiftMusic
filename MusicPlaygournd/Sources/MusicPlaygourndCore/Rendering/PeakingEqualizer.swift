@@ -1,4 +1,5 @@
 import Foundation
+import SwiftMusic
 
 /// RBJ peaking EQ with a solved periodic state for circular input.
 internal struct PeakingEqualizer {
@@ -21,6 +22,29 @@ internal struct PeakingEqualizer {
         guard [b0, b1, b2, a1, a2].allSatisfy({ $0.isFinite }) else {
             throw LoopRenderingError.invalidSound("non-finite EQ coefficients")
         }
+    }
+
+    init(filter kind: FilterKind, cutoff: Double, resonance: Double) throws {
+        guard cutoff.isFinite, cutoff > 0, cutoff < PreparedLoop.requiredSampleRate / 2,
+              resonance.isFinite, resonance >= 0 else {
+            throw LoopRenderingError.invalidSound("invalid post-mix filter")
+        }
+        let omega = 2 * Double.pi * cutoff / PreparedLoop.requiredSampleRate
+        let cosine = cos(omega)
+        let alpha = sin(omega) / (2 * (0.5 + resonance))
+        let a0 = 1 + alpha
+        switch kind {
+        case .lowPass:
+            b0 = (1 - cosine) / (2 * a0); b1 = (1 - cosine) / a0; b2 = b0
+        case .highPass:
+            b0 = (1 + cosine) / (2 * a0); b1 = -(1 + cosine) / a0; b2 = b0
+        case .bandPass:
+            b0 = alpha / a0; b1 = 0; b2 = -b0
+        case .notch:
+            b0 = 1 / a0; b1 = -2 * cosine / a0; b2 = b0
+        }
+        a1 = -2 * cosine / a0
+        a2 = (1 - alpha) / a0
     }
 
     private func advance(_ input: Double, _ z1: inout Double, _ z2: inout Double) throws -> Double {
@@ -52,10 +76,17 @@ internal struct PeakingEqualizer {
             guard first.isFinite, second.isFinite else { throw LoopRenderingError.invalidSound("non-finite periodic EQ state") }
             z1 = first; z2 = second
         }
+        let initial1 = z1, initial2 = z2
         for index in 0..<count {
             let output = try advance(Double(samples[index]), &z1, &z2)
             guard abs(output) <= Double(Float.greatestFiniteMagnitude) else { throw LoopRenderingError.invalidSound("EQ PCM exceeds Float range") }
             samples[index] = Float(output)
+        }
+        if circular {
+            let scale = max(1, max(abs(initial1), abs(initial2)))
+            guard abs(z1 - initial1) <= 1e-12 * scale, abs(z2 - initial2) <= 1e-12 * scale else {
+                throw LoopRenderingError.invalidSound("unverified periodic biquad state")
+            }
         }
     }
 

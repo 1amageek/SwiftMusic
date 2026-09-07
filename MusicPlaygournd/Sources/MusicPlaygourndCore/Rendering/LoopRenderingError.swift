@@ -15,6 +15,7 @@ public enum LoopRenderingError: Error, Sendable, Equatable, CustomStringConverti
     case sampleCacheLimitExceeded(limit: Int)
     case invalidSound(String)
     case invalidEvent(index: Int, reason: String)
+    case nonPeriodicModulationState
     case nonPeriodicDynamicsState
     case nonPeriodicVoiceAllocation
     case overflow
@@ -36,6 +37,7 @@ public enum LoopRenderingError: Error, Sendable, Equatable, CustomStringConverti
         case .sampleCacheLimitExceeded(let limit): "Decoded sample cache exceeds limit \(limit)"
         case .invalidSound(let reason): "Invalid compiled sound: \(reason)"
         case .invalidEvent(let index, let reason): "Invalid event \(index): \(reason)"
+        case .nonPeriodicModulationState: "Modulation state does not repeat at the loop boundary"
         case .nonPeriodicDynamicsState: "Dynamics state does not repeat at the loop boundary"
         case .nonPeriodicVoiceAllocation: "Voice allocation does not repeat at the loop boundary"
         case .overflow: "Audio rendering arithmetic overflow"

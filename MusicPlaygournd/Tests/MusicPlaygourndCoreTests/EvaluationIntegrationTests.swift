@@ -75,6 +75,8 @@ extension NativeHostTests {
                             .arpeggiated(arpeggio)
                             .legato()
                             .portamento(glide)
+                            .tremolo(rate: .synchronized(period: .whole), depth: 0.2)
+                            .vibrato(rate: .synchronized(period: .whole), depth: depth)
                     }
                     .trackLevel(0.8)
                     .trackPan(-0.25)
@@ -87,6 +89,11 @@ extension NativeHostTests {
                         .effect(.sidechainCompressor(compressor))
                         .effect(.reverb(roomSize: 0.1, wet: 1))
                         .effect(.limiter(limiter))
+                        .effect(.filter(kind: .notch, cutoffHz: 2_000, resonance: 0.5))
+                        .effect(.chorus(rateHz: 0.5, depth: 0.25, wet: 0.1))
+                        .effect(.flanger(rateHz: 0.5, delaySeconds: 0.005, depthSeconds: 0.001, feedback: 0.2, wet: 0.1))
+                        .effect(.phaser(rateHz: 0.5, minimumHz: 100, maximumHz: 2_000, stages: 2, feedback: 0.1, wet: 0.1))
+                        .effect(.stereoWidth(0.8))
                 }
             }
             """
@@ -156,6 +163,13 @@ extension NativeHostTests {
                         with: "Portamento(duration: .seconds(.zero))"), bpm: 120, beatsPerBar: 4)
                     Issue.record("An invalid glide must fail evaluation")
                 } catch { #expect(error.localizedDescription.contains("invalidPortamento")) }
+                #expect(engine.snapshot().revision == 51)
+                #expect(engine.snapshot().isPlaying)
+                do {
+                    _ = try await evaluator.evaluate(source: source.replacingOccurrences(of: "chorus(rateHz: 0.5",
+                        with: "chorus(rateHz: 0.3"), bpm: 120, beatsPerBar: 4)
+                    Issue.record("A nonperiodic modulation must fail evaluation")
+                } catch { #expect(error.localizedDescription.contains("Modulation state does not repeat")) }
                 #expect(engine.snapshot().revision == 51)
                 #expect(engine.snapshot().isPlaying)
                 do {

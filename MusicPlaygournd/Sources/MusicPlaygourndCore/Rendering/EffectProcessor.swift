@@ -1,7 +1,7 @@
 import Foundation
 import SwiftMusic
 
-/// Owns the finite impulse and stateless processing contracts for ordered graph effects.
+/// Applies ordered graph effects through their bounded offline DSP owners.
 internal enum EffectProcessor {
     static let maximumTailFrames = Int(PreparedLoop.requiredSampleRate * PreparedLoop.maximumDurationSeconds)
 
@@ -12,9 +12,11 @@ internal enum EffectProcessor {
             return wet == 0 ? 0 : try delay(time, feedback: feedback, bpm: bpm).last
         case .reverb(let size, let wet):
             return wet == 0 ? 0 : Int(((0.1 + 2.9 * size) * PreparedLoop.requiredSampleRate).rounded(.up)) - 1
-        // FIXME(INCOMPLETE_IMPLEMENTATION): These descriptors reach the ordered renderer; their dedicated DSP sprints must prove audible behavior before enabling them.
-        case .filter, .chorus:
-            throw LoopRenderingError.unsupportedRenderNode(index: node, operation: "effect")
+        case .filter(let kind, let cutoff, let resonance):
+            _ = try PeakingEqualizer(filter: kind, cutoff: cutoff, resonance: resonance)
+            return 0
+        case .chorus, .flanger, .phaser, .stereoWidth:
+            return try ModulationProcessor.tailFrames(effect)
         }
     }
 
@@ -43,6 +45,17 @@ internal enum EffectProcessor {
         switch effect {
         case .compressor, .sidechainCompressor, .noiseGate, .limiter:
             try DynamicsProcessor(effect).process(&buffer, seamless: seamless)
+        case .chorus, .flanger, .phaser, .stereoWidth:
+            try ModulationProcessor.process(
+                effect,
+                buffer: &buffer,
+                inputHorizon: inputHorizon,
+                seamless: seamless
+            )
+        case .filter(let kind, let cutoff, let resonance):
+            let filter = try PeakingEqualizer(filter: kind, cutoff: cutoff, resonance: resonance)
+            try filter.process(&buffer.left, horizon: inputHorizon, circular: seamless)
+            try filter.process(&buffer.right, horizon: inputHorizon, circular: seamless)
         case .equalizer(let frequency, let gain, let q):
             let eq = try PeakingEqualizer(frequency: frequency, gain: gain, q: q)
             try eq.process(&buffer.left, horizon: inputHorizon, circular: seamless)
@@ -85,8 +98,6 @@ internal enum EffectProcessor {
             try convolve(&buffer, leftIR: impulse(roomSize: roomSize, right: false),
                          rightIR: impulse(roomSize: roomSize, right: true), wet: wet,
                          seamless: seamless, convolver: convolver)
-        default:
-            throw LoopRenderingError.unsupportedRenderNode(index: node, operation: "effect")
         }
         guard buffer.left.allSatisfy({ $0.isFinite }), buffer.right.allSatisfy({ $0.isFinite }) else {
             throw LoopRenderingError.invalidSound("non-finite effect PCM")

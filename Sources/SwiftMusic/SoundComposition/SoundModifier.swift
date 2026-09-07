@@ -41,6 +41,8 @@ internal enum _SoundModifier: Sendable {
     case voicePolicy(VoicePolicy)
     case chokeGroup(String)
     case effect(AudioEffect)
+    case tremolo(ModulationRate, Double, LFOWaveform)
+    case vibrato(ModulationRate, Semitones, LFOWaveform)
     case gain(Double)
     case gainPattern(GainPattern, MusicalTime)
     case gainAutomation(GainAutomation)
