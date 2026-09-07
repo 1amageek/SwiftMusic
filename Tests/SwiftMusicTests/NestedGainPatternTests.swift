@@ -46,27 +46,27 @@ struct NestedGainPatternTests {
         #expect {
             try SoundCompiler().compile(Sample("kick").rhythm(tooDeep))
         } throws: { error in
-            error as? SoundCompilationError == .invalidRhythm(.nestingTooDeep(limit: 32))
+            error as? SoundCompilationError == .invalidRhythm(.nestingTooDeep(limit: 32, offset: 32))
         }
 
         let tooManyLeaves = RhythmPattern(stringLiteral: String(repeating: "x ", count: 1_025))
         #expect {
             try SoundCompiler().compile(Sample("kick").rhythm(tooManyLeaves))
         } throws: { error in
-            error as? SoundCompilationError == .invalidRhythm(.tooManyLeaves(limit: 1_024))
+            error as? SoundCompilationError == .invalidRhythm(.tooManyLeaves(limit: 1_024, offset: 2_048))
         }
 
         let tooLong = RhythmPattern(stringLiteral: String(repeating: "x", count: 65 * 1024 + 1))
         #expect {
             try SoundCompiler().compile(Sample("kick").rhythm(tooLong))
         } throws: { error in
-            error as? SoundCompilationError == .invalidRhythm(.inputTooLong(limit: 64 * 1024))
+            error as? SoundCompilationError == .invalidRhythm(.inputTooLong(limit: 64 * 1024, offset: 64 * 1024))
         }
 
         #expect {
             try RhythmPattern(steps: Array(repeating: true, count: 1_025))
         } throws: { error in
-            error as? RhythmPatternError == .tooManyLeaves(limit: 1_024)
+            error as? RhythmPatternError == .tooManyLeaves(limit: 1_024, offset: 0)
         }
     }
 
@@ -132,21 +132,21 @@ struct NestedGainPatternTests {
         #expect {
             try SoundCompiler().compile(Sample("kick").gain(invalidRest))
         } throws: { error in
-            error as? SoundCompilationError == .invalidGainPattern(.invalidToken(token: "~", index: 1))
+            error as? SoundCompilationError == .invalidGainPattern(.invalidToken(token: "~", index: 1, offset: 2))
         }
 
         let negative: GainPattern = "-1"
         #expect {
             try SoundCompiler().compile(Sample("kick").gain(negative))
         } throws: { error in
-            error as? SoundCompilationError == .invalidGainPattern(.negativeValue(token: "-1", index: 0))
+            error as? SoundCompilationError == .invalidGainPattern(.negativeValue(token: "-1", index: 0, offset: 0))
         }
 
         let nonfinite: GainPattern = "nan"
         #expect {
             try SoundCompiler().compile(Sample("kick").gain(nonfinite))
         } throws: { error in
-            error as? SoundCompilationError == .invalidGainPattern(.nonFiniteValue(token: "nan", index: 0))
+            error as? SoundCompilationError == .invalidGainPattern(.nonFiniteValue(token: "nan", index: 0, offset: 0))
         }
 
         let overflow: GainPattern = "1e308"

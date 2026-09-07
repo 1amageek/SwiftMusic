@@ -34,7 +34,7 @@ struct PatternedParameterTests {
                 Sample("kick").gain(overflowing.slow(UInt64.max).slow(2))
             )
         } throws: { error in
-            error as? SoundCompilationError == .invalidGainPattern(.timingOverflow)
+            error as? SoundCompilationError == .invalidGainPattern(.timingOverflow())
         }
     }
 
@@ -108,14 +108,14 @@ struct PatternedParameterTests {
         #expect {
             try SoundCompiler().compile(Synthesizer(.sine).pan(outOfRange))
         } throws: { error in
-            error as? SoundCompilationError == .invalidPanPattern(.outOfRangeValue(token: "1.5", index: 0))
+            error as? SoundCompilationError == .invalidPanPattern(.outOfRangeValue(token: "1.5", index: 0, offset: 0))
         }
 
         let nonFinite: PanPattern = "nan"
         #expect {
             try SoundCompiler().compile(Synthesizer(.sine).pan(nonFinite))
         } throws: { error in
-            error as? SoundCompilationError == .invalidPanPattern(.nonFiniteValue(token: "nan", index: 0))
+            error as? SoundCompilationError == .invalidPanPattern(.nonFiniteValue(token: "nan", index: 0, offset: 0))
         }
 
         let zeroFactor: PanPattern = "0 1"
@@ -129,7 +129,7 @@ struct PatternedParameterTests {
         #expect {
             try SoundCompiler().compile(Synthesizer(.sine).pan(overflowing.slow(UInt64.max).slow(2)))
         } throws: { error in
-            error as? SoundCompilationError == .invalidPanPattern(.timingOverflow)
+            error as? SoundCompilationError == .invalidPanPattern(.timingOverflow())
         }
     }
 

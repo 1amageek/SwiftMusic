@@ -4,6 +4,14 @@ import Testing
 
 struct VisualFeedbackTests {
     @Test(.timeLimit(.minutes(3)))
+    func alternationRetainsOneHighlightPerRepeatedOrSimultaneousLeaf() {
+        let pattern = "<C4,E4 [G4*2 ~]>"
+        let source = "// 🎵\n.notes(\"\(pattern)\")"
+        let ranges = PlayingLiteral.tokenRanges(pattern: pattern, line: 2, source: source)
+        #expect(ranges.map { (source as NSString).substring(with: $0) } == ["C4,E4", "G4*2", "~"])
+    }
+
+    @Test(.timeLimit(.minutes(3)))
     func testSourceAnchorsFollowUnicodeInsertionAndDropDeletedLine() {
         var source = "// 🎵\n.rhythm(\"x ~\")\n.notes(\"C2 G2\")"
         var map = SourceLineMap(source: source, lines: [2, 3])

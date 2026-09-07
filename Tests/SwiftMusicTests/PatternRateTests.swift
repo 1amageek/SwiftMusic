@@ -154,7 +154,7 @@ struct PatternRateTests {
         #expect {
             try compile(Sample("kick").gain(overflowing))
         } throws: { error in
-            error as? SoundCompilationError == .invalidGainPattern(.timingOverflow)
+            error as? SoundCompilationError == .invalidGainPattern(.timingOverflow())
         }
     }
 

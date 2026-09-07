@@ -24,9 +24,7 @@ public struct GainPattern: Sendable, Equatable, ExpressibleByStringLiteral {
 
     /// Resolves the source text into flat values for clients that need the legacy view.
     public var steps: [Double] {
-        get throws {
-            try Self.parse(rawValue)
-        }
+        get throws { try Self.parse(rawValue) }
     }
 
     /// Defers a phase-speed transformation until the pattern is resolved.
@@ -49,22 +47,28 @@ public struct GainPattern: Sendable, Equatable, ExpressibleByStringLiteral {
         Self(rawValue: rawValue, phase: phase.slow(rate))
     }
 
-    /// Resolves the source text into exact recursive leaf timings for compilation.
-    internal var timedLeaves: [_PatternTimedLeaf] {
-        get throws {
-            try Self.parseTimedLeaves(rawValue)
-        }
+    /// Resolves the source text into its bounded natural-period program.
+    internal var timedProgram: _PatternTimedProgram {
+        get throws { try Self.parseTimedProgram(rawValue) }
     }
 
-    internal func resolvedCycle(from cycle: MusicalTime) throws -> MusicalTime {
+    /// Resolves the source text into exact recursive leaf timings for compilation.
+    internal var timedLeaves: [_PatternTimedLeaf] {
+        get throws { try timedProgram.leaves }
+    }
+
+    internal func resolvedCycle(from cycle: MusicalTime, naturalPeriod: Int = 1) throws -> MusicalTime {
         do {
-            return try phase.resolvedCycle(from: cycle)
+            let transformed = try phase.resolvedCycle(from: cycle)
+            return try transformed.multiplied(by: UInt64(naturalPeriod))
         } catch _PatternPhaseFailure.zeroFactor {
             throw GainPatternError.zeroFactor
         } catch _PatternPhaseFailure.invalidRate(let error) {
             throw GainPatternError.invalidRate(error)
         } catch _PatternPhaseFailure.overflow {
-            throw GainPatternError.timingOverflow
+            throw GainPatternError.timingOverflow()
+        } catch is MusicalTimeError {
+            throw GainPatternError.timingOverflow()
         }
     }
 
@@ -74,33 +78,33 @@ public struct GainPattern: Sendable, Equatable, ExpressibleByStringLiteral {
     }
 
     private static func parse(_ value: String) throws -> [Double] {
-        try parseTimedLeaves(value).map { leaf in
+        try parseTimedProgram(value).leaves.map { leaf in
             guard let gain = Double(leaf.token) else {
-                throw GainPatternError.invalidToken(token: leaf.token, index: leaf.index)
+                throw GainPatternError.invalidToken(token: leaf.token, index: leaf.index, offset: leaf.offset)
             }
             return gain
         }
     }
 
-    private static func parseTimedLeaves(_ value: String) throws -> [_PatternTimedLeaf] {
+    private static func parseTimedProgram(_ value: String) throws -> _PatternTimedProgram {
         do {
             var parser = try _MiniPatternParser(value)
-            let leaves = try parser.parse()
-            for leaf in leaves {
+            let program = try parser.parse()
+            for leaf in program.leaves {
                 guard leaf.token != "~" else {
-                    throw GainPatternError.invalidToken(token: leaf.token, index: leaf.index)
+                    throw GainPatternError.invalidToken(token: leaf.token, index: leaf.index, offset: leaf.offset)
                 }
-                guard let value = Double(leaf.token) else {
-                    throw GainPatternError.invalidToken(token: leaf.token, index: leaf.index)
+                guard let number = Double(leaf.token) else {
+                    throw GainPatternError.invalidToken(token: leaf.token, index: leaf.index, offset: leaf.offset)
                 }
-                guard value.isFinite else {
-                    throw GainPatternError.nonFiniteValue(token: leaf.token, index: leaf.index)
+                guard number.isFinite else {
+                    throw GainPatternError.nonFiniteValue(token: leaf.token, index: leaf.index, offset: leaf.offset)
                 }
-                guard value >= 0 else {
-                    throw GainPatternError.negativeValue(token: leaf.token, index: leaf.index)
+                guard number >= 0 else {
+                    throw GainPatternError.negativeValue(token: leaf.token, index: leaf.index, offset: leaf.offset)
                 }
             }
-            return leaves
+            return program
         } catch let error as GainPatternError {
             throw error
         } catch let error as _PatternParserError {
@@ -112,14 +116,18 @@ public struct GainPattern: Sendable, Equatable, ExpressibleByStringLiteral {
         switch error {
         case .emptyInput: return .emptyInput
         case .emptyGroup(let offset): return .emptyGroup(offset: offset)
-        case .invalidToken(let token, let index, _):
-            return .invalidToken(token: token, index: index)
+        case .invalidToken(let token, let index, let offset):
+            return .invalidToken(token: token, index: index, offset: offset)
+        case .invalidRepetition(let token, let index, let offset):
+            return .invalidRepetition(token: token, index: index, offset: offset)
         case .unmatchedOpeningBracket(let offset): return .unmatchedOpeningBracket(offset: offset)
         case .unmatchedClosingBracket(let offset): return .unmatchedClosingBracket(offset: offset)
-        case .inputTooLong(let limit): return .inputTooLong(limit: limit)
-        case .tooManyLeaves(let limit): return .tooManyLeaves(limit: limit)
-        case .nestingTooDeep(let limit): return .nestingTooDeep(limit: limit)
-        case .timingOverflow: return .timingOverflow
+        case .unmatchedOpeningAngleBracket(let offset): return .unmatchedOpeningAngleBracket(offset: offset)
+        case .unmatchedClosingAngleBracket(let offset): return .unmatchedClosingAngleBracket(offset: offset)
+        case .inputTooLong(let limit, let offset): return .inputTooLong(limit: limit, offset: offset)
+        case .tooManyLeaves(let limit, let offset): return .tooManyLeaves(limit: limit, offset: offset)
+        case .nestingTooDeep(let limit, let offset): return .nestingTooDeep(limit: limit, offset: offset)
+        case .timingOverflow(let offset): return .timingOverflow(offset: offset)
         }
     }
 }

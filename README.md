@@ -87,6 +87,8 @@ Preparation is synchronous and returns immutable beat events and an ordered rend
 
 These additions are not included in the published 0.1.0 tag. Gain and pan use separate domain types with context-inferred string literals:
 
+All pattern domains support bracket subdivisions, cycle alternatives such as `<a b>`, and leaf repetition such as `x*8`. Rhythm and notes allow `~` rests; notes also allow simultaneous pitches such as `C4,E4,G4`. Nested alternatives advance independently: `<a <b c>>` produces `a, b, a, c`. Rhythm and notes compile the complete finite period; gain and pan sample their alternatives at each absolute note onset. Pattern errors expose `utf8Offset` for source diagnostics. Expansion is bounded to 1,024 realized leaves or pitches, with typed failures instead of truncation.
+
 ```swift
 Synthesizer(.sine)
     .notes("C4 C4 C4 C4")

@@ -15,7 +15,7 @@ struct LivePatternTests {
         #expect {
             try SoundCompiler().compile(Sample("kick").rhythm(invalid))
         } throws: { error in
-            error as? SoundCompilationError == .invalidRhythm(.invalidToken(token: "?", index: 1))
+            error as? SoundCompilationError == .invalidRhythm(.invalidToken(token: "?", index: 1, offset: 2))
         }
     }
 
@@ -24,7 +24,7 @@ struct LivePatternTests {
         #expect {
             try RhythmPattern(validating: "x ?")
         } throws: { error in
-            error as? RhythmPatternError == .invalidToken(token: "?", index: 1)
+            error as? RhythmPatternError == .invalidToken(token: "?", index: 1, offset: 2)
         }
     }
 
@@ -49,14 +49,14 @@ struct LivePatternTests {
         #expect {
             try NotePattern(validating: "C2 nope")
         } throws: { error in
-            error as? NotePatternError == .invalidToken(token: "nope", index: 1)
+            error as? NotePatternError == .invalidToken(token: "nope", index: 1, offset: 3)
         }
 
         let outOfRange: NotePattern = "C-2"
         #expect {
             try SoundCompiler().compile(Synthesizer(.sine).notes(outOfRange))
         } throws: { error in
-            error as? SoundCompilationError == .invalidNotes(.pitchOutOfRange(token: "C-2", index: 0))
+            error as? SoundCompilationError == .invalidNotes(.pitchOutOfRange(token: "C-2", index: 0, offset: 0))
         }
     }
 

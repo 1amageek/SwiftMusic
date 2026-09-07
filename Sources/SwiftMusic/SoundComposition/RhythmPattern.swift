@@ -20,7 +20,7 @@ public struct RhythmPattern: Sendable, Equatable, ExpressibleByStringLiteral {
             throw RhythmPatternError.emptyInput
         }
         guard steps.count <= _MiniPatternParser.maximumLeaves else {
-            throw RhythmPatternError.tooManyLeaves(limit: _MiniPatternParser.maximumLeaves)
+            throw RhythmPatternError.tooManyLeaves(limit: _MiniPatternParser.maximumLeaves, offset: 0)
         }
         rawValue = steps.map { $0 ? "x" : "~" }.joined(separator: " ")
     }
@@ -37,35 +37,37 @@ public struct RhythmPattern: Sendable, Equatable, ExpressibleByStringLiteral {
         }
     }
 
+    /// Resolves the source text into its bounded natural-period program.
+    internal var timedProgram: _PatternTimedProgram {
+        get throws { try Self.parseTimedProgram(rawValue) }
+    }
+
     /// Resolves the source text into exact recursive leaf timings for compilation.
     internal var timedLeaves: [_PatternTimedLeaf] {
-        get throws {
-            try Self.parseTimedLeaves(rawValue)
-        }
+        get throws { try timedProgram.leaves }
     }
 
     private static func parse(_ value: String) throws -> [Bool] {
-        try parseTimedLeaves(value).map { leaf in
+        try parseTimedProgram(value).leaves.map { leaf in
             switch leaf.token {
             case "x": return true
             case "~": return false
             default:
-                // parseTimedLeaves validates tokens before returning, so this is unreachable.
-                throw RhythmPatternError.invalidToken(token: leaf.token, index: leaf.index)
+                throw RhythmPatternError.invalidToken(token: leaf.token, index: leaf.index, offset: leaf.offset)
             }
         }
     }
 
-    private static func parseTimedLeaves(_ value: String) throws -> [_PatternTimedLeaf] {
+    private static func parseTimedProgram(_ value: String) throws -> _PatternTimedProgram {
         do {
             var parser = try _MiniPatternParser(value)
-            let leaves = try parser.parse()
-            for leaf in leaves {
+            let program = try parser.parse()
+            for leaf in program.leaves {
                 guard leaf.token == "x" || leaf.token == "~" else {
-                    throw RhythmPatternError.invalidToken(token: leaf.token, index: leaf.index)
+                    throw RhythmPatternError.invalidToken(token: leaf.token, index: leaf.index, offset: leaf.offset)
                 }
             }
-            return leaves
+            return program
         } catch let error as RhythmPatternError {
             throw error
         } catch let error as _PatternParserError {
@@ -77,14 +79,18 @@ public struct RhythmPattern: Sendable, Equatable, ExpressibleByStringLiteral {
         switch error {
         case .emptyInput: return .emptyInput
         case .emptyGroup(let offset): return .emptyGroup(offset: offset)
-        case .invalidToken(let token, let index, _):
-            return .invalidToken(token: token, index: index)
+        case .invalidToken(let token, let index, let offset):
+            return .invalidToken(token: token, index: index, offset: offset)
+        case .invalidRepetition(let token, let index, let offset):
+            return .invalidRepetition(token: token, index: index, offset: offset)
         case .unmatchedOpeningBracket(let offset): return .unmatchedOpeningBracket(offset: offset)
         case .unmatchedClosingBracket(let offset): return .unmatchedClosingBracket(offset: offset)
-        case .inputTooLong(let limit): return .inputTooLong(limit: limit)
-        case .tooManyLeaves(let limit): return .tooManyLeaves(limit: limit)
-        case .nestingTooDeep(let limit): return .nestingTooDeep(limit: limit)
-        case .timingOverflow: return .timingOverflow
+        case .unmatchedOpeningAngleBracket(let offset): return .unmatchedOpeningAngleBracket(offset: offset)
+        case .unmatchedClosingAngleBracket(let offset): return .unmatchedClosingAngleBracket(offset: offset)
+        case .inputTooLong(let limit, let offset): return .inputTooLong(limit: limit, offset: offset)
+        case .tooManyLeaves(let limit, let offset): return .tooManyLeaves(limit: limit, offset: offset)
+        case .nestingTooDeep(let limit, let offset): return .nestingTooDeep(limit: limit, offset: offset)
+        case .timingOverflow(let offset): return .timingOverflow(offset: offset)
         }
     }
 }

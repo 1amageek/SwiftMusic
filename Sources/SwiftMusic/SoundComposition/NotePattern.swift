@@ -21,40 +21,43 @@ public struct NotePattern: Sendable, Equatable, ExpressibleByStringLiteral {
 
     /// Resolves the source text for the compiler. A nil step is an explicit rest.
     public var steps: [Pitch?] {
-        get throws {
-            try Self.parse(rawValue)
-        }
+        get throws { try Self.parse(rawValue) }
+    }
+
+    /// Resolves the source text into its bounded natural-period program.
+    internal var timedProgram: _PatternTimedProgram {
+        get throws { try Self.parseTimedProgram(rawValue) }
     }
 
     /// Resolves the source text into exact recursive leaf timings for compilation.
     internal var timedLeaves: [_PatternTimedLeaf] {
-        get throws {
-            try Self.parseTimedLeaves(rawValue)
-        }
+        get throws { try timedProgram.leaves }
     }
 
     private static func parse(_ value: String) throws -> [Pitch?] {
-        let leaves = try parseTimedLeaves(value)
+        let program = try parseTimedProgram(value)
         var parsed: [Pitch?] = []
-        parsed.reserveCapacity(leaves.count)
-        for leaf in leaves {
+        parsed.reserveCapacity(program.leaves.count)
+        for leaf in program.leaves {
             if leaf.token == "~" {
                 parsed.append(nil)
             } else {
-                parsed.append(try pitch(from: leaf.token, index: leaf.index))
+                parsed.append(contentsOf: try pitches(from: leaf))
             }
         }
         return parsed
     }
 
-    private static func parseTimedLeaves(_ value: String) throws -> [_PatternTimedLeaf] {
+    private static func parseTimedProgram(_ value: String) throws -> _PatternTimedProgram {
         do {
             var parser = try _MiniPatternParser(value)
-            let leaves = try parser.parse()
-            for leaf in leaves where leaf.token != "~" {
-                _ = try pitch(from: leaf.token, index: leaf.index)
+            let program = try parser.parse()
+            var pitchCount = 0
+            for leaf in program.leaves where leaf.token != "~" {
+                let pitches = try pitches(from: leaf, maximumCount: _MiniPatternParser.maximumLeaves - pitchCount)
+                pitchCount += pitches.count
             }
-            return leaves
+            return program
         } catch let error as NotePatternError {
             throw error
         } catch let error as _PatternParserError {
@@ -62,11 +65,44 @@ public struct NotePattern: Sendable, Equatable, ExpressibleByStringLiteral {
         }
     }
 
-    internal static func pitch(from token: String, index: Int) throws -> Pitch {
+    internal static func pitches(
+        from leaf: _PatternTimedLeaf,
+        maximumCount: Int = _MiniPatternParser.maximumLeaves
+    ) throws -> [Pitch] {
+        let bytes = Array(leaf.token.utf8)
+        var pitches: [Pitch] = []
+        var memberStart = 0
+        for position in 0...bytes.count {
+            guard position == bytes.count || bytes[position] == 44 else { continue }
+            guard position > memberStart else {
+                throw NotePatternError.invalidToken(
+                    token: leaf.token,
+                    index: leaf.index,
+                    offset: leaf.offset + memberStart
+                )
+            }
+            guard pitches.count < maximumCount else {
+                throw NotePatternError.tooManyLeaves(
+                    limit: _MiniPatternParser.maximumLeaves,
+                    offset: leaf.offset + memberStart
+                )
+            }
+            let member = String(decoding: bytes[memberStart..<position], as: UTF8.self)
+            pitches.append(try pitch(
+                from: member,
+                index: leaf.index,
+                offset: leaf.offset + memberStart
+            ))
+            memberStart = position + 1
+        }
+        return pitches
+    }
+
+    internal static func pitch(from token: String, index: Int, offset: Int = 0) throws -> Pitch {
         let characters = Array(token)
         guard characters.count >= 2,
               let letter = characters[0].asciiValue else {
-            throw NotePatternError.invalidToken(token: token, index: index)
+            throw NotePatternError.invalidToken(token: token, index: index, offset: offset)
         }
 
         let semitone: Int
@@ -79,7 +115,7 @@ public struct NotePattern: Sendable, Equatable, ExpressibleByStringLiteral {
         case 70, 102: semitone = 5 // F / f
         case 71, 103: semitone = 7 // G / g
         default:
-            throw NotePatternError.invalidToken(token: token, index: index)
+            throw NotePatternError.invalidToken(token: token, index: index, offset: offset)
         }
 
         var cursor = 1
@@ -98,7 +134,7 @@ public struct NotePattern: Sendable, Equatable, ExpressibleByStringLiteral {
         }
 
         guard cursor < characters.count else {
-            throw NotePatternError.invalidToken(token: token, index: index)
+            throw NotePatternError.invalidToken(token: token, index: index, offset: offset)
         }
 
         var negative = false
@@ -107,19 +143,19 @@ public struct NotePattern: Sendable, Equatable, ExpressibleByStringLiteral {
             cursor += 1
         }
         guard cursor < characters.count else {
-            throw NotePatternError.invalidToken(token: token, index: index)
+            throw NotePatternError.invalidToken(token: token, index: index, offset: offset)
         }
 
         var octave = 0
         for character in characters[cursor...] {
             guard let ascii = character.asciiValue, (48...57).contains(ascii) else {
-                throw NotePatternError.invalidToken(token: token, index: index)
+                throw NotePatternError.invalidToken(token: token, index: index, offset: offset)
             }
             let digit = Int(ascii - 48)
             let (shifted, shiftOverflow) = octave.multipliedReportingOverflow(by: 10)
             let (next, addOverflow) = shifted.addingReportingOverflow(digit)
             guard !shiftOverflow, !addOverflow else {
-                throw NotePatternError.pitchOutOfRange(token: String(token), index: index)
+                throw NotePatternError.pitchOutOfRange(token: token, index: index, offset: offset)
             }
             octave = next
         }
@@ -132,13 +168,13 @@ public struct NotePattern: Sendable, Equatable, ExpressibleByStringLiteral {
         let (midi, semitoneOverflow) = base.addingReportingOverflow(semitone + accidental)
         guard !octaveOverflow, !multiplyOverflow, !semitoneOverflow,
               (0...127).contains(midi) else {
-            throw NotePatternError.pitchOutOfRange(token: String(token), index: index)
+            throw NotePatternError.pitchOutOfRange(token: token, index: index, offset: offset)
         }
 
         do {
             return try Pitch(midiNote: UInt8(midi))
         } catch {
-            throw NotePatternError.pitchOutOfRange(token: token, index: index)
+            throw NotePatternError.pitchOutOfRange(token: token, index: index, offset: offset)
         }
     }
 
@@ -146,14 +182,18 @@ public struct NotePattern: Sendable, Equatable, ExpressibleByStringLiteral {
         switch error {
         case .emptyInput: return .emptyInput
         case .emptyGroup(let offset): return .emptyGroup(offset: offset)
-        case .invalidToken(let token, let index, _):
-            return .invalidToken(token: token, index: index)
+        case .invalidToken(let token, let index, let offset):
+            return .invalidToken(token: token, index: index, offset: offset)
+        case .invalidRepetition(let token, let index, let offset):
+            return .invalidRepetition(token: token, index: index, offset: offset)
         case .unmatchedOpeningBracket(let offset): return .unmatchedOpeningBracket(offset: offset)
         case .unmatchedClosingBracket(let offset): return .unmatchedClosingBracket(offset: offset)
-        case .inputTooLong(let limit): return .inputTooLong(limit: limit)
-        case .tooManyLeaves(let limit): return .tooManyLeaves(limit: limit)
-        case .nestingTooDeep(let limit): return .nestingTooDeep(limit: limit)
-        case .timingOverflow: return .timingOverflow
+        case .unmatchedOpeningAngleBracket(let offset): return .unmatchedOpeningAngleBracket(offset: offset)
+        case .unmatchedClosingAngleBracket(let offset): return .unmatchedClosingAngleBracket(offset: offset)
+        case .inputTooLong(let limit, let offset): return .inputTooLong(limit: limit, offset: offset)
+        case .tooManyLeaves(let limit, let offset): return .tooManyLeaves(limit: limit, offset: offset)
+        case .nestingTooDeep(let limit, let offset): return .nestingTooDeep(limit: limit, offset: offset)
+        case .timingOverflow(let offset): return .timingOverflow(offset: offset)
         }
     }
 }

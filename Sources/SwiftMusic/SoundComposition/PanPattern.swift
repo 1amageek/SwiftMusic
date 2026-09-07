@@ -20,14 +20,14 @@ public struct PanPattern: Sendable, Equatable, ExpressibleByStringLiteral {
     public init(steps: [Double]) throws {
         guard !steps.isEmpty else { throw PanPatternError.emptyInput }
         guard steps.count <= _MiniPatternParser.maximumLeaves else {
-            throw PanPatternError.tooManyLeaves(limit: _MiniPatternParser.maximumLeaves)
+            throw PanPatternError.tooManyLeaves(limit: _MiniPatternParser.maximumLeaves, offset: 0)
         }
         for (index, value) in steps.enumerated() {
             guard value.isFinite else {
-                throw PanPatternError.nonFiniteValue(token: String(value), index: index)
+                throw PanPatternError.nonFiniteValue(token: String(value), index: index, offset: 0)
             }
             guard (-1...1).contains(value) else {
-                throw PanPatternError.outOfRangeValue(token: String(value), index: index)
+                throw PanPatternError.outOfRangeValue(token: String(value), index: index, offset: 0)
             }
         }
         rawValue = steps.map { String($0) }.joined(separator: " ")
@@ -42,9 +42,7 @@ public struct PanPattern: Sendable, Equatable, ExpressibleByStringLiteral {
 
     /// Resolves the source text into flat pan values.
     public var steps: [Double] {
-        get throws {
-            try Self.parse(rawValue)
-        }
+        get throws { try Self.parse(rawValue) }
     }
 
     /// Defers a phase-speed transformation until the pattern is resolved.
@@ -67,22 +65,28 @@ public struct PanPattern: Sendable, Equatable, ExpressibleByStringLiteral {
         Self(rawValue: rawValue, phase: phase.slow(rate))
     }
 
-    /// Resolves the source text into exact recursive leaf timings for compilation.
-    internal var timedLeaves: [_PatternTimedLeaf] {
-        get throws {
-            try Self.parseTimedLeaves(rawValue)
-        }
+    /// Resolves the source text into its bounded natural-period program.
+    internal var timedProgram: _PatternTimedProgram {
+        get throws { try Self.parseTimedProgram(rawValue) }
     }
 
-    internal func resolvedCycle(from cycle: MusicalTime) throws -> MusicalTime {
+    /// Resolves the source text into exact recursive leaf timings for compilation.
+    internal var timedLeaves: [_PatternTimedLeaf] {
+        get throws { try timedProgram.leaves }
+    }
+
+    internal func resolvedCycle(from cycle: MusicalTime, naturalPeriod: Int = 1) throws -> MusicalTime {
         do {
-            return try phase.resolvedCycle(from: cycle)
+            let transformed = try phase.resolvedCycle(from: cycle)
+            return try transformed.multiplied(by: UInt64(naturalPeriod))
         } catch _PatternPhaseFailure.zeroFactor {
             throw PanPatternError.zeroFactor
         } catch _PatternPhaseFailure.invalidRate(let error) {
             throw PanPatternError.invalidRate(error)
         } catch _PatternPhaseFailure.overflow {
-            throw PanPatternError.timingOverflow
+            throw PanPatternError.timingOverflow()
+        } catch is MusicalTimeError {
+            throw PanPatternError.timingOverflow()
         }
     }
 
@@ -92,30 +96,30 @@ public struct PanPattern: Sendable, Equatable, ExpressibleByStringLiteral {
     }
 
     private static func parse(_ value: String) throws -> [Double] {
-        try parseTimedLeaves(value).map { leaf in
+        try parseTimedProgram(value).leaves.map { leaf in
             guard let number = Double(leaf.token) else {
-                throw PanPatternError.invalidToken(token: leaf.token, index: leaf.index)
+                throw PanPatternError.invalidToken(token: leaf.token, index: leaf.index, offset: leaf.offset)
             }
             return number
         }
     }
 
-    private static func parseTimedLeaves(_ value: String) throws -> [_PatternTimedLeaf] {
+    private static func parseTimedProgram(_ value: String) throws -> _PatternTimedProgram {
         do {
             var parser = try _MiniPatternParser(value)
-            let leaves = try parser.parse()
-            for leaf in leaves {
+            let program = try parser.parse()
+            for leaf in program.leaves {
                 guard let number = Double(leaf.token) else {
-                    throw PanPatternError.invalidToken(token: leaf.token, index: leaf.index)
+                    throw PanPatternError.invalidToken(token: leaf.token, index: leaf.index, offset: leaf.offset)
                 }
                 guard number.isFinite else {
-                    throw PanPatternError.nonFiniteValue(token: leaf.token, index: leaf.index)
+                    throw PanPatternError.nonFiniteValue(token: leaf.token, index: leaf.index, offset: leaf.offset)
                 }
                 guard (-1...1).contains(number) else {
-                    throw PanPatternError.outOfRangeValue(token: leaf.token, index: leaf.index)
+                    throw PanPatternError.outOfRangeValue(token: leaf.token, index: leaf.index, offset: leaf.offset)
                 }
             }
-            return leaves
+            return program
         } catch let error as PanPatternError {
             throw error
         } catch let error as _PatternParserError {
@@ -127,14 +131,18 @@ public struct PanPattern: Sendable, Equatable, ExpressibleByStringLiteral {
         switch error {
         case .emptyInput: return .emptyInput
         case .emptyGroup(let offset): return .emptyGroup(offset: offset)
-        case .invalidToken(let token, let index, _):
-            return .invalidToken(token: token, index: index)
+        case .invalidToken(let token, let index, let offset):
+            return .invalidToken(token: token, index: index, offset: offset)
+        case .invalidRepetition(let token, let index, let offset):
+            return .invalidRepetition(token: token, index: index, offset: offset)
         case .unmatchedOpeningBracket(let offset): return .unmatchedOpeningBracket(offset: offset)
         case .unmatchedClosingBracket(let offset): return .unmatchedClosingBracket(offset: offset)
-        case .inputTooLong(let limit): return .inputTooLong(limit: limit)
-        case .tooManyLeaves(let limit): return .tooManyLeaves(limit: limit)
-        case .nestingTooDeep(let limit): return .nestingTooDeep(limit: limit)
-        case .timingOverflow: return .timingOverflow
+        case .unmatchedOpeningAngleBracket(let offset): return .unmatchedOpeningAngleBracket(offset: offset)
+        case .unmatchedClosingAngleBracket(let offset): return .unmatchedClosingAngleBracket(offset: offset)
+        case .inputTooLong(let limit, let offset): return .inputTooLong(limit: limit, offset: offset)
+        case .tooManyLeaves(let limit, let offset): return .tooManyLeaves(limit: limit, offset: offset)
+        case .nestingTooDeep(let limit, let offset): return .nestingTooDeep(limit: limit, offset: offset)
+        case .timingOverflow(let offset): return .timingOverflow(offset: offset)
         }
     }
 }

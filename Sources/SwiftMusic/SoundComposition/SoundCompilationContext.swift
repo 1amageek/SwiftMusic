@@ -79,50 +79,66 @@ internal struct _SoundCompilationContext {
         switch modifier {
         case .rhythm(let pattern, let cycle, let anchor):
             guard cycle > .zero else { throw invalid("Rhythm cycle must be positive") }
-            let leaves = try pattern.timedLeaves
-            applyPatternProvenance(anchor, text: pattern.rawValue, to: sourceRange)
-            let hitCount = leaves.reduce(0) { $0 + ($1.token == "x" ? 1 : 0) }
-            let count = try expandedCount(fragment.events.count, multiplier: hitCount)
-            try replaceEventCount(fragment.events.count, with: count)
-            var events: [CompiledSoundEvent] = []
-            events.reserveCapacity(count)
-            for leaf in leaves where leaf.token == "x" {
-                let start = try _scalePatternTime(cycle, by: leaf.start)
-                let duration = try _scalePatternTime(cycle, by: leaf.duration)
-                for original in fragment.events {
-                    var event = original
-                    event.start = try original.start.adding(start)
-                    event.duration = duration
-                    event.patternStepIndex = leaf.index
-                    events.append(event)
+            do {
+                let program = try pattern.timedProgram
+                let leaves = program.leaves
+                let period = try cycle.multiplied(by: UInt64(program.naturalPeriod))
+                applyPatternProvenance(anchor, text: pattern.rawValue, to: sourceRange)
+                let hitCount = leaves.reduce(0) { $0 + ($1.token == "x" ? 1 : 0) }
+                let count = try expandedCount(fragment.events.count, multiplier: hitCount)
+                try replaceEventCount(fragment.events.count, with: count)
+                var events: [CompiledSoundEvent] = []
+                events.reserveCapacity(count)
+                for leaf in leaves where leaf.token == "x" {
+                    let start = try _scalePatternTime(period, by: leaf.start)
+                    let duration = try _scalePatternTime(period, by: leaf.duration)
+                    for original in fragment.events {
+                        var event = original
+                        event.start = try original.start.adding(start)
+                        event.duration = duration
+                        event.patternStepIndex = leaf.index
+                        events.append(event)
+                    }
                 }
+                fragment.events = events
+                fragment.extent = try extent(events, minimum: period)
+            } catch is MusicalTimeError {
+                throw RhythmPatternError.timingOverflow()
             }
-            fragment.events = events
-            fragment.extent = try extent(events, minimum: cycle)
         case .notePattern(let pattern, let cycle, let anchor):
             guard cycle > .zero else { throw invalid("Note cycle must be positive") }
-            let leaves = try pattern.timedLeaves
-            applyPatternProvenance(anchor, text: pattern.rawValue, to: sourceRange)
-            let hitCount = leaves.reduce(0) { $0 + ($1.token == "~" ? 0 : 1) }
-            let count = try expandedCount(fragment.events.count, multiplier: hitCount)
-            try replaceEventCount(fragment.events.count, with: count)
-            var events: [CompiledSoundEvent] = []
-            events.reserveCapacity(count)
-            for leaf in leaves where leaf.token != "~" {
-                let pitch = try NotePattern.pitch(from: leaf.token, index: leaf.index)
-                let start = try _scalePatternTime(cycle, by: leaf.start)
-                let duration = try _scalePatternTime(cycle, by: leaf.duration)
-                for original in fragment.events {
-                    var event = original
-                    event.start = try original.start.adding(start)
-                    event.duration = duration
-                    event.pitch = pitch
-                    event.patternStepIndex = leaf.index
-                    events.append(event)
+            do {
+                let program = try pattern.timedProgram
+                let leaves = program.leaves
+                let period = try cycle.multiplied(by: UInt64(program.naturalPeriod))
+                applyPatternProvenance(anchor, text: pattern.rawValue, to: sourceRange)
+                let pitches = try leaves.map { leaf in
+                    leaf.token == "~" ? [] : try NotePattern.pitches(from: leaf)
                 }
+                let hitCount = pitches.reduce(0) { $0 + $1.count }
+                let count = try expandedCount(fragment.events.count, multiplier: hitCount)
+                try replaceEventCount(fragment.events.count, with: count)
+                var events: [CompiledSoundEvent] = []
+                events.reserveCapacity(count)
+                for (leafIndex, leaf) in leaves.enumerated() where leaf.token != "~" {
+                    let start = try _scalePatternTime(period, by: leaf.start)
+                    let duration = try _scalePatternTime(period, by: leaf.duration)
+                    for pitch in pitches[leafIndex] {
+                        for original in fragment.events {
+                            var event = original
+                            event.start = try original.start.adding(start)
+                            event.duration = duration
+                            event.pitch = pitch
+                            event.patternStepIndex = leaf.index
+                            events.append(event)
+                        }
+                    }
+                }
+                fragment.events = events
+                fragment.extent = try extent(events, minimum: period)
+            } catch is MusicalTimeError {
+                throw NotePatternError.timingOverflow()
             }
-            fragment.events = events
-            fragment.extent = try extent(events, minimum: cycle)
         case .offset(let offset):
             for index in fragment.events.indices {
                 fragment.events[index].start = try fragment.events[index].start.adding(offset)
@@ -229,8 +245,9 @@ internal struct _SoundCompilationContext {
             }
         case .gainPattern(let pattern, let cycle):
             guard cycle > .zero else { throw invalid("Gain pattern cycle must be positive") }
-            let leaves = try pattern.timedLeaves
-            let resolvedCycle = try pattern.resolvedCycle(from: cycle)
+            let program = try pattern.timedProgram
+            let leaves = program.leaves
+            let resolvedCycle = try pattern.resolvedCycle(from: cycle, naturalPeriod: program.naturalPeriod)
             for index in fragment.events.indices {
                 let eventStart = fragment.events[index].start
                 guard let leafPosition = _patternLeafIndex(
@@ -257,8 +274,9 @@ internal struct _SoundCompilationContext {
             }
         case .panPattern(let pattern, let cycle):
             guard cycle > .zero else { throw invalid("Pan pattern cycle must be positive") }
-            let leaves = try pattern.timedLeaves
-            let resolvedCycle = try pattern.resolvedCycle(from: cycle)
+            let program = try pattern.timedProgram
+            let leaves = program.leaves
+            let resolvedCycle = try pattern.resolvedCycle(from: cycle, naturalPeriod: program.naturalPeriod)
             for index in fragment.events.indices {
                 let eventStart = fragment.events[index].start
                 guard let leafPosition = _patternLeafIndex(

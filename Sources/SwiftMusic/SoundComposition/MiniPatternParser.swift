@@ -1,25 +1,48 @@
 internal struct _PatternTimedLeaf: Sendable, Equatable {
     let token: String
     let index: Int
+    let offset: Int
     let start: MusicalTime
     let duration: MusicalTime
+}
+
+/// A bounded program whose leaves are normalized over its complete natural period.
+internal struct _PatternTimedProgram: Sendable, Equatable {
+    let naturalPeriod: Int
+    let leaves: [_PatternTimedLeaf]
 }
 
 internal enum _PatternParserError: Error, Equatable, Sendable {
     case emptyInput
     case emptyGroup(offset: Int)
     case invalidToken(token: String, index: Int, offset: Int)
+    case invalidRepetition(token: String, index: Int, offset: Int)
     case unmatchedOpeningBracket(offset: Int)
     case unmatchedClosingBracket(offset: Int)
-    case inputTooLong(limit: Int)
-    case tooManyLeaves(limit: Int)
-    case nestingTooDeep(limit: Int)
-    case timingOverflow
+    case unmatchedOpeningAngleBracket(offset: Int)
+    case unmatchedClosingAngleBracket(offset: Int)
+    case inputTooLong(limit: Int, offset: Int)
+    case tooManyLeaves(limit: Int, offset: Int)
+    case nestingTooDeep(limit: Int, offset: Int)
+    case timingOverflow(offset: Int)
 }
 
 private indirect enum _PatternNode: Sendable, Equatable {
-    case leaf(token: String, index: Int, offset: Int)
-    case group([_PatternNode], offset: Int)
+    case leaf(token: String, index: Int, offset: Int, repeatCount: Int)
+    case sequence([_PatternNode], offset: Int)
+    case alternation([_PatternNode], offset: Int)
+
+    var offset: Int {
+        switch self {
+        case .leaf(_, _, let offset, _), .sequence(_, let offset), .alternation(_, let offset):
+            offset
+        }
+    }
+}
+
+private struct _PatternNodeMetrics: Sendable, Equatable {
+    let period: Int
+    let leafCount: Int
 }
 
 internal struct _MiniPatternParser: Sendable {
@@ -29,111 +52,318 @@ internal struct _MiniPatternParser: Sendable {
 
     private let bytes: [UInt8]
     private var cursor = 0
-    private var leafCount = 0
+    private var lexicalLeafCount = 0
 
     init(_ source: String) throws {
-        guard source.utf8.count <= Self.maximumInputBytes else {
-            throw _PatternParserError.inputTooLong(limit: Self.maximumInputBytes)
+        let byteCount = source.utf8.count
+        guard byteCount <= Self.maximumInputBytes else {
+            throw _PatternParserError.inputTooLong(limit: Self.maximumInputBytes, offset: Self.maximumInputBytes)
         }
         bytes = Array(source.utf8)
     }
 
-    mutating func parse() throws -> [_PatternTimedLeaf] {
+    mutating func parse() throws -> _PatternTimedProgram {
         skipWhitespace()
         guard cursor < bytes.count else { throw _PatternParserError.emptyInput }
-        let nodes = try parseSequence(expectClosing: false, openingOffset: nil, depth: 0)
-        var leaves: [_PatternTimedLeaf] = []
-        leaves.reserveCapacity(leafCount)
-        let unit = MusicalTime.quarter
-        do {
-            try emit(nodes, start: .zero, duration: unit, into: &leaves)
-        } catch is MusicalTimeError {
-            throw _PatternParserError.timingOverflow
+        let root = try parseSequence(until: nil, openingOffset: nil, depth: 0, rootOffset: 0)
+        let metrics = try measure(root)
+        guard metrics.period > 0, metrics.leafCount > 0 else {
+            throw _PatternParserError.emptyInput
         }
-        return leaves
+
+        var leaves: [_PatternTimedLeaf] = []
+        leaves.reserveCapacity(metrics.leafCount)
+        let period = UInt64(metrics.period)
+        for cycle in 0..<metrics.period {
+            var local: [_PatternTimedLeaf] = []
+            local.reserveCapacity(metrics.leafCount / metrics.period + 1)
+            do {
+                try emit(root, cycle: cycle, start: .zero, duration: .quarter, into: &local)
+            } catch let error as _PatternParserError {
+                throw error
+            }
+            let cycleStart: MusicalTime
+            do {
+                cycleStart = try MusicalTime(numerator: UInt64(cycle), denominator: period)
+                for leaf in local {
+                    let normalizedStart = try cycleStart.adding(leaf.start.divided(by: period))
+                    let normalizedDuration = try leaf.duration.divided(by: period)
+                    leaves.append(_PatternTimedLeaf(
+                        token: leaf.token,
+                        index: leaf.index,
+                        offset: leaf.offset,
+                        start: normalizedStart,
+                        duration: normalizedDuration
+                    ))
+                }
+            } catch is MusicalTimeError {
+                throw _PatternParserError.timingOverflow(offset: root.offset)
+            }
+        }
+        guard leaves.count == metrics.leafCount else {
+            throw _PatternParserError.timingOverflow(offset: root.offset)
+        }
+        return _PatternTimedProgram(naturalPeriod: metrics.period, leaves: leaves)
     }
 
     private mutating func parseSequence(
-        expectClosing: Bool,
+        until closing: UInt8?,
         openingOffset: Int?,
-        depth: Int
-    ) throws -> [_PatternNode] {
+        depth: Int,
+        rootOffset: Int
+    ) throws -> _PatternNode {
         var nodes: [_PatternNode] = []
         while true {
             skipWhitespace()
             guard cursor < bytes.count else {
-                if expectClosing {
+                if let closing {
+                    if closing == 62 {
+                        throw _PatternParserError.unmatchedOpeningAngleBracket(offset: openingOffset ?? bytes.count)
+                    }
                     throw _PatternParserError.unmatchedOpeningBracket(offset: openingOffset ?? bytes.count)
                 }
                 guard !nodes.isEmpty else { throw _PatternParserError.emptyInput }
-                return nodes
+                return .sequence(nodes, offset: rootOffset)
             }
 
-            switch bytes[cursor] {
-            case 93: // ]
-                guard expectClosing else {
-                    throw _PatternParserError.unmatchedClosingBracket(offset: cursor)
-                }
+            let byte = bytes[cursor]
+            if let closing, byte == closing {
                 cursor += 1
                 guard !nodes.isEmpty else {
                     throw _PatternParserError.emptyGroup(offset: openingOffset ?? cursor - 1)
                 }
-                return nodes
-            case 91: // [
-                let offset = cursor
-                guard depth < Self.maximumDepth else {
-                    throw _PatternParserError.nestingTooDeep(limit: Self.maximumDepth)
-                }
-                cursor += 1
-                let children = try parseSequence(
-                    expectClosing: true,
-                    openingOffset: offset,
-                    depth: depth + 1
-                )
-                nodes.append(.group(children, offset: offset))
+                return .sequence(nodes, offset: openingOffset ?? rootOffset)
+            }
+            switch byte {
+            case 93:
+                throw _PatternParserError.unmatchedClosingBracket(offset: cursor)
+            case 62:
+                throw _PatternParserError.unmatchedClosingAngleBracket(offset: cursor)
             default:
-                let offset = cursor
-                while cursor < bytes.count,
-                      !Self.isWhitespace(bytes[cursor]),
-                      bytes[cursor] != 91,
-                      bytes[cursor] != 93 {
-                    cursor += 1
-                }
-                guard cursor > offset else {
-                    throw _PatternParserError.invalidToken(token: "", index: leafCount, offset: offset)
-                }
-                guard leafCount < Self.maximumLeaves else {
-                    throw _PatternParserError.tooManyLeaves(limit: Self.maximumLeaves)
-                }
-                let token = String(decoding: bytes[offset..<cursor], as: UTF8.self)
-                nodes.append(.leaf(token: token, index: leafCount, offset: offset))
-                leafCount += 1
+                nodes.append(try parseAtom(depth: depth, rootOffset: rootOffset))
             }
         }
     }
 
+    private mutating func parseAtom(depth: Int, rootOffset: Int) throws -> _PatternNode {
+        guard cursor < bytes.count else { throw _PatternParserError.emptyInput }
+        let offset = cursor
+        guard depth < Self.maximumDepth || (bytes[cursor] != 91 && bytes[cursor] != 60) else {
+            throw _PatternParserError.nestingTooDeep(limit: Self.maximumDepth, offset: offset)
+        }
+        switch bytes[cursor] {
+        case 91:
+            cursor += 1
+            return try parseSequence(until: 93, openingOffset: offset, depth: depth + 1, rootOffset: offset)
+        case 60:
+            cursor += 1
+            return try parseAlternation(openingOffset: offset, depth: depth + 1, rootOffset: offset)
+        default:
+            return try parseLeaf(rootOffset: rootOffset)
+        }
+    }
+
+    private mutating func parseAlternation(openingOffset: Int, depth: Int, rootOffset: Int) throws -> _PatternNode {
+        var alternatives: [_PatternNode] = []
+        while true {
+            skipWhitespace()
+            guard cursor < bytes.count else {
+                throw _PatternParserError.unmatchedOpeningAngleBracket(offset: openingOffset)
+            }
+            if bytes[cursor] == 62 {
+                cursor += 1
+                guard !alternatives.isEmpty else {
+                    throw _PatternParserError.emptyGroup(offset: openingOffset)
+                }
+                return .alternation(alternatives, offset: openingOffset)
+            }
+            if bytes[cursor] == 93 {
+                throw _PatternParserError.unmatchedClosingBracket(offset: cursor)
+            }
+            alternatives.append(try parseAtom(depth: depth, rootOffset: rootOffset))
+        }
+    }
+
+    private mutating func parseLeaf(rootOffset: Int) throws -> _PatternNode {
+        let offset = cursor
+        while cursor < bytes.count,
+              !Self.isWhitespace(bytes[cursor]),
+              ![91, 93, 60, 62].contains(bytes[cursor]) {
+            cursor += 1
+        }
+        guard cursor > offset else {
+            throw _PatternParserError.invalidToken(token: "", index: lexicalLeafCount, offset: offset)
+        }
+        guard lexicalLeafCount < Self.maximumLeaves else {
+            throw _PatternParserError.tooManyLeaves(limit: Self.maximumLeaves, offset: offset)
+        }
+        let raw = String(decoding: bytes[offset..<cursor], as: UTF8.self)
+        let (token, repeatCount) = try splitRepetition(raw, index: lexicalLeafCount, offset: offset)
+        let node = _PatternNode.leaf(token: token, index: lexicalLeafCount, offset: offset, repeatCount: repeatCount)
+        lexicalLeafCount += 1
+        return node
+    }
+
+    private func splitRepetition(_ raw: String, index: Int, offset: Int) throws -> (String, Int) {
+        let rawBytes = Array(raw.utf8)
+        let stars = rawBytes.enumerated().filter { $0.element == 42 }
+        guard let star = stars.first else { return (raw, 1) }
+        guard stars.count == 1 else {
+            let offending = stars.dropFirst().first?.offset ?? star.offset
+            throw _PatternParserError.invalidRepetition(token: raw, index: index, offset: offset + offending)
+        }
+        guard star.offset > 0 else {
+            throw _PatternParserError.invalidRepetition(token: raw, index: index, offset: offset + star.offset)
+        }
+        guard star.offset + 1 < rawBytes.count else {
+            throw _PatternParserError.invalidRepetition(token: raw, index: index, offset: offset + star.offset)
+        }
+        let base = String(decoding: rawBytes[..<star.offset], as: UTF8.self)
+        let countBytes = rawBytes[(star.offset + 1)...]
+        var count: UInt64 = 0
+        for (position, byte) in countBytes.enumerated() {
+            guard (48...57).contains(byte) else {
+                throw _PatternParserError.invalidRepetition(token: raw, index: index, offset: offset + star.offset + 1 + position)
+            }
+            let digit = UInt64(byte - 48)
+            let (shifted, shiftOverflow) = count.multipliedReportingOverflow(by: 10)
+            let (next, addOverflow) = shifted.addingReportingOverflow(digit)
+            guard !shiftOverflow, !addOverflow else {
+                throw _PatternParserError.invalidRepetition(
+                    token: raw,
+                    index: index,
+                    offset: offset + star.offset + 1 + position
+                )
+            }
+            count = next
+        }
+        guard count > 0 else {
+            throw _PatternParserError.invalidRepetition(token: raw, index: index, offset: offset + star.offset)
+        }
+        guard count <= UInt64(Self.maximumLeaves) else {
+            throw _PatternParserError.tooManyLeaves(limit: Self.maximumLeaves, offset: offset + star.offset)
+        }
+        return (base, Int(count))
+    }
+
+    private func measure(_ node: _PatternNode) throws -> _PatternNodeMetrics {
+        switch node {
+        case .leaf(_, _, _, let repeatCount):
+            return _PatternNodeMetrics(period: 1, leafCount: repeatCount)
+        case .sequence(let children, let offset):
+            guard !children.isEmpty else { throw _PatternParserError.emptyGroup(offset: offset) }
+            var period = 1
+            var metrics: [_PatternNodeMetrics] = []
+            metrics.reserveCapacity(children.count)
+            for child in children {
+                let childMetrics = try measure(child)
+                metrics.append(childMetrics)
+                period = try boundedLCM(period, childMetrics.period, offset: offset)
+            }
+            var leaves = 0
+            for child in metrics {
+                let occurrences = period / child.period
+                leaves = try boundedAdd(leaves, try boundedMultiply(child.leafCount, occurrences, offset: offset), offset: offset)
+            }
+            return _PatternNodeMetrics(period: period, leafCount: leaves)
+        case .alternation(let alternatives, let offset):
+            guard !alternatives.isEmpty else { throw _PatternParserError.emptyGroup(offset: offset) }
+            var childPeriod = 1
+            var metrics: [_PatternNodeMetrics] = []
+            metrics.reserveCapacity(alternatives.count)
+            for child in alternatives {
+                let childMetrics = try measure(child)
+                metrics.append(childMetrics)
+                childPeriod = try boundedLCM(childPeriod, childMetrics.period, offset: offset)
+            }
+            let period = try boundedMultiply(alternatives.count, childPeriod, offset: offset)
+            var leaves = 0
+            for child in metrics {
+                let occurrences = childPeriod / child.period
+                leaves = try boundedAdd(leaves, try boundedMultiply(child.leafCount, occurrences, offset: offset), offset: offset)
+            }
+            return _PatternNodeMetrics(period: period, leafCount: leaves)
+        }
+    }
+
     private func emit(
-        _ nodes: [_PatternNode],
+        _ node: _PatternNode,
+        cycle: Int,
         start: MusicalTime,
         duration: MusicalTime,
         into leaves: inout [_PatternTimedLeaf]
     ) throws {
-        guard !nodes.isEmpty else { throw _PatternParserError.emptyInput }
-        let childDuration = try duration.divided(by: UInt64(nodes.count))
-        for (position, node) in nodes.enumerated() {
-            let childStart = try start.adding(childDuration.multiplied(by: UInt64(position)))
-            switch node {
-            case .leaf(let token, let index, _):
-                leaves.append(_PatternTimedLeaf(
-                    token: token,
-                    index: index,
-                    start: childStart,
-                    duration: childDuration
-                ))
-            case .group(let children, _):
-                try emit(children, start: childStart, duration: childDuration, into: &leaves)
+        switch node {
+        case .leaf(let token, let index, let offset, let repeatCount):
+            do {
+                let childDuration = try duration.divided(by: UInt64(repeatCount))
+                for position in 0..<repeatCount {
+                    let childStart = try start.adding(childDuration.multiplied(by: UInt64(position)))
+                    leaves.append(_PatternTimedLeaf(token: token, index: index, offset: offset, start: childStart, duration: childDuration))
+                }
+            } catch is MusicalTimeError {
+                throw _PatternParserError.timingOverflow(offset: offset)
+            }
+        case .sequence(let children, let offset):
+            do {
+                let childDuration = try duration.divided(by: UInt64(children.count))
+                for (position, child) in children.enumerated() {
+                    let childStart = try start.adding(childDuration.multiplied(by: UInt64(position)))
+                    let childPeriod = try measure(child).period
+                    try emit(child, cycle: cycle % childPeriod, start: childStart, duration: childDuration, into: &leaves)
+                }
+            } catch let error as _PatternParserError {
+                throw error
+            } catch is MusicalTimeError {
+                throw _PatternParserError.timingOverflow(offset: offset)
+            }
+        case .alternation(let alternatives, let offset):
+            let selected = cycle % alternatives.count
+            let localCycle = cycle / alternatives.count
+            let child = alternatives[selected]
+            do {
+                let childPeriod = try measure(child).period
+                try emit(child, cycle: localCycle % childPeriod, start: start, duration: duration, into: &leaves)
+            } catch let error as _PatternParserError {
+                throw error
+            } catch is MusicalTimeError {
+                throw _PatternParserError.timingOverflow(offset: offset)
             }
         }
+    }
+
+    private func boundedLCM(_ lhs: Int, _ rhs: Int, offset: Int) throws -> Int {
+        let gcd = greatestCommonDivisor(lhs, rhs)
+        return try boundedMultiply(lhs / gcd, rhs, offset: offset)
+    }
+
+    private func boundedMultiply(_ lhs: Int, _ rhs: Int, offset: Int) throws -> Int {
+        let (value, overflow) = lhs.multipliedReportingOverflow(by: rhs)
+        guard !overflow else { throw _PatternParserError.timingOverflow(offset: offset) }
+        guard value <= Self.maximumLeaves else {
+            throw _PatternParserError.tooManyLeaves(limit: Self.maximumLeaves, offset: offset)
+        }
+        return value
+    }
+
+    private func boundedAdd(_ lhs: Int, _ rhs: Int, offset: Int) throws -> Int {
+        let (value, overflow) = lhs.addingReportingOverflow(rhs)
+        guard !overflow else { throw _PatternParserError.timingOverflow(offset: offset) }
+        guard value <= Self.maximumLeaves else {
+            throw _PatternParserError.tooManyLeaves(limit: Self.maximumLeaves, offset: offset)
+        }
+        return value
+    }
+
+    private func greatestCommonDivisor(_ lhs: Int, _ rhs: Int) -> Int {
+        var a = lhs
+        var b = rhs
+        while b != 0 {
+            let remainder = a % b
+            a = b
+            b = remainder
+        }
+        return max(a, 1)
     }
 
     private mutating func skipWhitespace() {

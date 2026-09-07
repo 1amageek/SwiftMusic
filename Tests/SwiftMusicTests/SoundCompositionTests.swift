@@ -342,7 +342,7 @@ struct SoundCompositionTests {
         #expect {
             try RhythmPattern(validating: "x nope")
         } throws: { error in
-            error as? RhythmPatternError == .invalidToken(token: "nope", index: 1)
+            error as? RhythmPatternError == .invalidToken(token: "nope", index: 1, offset: 2)
         }
         #expect(throws: (any Error).self) {
             try Envelope(

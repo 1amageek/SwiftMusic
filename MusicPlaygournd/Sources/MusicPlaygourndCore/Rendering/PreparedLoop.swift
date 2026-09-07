@@ -162,7 +162,7 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
     private static let maximumPatternTokenCount = 1_024
 
     private static func isPatternDelimiter(_ character: Character) -> Bool {
-        if character == "[" || character == "]" { return true }
+        if character == "[" || character == "]" || character == "<" || character == ">" { return true }
         return switch character.asciiValue {
         case 9, 10, 11, 12, 13, 32: true
         default: false
