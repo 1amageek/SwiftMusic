@@ -11,13 +11,75 @@ public extension Sound {
         ModifiedSound(base: self, modifier: .envelopePattern(pattern, cycle))
     }
 
+    func pitchEnvelope(_ envelope: Envelope, depth: Semitones) -> ModifiedSound {
+        ModifiedSound(
+            base: self,
+            modifier: .pitchEnvelope(EnvelopeModulation(envelope: envelope, depth: depth))
+        )
+    }
+
+    func filterEnvelope(_ envelope: Envelope, depth: Semitones) -> ModifiedSound {
+        ModifiedSound(
+            base: self,
+            modifier: .filterEnvelope(EnvelopeModulation(envelope: envelope, depth: depth))
+        )
+    }
+
+    func lowPass(
+        _ cutoff: Frequency,
+        resonanceQ: Double = 0.7071067811865476,
+        slope: FilterSlope = .twelve
+    ) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .fixedFilter(.lowPass, cutoff, resonanceQ, slope))
+    }
+
+    func highPass(
+        _ cutoff: Frequency,
+        resonanceQ: Double = 0.7071067811865476,
+        slope: FilterSlope = .twelve
+    ) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .fixedFilter(.highPass, cutoff, resonanceQ, slope))
+    }
+
+    func bandPass(
+        _ cutoff: Frequency,
+        resonanceQ: Double = 0.7071067811865476,
+        slope: FilterSlope = .twelve
+    ) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .fixedFilter(.bandPass, cutoff, resonanceQ, slope))
+    }
+
     func lowPass(
         _ pattern: CutoffPattern,
         cycle: MusicalTime = .whole,
         resonanceQ: Double = 0.7071067811865476,
         slope: FilterSlope = .twelve
     ) -> ModifiedSound {
-        ModifiedSound(base: self, modifier: .cutoffPattern(pattern, cycle, resonanceQ, slope))
+        ModifiedSound(base: self, modifier: .cutoffPattern(.lowPass, pattern, cycle, resonanceQ, slope))
+    }
+
+    func highPass(
+        _ pattern: CutoffPattern,
+        cycle: MusicalTime = .whole,
+        resonanceQ: Double = 0.7071067811865476,
+        slope: FilterSlope = .twelve
+    ) -> ModifiedSound {
+        ModifiedSound(
+            base: self,
+            modifier: .cutoffPattern(.highPass, pattern, cycle, resonanceQ, slope)
+        )
+    }
+
+    func bandPass(
+        _ pattern: CutoffPattern,
+        cycle: MusicalTime = .whole,
+        resonanceQ: Double = 0.7071067811865476,
+        slope: FilterSlope = .twelve
+    ) -> ModifiedSound {
+        ModifiedSound(
+            base: self,
+            modifier: .cutoffPattern(.bandPass, pattern, cycle, resonanceQ, slope)
+        )
     }
 
     func sampleRegion(_ value: SampleRegion) -> ModifiedSound {

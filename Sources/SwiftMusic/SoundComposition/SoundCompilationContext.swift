@@ -212,9 +212,15 @@ internal struct _SoundCompilationContext {
                 fragment.events[index].pitchOffsetSemitones += try pattern.value(at: leaf).value
                 try validateEffectivePitch(fragment.events[index])
             }
-        case .cutoffPattern(let pattern, let cycle, let resonanceQ, let slope):
+        case .fixedFilter(let kind, let cutoff, let resonanceQ, let slope):
+            let filter = try SourceFilter(kind: kind, resonanceQ: resonanceQ, slope: slope)
+            for index in sourceRange { sources[index].filter = filter }
+            for index in fragment.events.indices {
+                fragment.events[index].cutoffHz = cutoff.hertz
+            }
+        case .cutoffPattern(let kind, let pattern, let cycle, let resonanceQ, let slope):
             guard cycle > .zero else { throw invalid("Cutoff pattern cycle must be positive") }
-            let filter = try SourceFilter(resonanceQ: resonanceQ, slope: slope)
+            let filter = try SourceFilter(kind: kind, resonanceQ: resonanceQ, slope: slope)
             let resolved = try pattern.resolvedTransform(cycle: cycle)
             let period = try resolved.period
             for index in sourceRange { sources[index].filter = filter }
@@ -263,6 +269,10 @@ internal struct _SoundCompilationContext {
         case .envelope(let envelope):
             for index in sourceRange { sources[index].envelope = envelope }
             for index in fragment.events.indices { fragment.events[index].envelope = nil }
+        case .pitchEnvelope(let modulation):
+            for index in sourceRange { sources[index].pitchEnvelope = modulation }
+        case .filterEnvelope(let modulation):
+            for index in sourceRange { sources[index].filterEnvelope = modulation }
         case .sampleRegion(let region):
             for index in sourceRange {
                 guard case .sample = sources[index].kind else {

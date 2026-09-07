@@ -206,7 +206,7 @@ struct TypedParameterCompilationTests {
             )
         } throws: { error in
             error as? SoundCompilationError == .invalidParameter(
-                "Source filter Q must be finite and positive"
+                "Source filter Q must be finite and in 0.1...32"
             )
         }
 

@@ -16,7 +16,10 @@ internal enum _SoundModifier: Sendable {
     case staccato
     case tuning(Tuning)
     case envelope(Envelope)
-    case cutoffPattern(CutoffPattern, MusicalTime, Double, FilterSlope)
+    case pitchEnvelope(EnvelopeModulation)
+    case filterEnvelope(EnvelopeModulation)
+    case fixedFilter(FilterKind, Frequency, Double, FilterSlope)
+    case cutoffPattern(FilterKind, CutoffPattern, MusicalTime, Double, FilterSlope)
     case envelopePattern(EnvelopePattern, MusicalTime)
     case sampleRegion(SampleRegion)
     case unison(Unison)

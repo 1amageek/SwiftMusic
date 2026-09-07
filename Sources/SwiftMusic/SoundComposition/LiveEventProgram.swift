@@ -46,7 +46,8 @@ internal struct _LiveEventProgram {
             guard period != nil else { return .finite(finite) }
             return Self(operation: .seeds(finite.events), period: finite.extent,
                         finiteExtent: nil, sourceIDs: sourceIDs, recurringSourceIDs: sourceIDs)
-        case .tuning, .sampleRegion, .unison, .effect, .gain, .pan, .muted, .send, .output:
+        case .tuning, .sampleRegion, .unison, .effect, .gain, .pan, .muted, .send, .output,
+             .pitchEnvelope, .filterEnvelope:
             return self
         default:
             guard var period else { return .finite(finite) }
@@ -58,7 +59,7 @@ internal struct _LiveEventProgram {
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
             case .pitchPattern(let pattern, let cycle):
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
-            case .cutoffPattern(let pattern, let cycle, _, _):
+            case .cutoffPattern(_, let pattern, let cycle, _, _):
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
             case .envelopePattern(let pattern, let cycle):
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!

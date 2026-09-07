@@ -4,11 +4,14 @@ public struct SourceFilter: Sendable, Equatable {
     public let resonanceQ: Double
     public let slope: FilterSlope
 
-    internal init(resonanceQ: Double, slope: FilterSlope) throws {
-        guard resonanceQ.isFinite, resonanceQ > 0 else {
-            throw SoundCompilationError.invalidParameter("Source filter Q must be finite and positive")
+    internal init(kind: FilterKind, resonanceQ: Double, slope: FilterSlope) throws {
+        guard kind != .notch else {
+            throw SoundCompilationError.invalidParameter("Notch source filter is unsupported")
         }
-        self.kind = .lowPass
+        guard resonanceQ.isFinite, (0.1...32).contains(resonanceQ) else {
+            throw SoundCompilationError.invalidParameter("Source filter Q must be finite and in 0.1...32")
+        }
+        self.kind = kind
         self.resonanceQ = resonanceQ
         self.slope = slope
     }

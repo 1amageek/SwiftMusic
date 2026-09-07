@@ -4,6 +4,8 @@ public struct CompiledSource: Sendable, Equatable {
     public internal(set) var kind: SourceKind
     public internal(set) var tuning: Tuning?
     public internal(set) var envelope: Envelope?
+    public internal(set) var pitchEnvelope: EnvelopeModulation?
+    public internal(set) var filterEnvelope: EnvelopeModulation?
     public internal(set) var sampleRegion: SampleRegion?
     public internal(set) var filter: SourceFilter?
     public internal(set) var unison: Unison?
@@ -15,6 +17,8 @@ public struct CompiledSource: Sendable, Equatable {
         kind: SourceKind,
         tuning: Tuning? = nil,
         envelope: Envelope? = nil,
+        pitchEnvelope: EnvelopeModulation? = nil,
+        filterEnvelope: EnvelopeModulation? = nil,
         sampleRegion: SampleRegion? = nil,
         unison: Unison? = nil,
         filter: SourceFilter? = nil,
@@ -25,6 +29,8 @@ public struct CompiledSource: Sendable, Equatable {
         self.kind = kind
         self.tuning = tuning
         self.envelope = envelope
+        self.pitchEnvelope = pitchEnvelope
+        self.filterEnvelope = filterEnvelope
         self.sampleRegion = sampleRegion
         self.unison = unison
         self.filter = filter
