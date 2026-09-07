@@ -34,14 +34,15 @@ struct ContentView: View {
             Divider()
             liveControls
             Divider()
-            if model.bottomLayout {
-                VSplitView { editor; rhythm }
-            } else {
+            VSplitView {
                 HSplitView {
                     editor
-                    TimelineView(loop: model.loop, rowLines: model.rowLines, lineRects: lineRects, beatPosition: model.beatPosition, isPlaying: model.isPlaying, onScroll: { timelineScroll += $0 })
-                        .frame(minWidth: 340)
+                    if !model.inlineLayout && !model.bottomLayout {
+                        TimelineView(loop: model.loop, rowLines: model.rowLines, lineRects: lineRects, beatPosition: model.beatPosition, isPlaying: model.isPlaying, onScroll: { timelineScroll += $0 })
+                            .frame(minWidth: 340)
+                    }
                 }
+                if !model.inlineLayout && model.bottomLayout { rhythm }
             }
             Divider()
             SpectrumView(bands: model.spectrum, samples: model.outputSamples, isPlaying: model.isPlaying)
@@ -58,9 +59,13 @@ struct ContentView: View {
                 if let revision = model.currentRevision {
                     Text("LOOP r\(revision) / EDIT r\(model.revision)").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
                 }
-                Button { model.bottomLayout.toggle() } label: {
-                    Image(systemName: model.bottomLayout ? "rectangle.split.2x1" : "rectangle.split.1x2")
-                }.buttonStyle(.plain).help("Switch rhythm view position")
+                Menu {
+                    Button("Inline Results") { model.inlineLayout = true }
+                    Button("Side Timeline") { model.inlineLayout = false; model.bottomLayout = false }
+                    Button("Bottom Overview") { model.inlineLayout = false; model.bottomLayout = true }
+                } label: {
+                    Label(model.inlineLayout ? "Inline Results" : (model.bottomLayout ? "Bottom Overview" : "Side Timeline"), systemImage: "rectangle.3.group")
+                }.menuStyle(.borderlessButton).fixedSize().help("Rhythm display layout")
             }.padding(.horizontal, 18).padding(.vertical, 10)
         }
         .background(Color(red: 0.06, green: 0.07, blue: 0.08))
@@ -114,7 +119,8 @@ struct ContentView: View {
                 Text("SWIFT MUSIC").font(.system(size: 9, weight: .medium, design: .monospaced)).foregroundStyle(.secondary)
             }.font(.system(size: 12)).padding(.horizontal, 21).frame(height: 40)
             Divider()
-            CodeEditor(text: $model.source, selectionLine: model.selectionLine, selectionToken: model.selectionToken,
+            CodeEditor(text: $model.source, inlineLoop: model.loop, inlineEnabled: model.inlineLayout, resultLines: model.resultLines,
+                beatPosition: model.beatPosition, isPlaying: model.isPlaying, selectionLine: model.selectionLine, selectionToken: model.selectionToken,
                 rhythmLines: Array(Set(model.rowLines.values)).sorted(), rowLines: model.rowLines,
                 patternTexts: Dictionary(uniqueKeysWithValues: (model.loop?.rows ?? []).compactMap { row in row.patternText.map { (row.sourceID, $0) } }),
                 activeTokens: model.activeTokens,

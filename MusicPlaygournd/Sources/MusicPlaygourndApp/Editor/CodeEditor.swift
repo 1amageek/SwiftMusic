@@ -4,6 +4,11 @@ import SwiftUI
 
 struct CodeEditor: NSViewRepresentable {
     @Binding var text: String
+    let inlineLoop: PreparedLoop?
+    let inlineEnabled: Bool
+    let resultLines: [Int: Int]
+    let beatPosition: Double
+    let isPlaying: Bool
     let selectionLine: Int?
     let selectionToken: Int
     let rhythmLines: [Int]
@@ -18,6 +23,12 @@ struct CodeEditor: NSViewRepresentable {
     let onCompletionStatus: (String) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    static func viewportRect(_ glyphRect: CGRect, editor: NSTextView, scroll: NSScrollView) -> CGRect {
+        let documentRect = glyphRect.offsetBy(dx: editor.textContainerOrigin.x, dy: editor.textContainerOrigin.y)
+        let clipRect = editor.convert(documentRect, to: scroll.contentView)
+        return clipRect.offsetBy(dx: -scroll.contentView.bounds.minX, dy: -scroll.contentView.bounds.minY)
+    }
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
@@ -52,13 +63,17 @@ struct CodeEditor: NSViewRepresentable {
         editor.selectedTextAttributes = [.backgroundColor: NSColor.systemMint.withAlphaComponent(0.25)]
         editor.string = text
         editor.delegate = context.coordinator
+        context.coordinator.inlineLayout = InlineRhythmLayout(editor: editor)
         editor.setAccessibilityIdentifier("swift-source-editor")
         editor.setAccessibilityLabel("Swift source code")
         scroll.documentView = editor
         context.coordinator.scroll = scroll
         scroll.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.scrolled), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
-        editor.onLayout = { [weak coordinator = context.coordinator] in coordinator?.publishLayout() }
+        editor.onLayout = { [weak coordinator = context.coordinator] in
+            coordinator?.inlineLayout?.layoutCards()
+            coordinator?.publishLayout()
+        }
         editor.onCompletionRequest = { [weak coordinator = context.coordinator, weak editor] in
             guard let editor else { return }
             coordinator?.requestCompletion(editor, immediate: true)
@@ -88,6 +103,7 @@ struct CodeEditor: NSViewRepresentable {
             clip.scroll(to: CGPoint(x: clip.bounds.minX, y: y))
             scroll.reflectScrolledClipView(clip)
         }
+        context.coordinator.inlineLayout?.update(loop: inlineLoop, rowLines: resultLines, enabled: inlineEnabled, beat: beatPosition, isPlaying: isPlaying)
         context.coordinator.publishLayout()
         context.coordinator.highlightPlayback(editor)
         if context.coordinator.lastSelection != selectionToken, let selectionLine {
@@ -107,6 +123,7 @@ struct CodeEditor: NSViewRepresentable {
         var lastSelection = 0
         var lastScrollDelta: CGFloat = 0
         weak var scroll: NSScrollView?
+        var inlineLayout: InlineRhythmLayout?
         private var published: [Int: CGRect] = [:]
         private var rangeSource = ""
         private var rangeLines: [Int: Int] = [:]
@@ -144,7 +161,7 @@ struct CodeEditor: NSViewRepresentable {
                 }
             }
         }
-        @objc func scrolled() { publishLayout() }
+        @objc func scrolled() { inlineLayout?.layoutCards(); publishLayout() }
         func publishLayout() {
             guard let scroll, let editor = scroll.documentView as? NSTextView,
                   let layout = editor.layoutManager, let container = editor.textContainer else { return }
@@ -158,7 +175,7 @@ struct CodeEditor: NSViewRepresentable {
                 if requested.contains(line) {
                     let glyph = layout.glyphIndexForCharacter(at: offset)
                     let rect = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-                    rectangles[line] = CGRect(x: 0, y: rect.minY + editor.textContainerOrigin.y - scroll.contentView.bounds.minY, width: 0, height: rect.height)
+                    rectangles[line] = CodeEditor.viewportRect(rect, editor: editor, scroll: scroll)
                 }
                 offset = NSMaxRange(text.lineRange(for: NSRange(location: offset, length: 0)))
                 line += 1

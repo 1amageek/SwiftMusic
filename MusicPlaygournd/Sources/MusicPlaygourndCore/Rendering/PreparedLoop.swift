@@ -94,6 +94,9 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
                     throw PreparedLoopValidationError.invalidRow(index: index, reason: "invalid source anchor")
                 }
             }
+            if let resultLine = row.resultLine, resultLine <= 0 {
+                throw PreparedLoopValidationError.invalidRow(index: index, reason: "invalid expression end line")
+            }
             guard row.peaks.count <= Self.maximumPeakBins else {
                 throw PreparedLoopValidationError.invalidRow(index: index, reason: "peak envelope exceeds 512 bins")
             }

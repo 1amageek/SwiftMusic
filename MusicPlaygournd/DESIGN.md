@@ -11,11 +11,11 @@ Use the parent/child links above. Dependencies: SwiftMusic owns event semantics;
 
 ## Architecture
 ```text
-Swift source -> bounded evaluation -> PCM + anchored rows -> bar-boundary adoption -> audio + aligned rows + analyzers
+Swift source -> compiler AST + bounded evaluation -> PCM + pattern/result anchors -> bar-boundary adoption -> audio + aligned rows + analyzers
 ```
 
 ## Contracts and Invariants
-The source timeline uses the adopted immutable loop and latency-adjusted transport cursor. The master waveform and spectrum use the bounded post-effect capture owned by [Playback](Sources/MusicPlaygourndCore/Playback/DESIGN.md). Player rows use compiler provenance and native editor geometry; exact direct literals use compiled pattern text and event step provenance to illuminate only active tokens. Semantic completion uses a dedicated SourceKit-LSP workspace and never owns evaluation or playback state. New edits invalidate pending updates immediately. Failure/stale results never replace current audio or visualization. BPM and master effects are live playback controls separate from code evaluation; the editor prepares at a fixed 120 BPM base. Unsupported backend features fail explicitly.
+The source timeline uses the adopted immutable loop and latency-adjusted transport cursor. The master waveform and spectrum use the bounded post-effect capture owned by [Playback](Sources/MusicPlaygourndCore/Playback/DESIGN.md). Player rows use compiler provenance and native editor geometry: pattern anchors own side alignment and active-token highlighting, while compiler-AST expression-end lines place inline results after all modifiers. Semantic completion uses a dedicated SourceKit-LSP workspace and never owns evaluation or playback state. New edits invalidate pending updates immediately. Failure/stale results never replace current audio or visualization. BPM and master effects are live playback controls separate from code evaluation; the editor prepares at a fixed 120 BPM base. Unsupported backend features fail explicitly.
 
 ## Failure, Concurrency, and Constraints
 Failure is reported as a diagnostic or typed error; the last adopted loop survives edit failures. Mutable host state is MainActor- or Mutex-isolated.

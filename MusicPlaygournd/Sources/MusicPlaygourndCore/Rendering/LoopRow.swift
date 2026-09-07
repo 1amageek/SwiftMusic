@@ -7,18 +7,21 @@ public struct LoopRow: Codable, Sendable, Equatable {
     public let anchor: SoundSourceAnchor?
     public let peaks: [Float]
     public let patternText: String?
+    public let resultLine: Int?
 
     public init(
         sourceID: Int,
         label: String,
         anchor: SoundSourceAnchor?,
         peaks: [Float],
-        patternText: String? = nil
+        patternText: String? = nil,
+        resultLine: Int? = nil
     ) {
         self.sourceID = sourceID
         self.label = label
         self.anchor = anchor
         self.peaks = peaks
         self.patternText = patternText
+        self.resultLine = resultLine
     }
 }

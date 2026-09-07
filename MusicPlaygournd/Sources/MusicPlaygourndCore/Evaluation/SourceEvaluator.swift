@@ -91,7 +91,21 @@ public actor SourceEvaluator {
         }
         let loop = try PropertyListDecoder().decode(PreparedLoop.self, from: Data(contentsOf: output))
         try loop.validate()
-        return loop
+        let prefix = "import Foundation\nimport SwiftMusic\nimport MusicPlaygourndCore\n"
+        let displaySource = workspace.appending(path: "ResultLocations.swift")
+        try (prefix + source).write(to: displaySource, atomically: true, encoding: .utf8)
+        let ast = try await run(swiftExecutable, ["-frontend", "-dump-ast", "-dump-ast-format", "json", "-suppress-warnings",
+            "-I", binaryPath, "-I", URL(fileURLWithPath: binaryPath).appending(path: "Modules").path,
+            displaySource.path], timeout: 20)
+        let resultLines = try ExpressionResultLocations.lines(ast: Data(ast.utf8), source: source, prefixBytes: prefix.utf8.count, rows: loop.rows)
+        let located = PreparedLoop(sampleRate: loop.sampleRate, bpm: loop.bpm, beatsPerBar: loop.beatsPerBar,
+            beatCount: loop.beatCount, samples: loop.samples, events: loop.events,
+            rows: loop.rows.map { row in
+                LoopRow(sourceID: row.sourceID, label: row.label, anchor: row.anchor, peaks: row.peaks,
+                    patternText: row.patternText, resultLine: resultLines[row.sourceID])
+            })
+        try located.validate()
+        return located
     }
 
     /// Call after cancelling the caller's evaluation task; waits for child cleanup before removing scratch data.

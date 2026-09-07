@@ -24,8 +24,9 @@ The app bundle includes its evaluation package sources. It retains the installed
 - Change BPM (40–240), low-pass cutoff, delay mix and reverb mix live with the master sliders. These controls do not compile code or create a new loop revision. Tempo changes preserve pitch.
 - Code and quarter-note meter (2/4–7/4) changes prepare a new loop and switch at a bar boundary.
 - Open/Save UTF-8 Swift sessions: Command–O / Command–S. Keep the entry type named `Session` and conform it to `Music`.
-- Click the diagnostic heading to select a reported Swift source line. Direct pattern literals glow while their compiled source events play. The attached timeline scrolls with the code; scroll over either pane.
-- Use the lower-right layout button to put the rhythm view below the code.
+- Click the diagnostic heading to select a reported Swift source line. Direct pattern literals glow while their compiled source events play.
+- Inline results appear after the final modifier of each compiler-mapped sound expression by default. Time runs horizontally; notes use vertical pitch lanes. Result cards scroll with the source and never become part of the saved Swift text.
+- Use the layout selector to switch between inline results, the attached side timeline, and the bottom overview.
 
 ## Swift completion
 
@@ -63,3 +64,9 @@ On macOS 27.0 arm64 with Swift 6.4 snapshot 2026-08-14, 40 SwiftMusic tests, 24 
 Twelve completion/control tests pass, including real SourceKit-LSP gain overloads, UTF-16 edits, initial-request cancellation, recovery, malformed frames, unresponsive-server timeout, process shutdown, candidate navigation, insertion and Undo. The cold semantic service test completed in 8.574 seconds. In the optimized app, automatic gain overloads, arrow navigation without edits, Return acceptance with argument selection, one Undo, and a single pan candidate without automatic insertion were verified while the previous loop and output monitoring continued through invalid edits.
 
 The app build script disables the Swift 6.4 2026-08-14 snapshot compiler's debug-type round-trip assertion, which crashes on optimized `FileHandle.AsyncBytes` code. This is a compiler diagnostic workaround; optimization remains enabled.
+
+Inline results are verified with native AppKit layout and bitmap drawing: same-line stacking, source/selection/undo preservation, layout removal, anchor remapping, and first-frame label sizing. Four completion tests and two literal-highlighting regressions also pass.
+
+The final-expression update passed nine focused tests, including actual Swift compilation with nested tracks, multiline modifiers, Unicode source, final result lines, transposed MIDI notes, failure/cancellation/timeout/recovery, independent pattern/result remapping, native viewport coordinates, and completion. The real evaluator test completed in 207.627 seconds under machine load.
+
+The final optimized Results app visibly places grids after the complete modifier/Track expressions. Scrolling preserves the Bass pitch lanes and moving cursor; exact pattern tokens and master monitoring remain active. Switching back to Side Timeline aligns rows with lines 7, 13 and 20. A further invalid-edit UI probe was stopped before mutation because the user was operating the app; failure evidence combines the real evaluator test with the earlier inline playback-retention check.

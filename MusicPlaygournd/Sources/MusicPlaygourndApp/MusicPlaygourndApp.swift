@@ -23,7 +23,9 @@ struct MusicPlaygourndApp: App {
                 Button("Apply Edit") { model.scheduleEvaluation(immediate: true) }.keyboardShortcut("r")
                 Button("Play / Pause", action: model.togglePlayback)
                 Divider()
-                Button("Rhythm Below Code") { model.bottomLayout.toggle() }
+                Button("Inline Results") { model.inlineLayout = true }
+                Button("Side Timeline") { model.inlineLayout = false; model.bottomLayout = false }
+                Button("Bottom Overview") { model.inlineLayout = false; model.bottomLayout = true }
             }
         }
     }

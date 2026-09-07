@@ -49,10 +49,12 @@ final class SessionModel {
     var selectionToken = 0
     var fileURL: URL?
     var hasUnsavedChanges = false
+    var inlineLayout = true
     var bottomLayout = false
     var audioError = ""
     var completionStatus = ""
     var rowLines: [Int: Int] = [:]
+    var resultLines: [Int: Int] = [:]
     var spectrum = [Float](repeating: -90, count: SpectrumAnalyzer.bandCount)
     private var lineMaps: [UInt64: SourceLineMap] = [:]
     private var analyzer: SpectrumAnalyzer?
@@ -113,7 +115,7 @@ final class SessionModel {
                 try Task.checkCancellation()
                 guard let self, requested == self.revision else { return }
                 guard let engine = self.engine else { throw EvaluationError.invalidResult(self.audioError) }
-                self.lineMaps[requested] = SourceLineMap(source: text, lines: candidate.rows.compactMap { $0.anchor?.line })
+                self.lineMaps[requested] = SourceLineMap(source: text, lines: candidate.rows.flatMap { [$0.anchor?.line, $0.resultLine].compactMap { $0 } })
                 try engine.submit(loop: candidate, revision: requested)
                 if self.wantsPlayback { try engine.play() }
                 self.isPreparing = false
@@ -184,12 +186,15 @@ final class SessionModel {
 
     private func updateRowLines() {
         rowLines = [:]
+        resultLines = [:]
         guard let loop, let currentRevision, let map = lineMaps[currentRevision] else { return }
         for row in loop.rows {
             guard let anchor = row.anchor,
-                  anchor.fileID == "Session.swift" || anchor.fileID.hasSuffix("/Session.swift"),
-                  let line = map.currentLine(for: anchor.line, in: source) else { continue }
-            rowLines[row.sourceID] = line
+                  anchor.fileID == "Session.swift" || anchor.fileID.hasSuffix("/Session.swift") else { continue }
+            if let line = map.currentLine(for: anchor.line, in: source) { rowLines[row.sourceID] = line }
+            if let end = row.resultLine, let result = map.currentLine(for: end, in: source) {
+                resultLines[row.sourceID] = result
+            }
         }
     }
 
@@ -217,6 +222,7 @@ final class SessionModel {
             guard text.utf8.count <= 65_536 else { throw EvaluationError.invalidSource("Source exceeds 64 KiB.") }
             lineMaps = [:]
             rowLines = [:]
+            resultLines = [:]
             source = text
             fileURL = url
             hasUnsavedChanges = false
