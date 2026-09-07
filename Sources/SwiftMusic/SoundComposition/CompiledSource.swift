@@ -11,6 +11,8 @@ public struct CompiledSource: Sendable, Equatable {
     public internal(set) var samplePlaybackRate: Double
     public internal(set) var filter: SourceFilter?
     public internal(set) var unison: Unison?
+    public internal(set) var voicePolicy: VoicePolicy?
+    public internal(set) var chokeGroup: String?
     public internal(set) var patternAnchor: SoundSourceAnchor?
     public internal(set) var patternText: String?
 
@@ -26,6 +28,8 @@ public struct CompiledSource: Sendable, Equatable {
         samplePlaybackRate: Double = 1,
         unison: Unison? = nil,
         filter: SourceFilter? = nil,
+        voicePolicy: VoicePolicy? = nil,
+        chokeGroup: String? = nil,
         patternAnchor: SoundSourceAnchor? = nil,
         patternText: String? = nil
     ) {
@@ -40,6 +44,8 @@ public struct CompiledSource: Sendable, Equatable {
         self.samplePlaybackRate = samplePlaybackRate
         self.unison = unison
         self.filter = filter
+        self.voicePolicy = voicePolicy
+        self.chokeGroup = chokeGroup
         self.patternAnchor = patternAnchor
         self.patternText = patternText
     }

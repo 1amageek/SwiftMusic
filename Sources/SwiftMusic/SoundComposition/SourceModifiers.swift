@@ -1,3 +1,5 @@
+import Foundation
+
 public extension Sound {
     func tuning(_ value: Tuning) -> ModifiedSound {
         ModifiedSound(base: self, modifier: .tuning(value))
@@ -102,6 +104,18 @@ public extension Sound {
             throw SampleDescriptorError.invalidPlaybackRate(rate)
         }
         return ModifiedSound(base: self, modifier: .samplePlaybackRate(rate))
+    }
+
+    func voicePolicy(_ policy: VoicePolicy) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .voicePolicy(policy))
+    }
+
+    func chokeGroup(_ name: String) throws -> ModifiedSound {
+        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            throw SoundParameterError.invalidValue("chokeGroup")
+        }
+        return ModifiedSound(base: self, modifier: .chokeGroup(normalized))
     }
 
     func unison(_ value: Unison) -> ModifiedSound {

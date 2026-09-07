@@ -227,7 +227,7 @@ public struct LoopRenderer: Sendable {
     }
 }
 
-private struct StereoBuffer: Sendable {
+internal struct StereoBuffer: Sendable {
     var left: [Float]
     var right: [Float]
 
@@ -293,6 +293,7 @@ private struct RenderContext: Sendable {
     var sourcePeakEnvelopes: [[Float]]
     let preparedSamples: SamplePreparation
     let sampleFrames: [Int: Int]
+    var scheduledSources: [StereoBuffer]?
 
     init(sound: CompiledSound, bpm: Double, beatCount: Double, frameCount: Int,
          preparedSamples: SamplePreparation, sampleFrames: [Int: Int]) throws {
@@ -348,6 +349,12 @@ private struct RenderContext: Sendable {
     }
 
     mutating func renderRoots() throws -> StereoBuffer {
+        if sound.sources.contains(where: { $0.voicePolicy != nil || $0.chokeGroup != nil }) {
+            scheduledSources = try VoiceScheduler.render(
+                templates: sound.events.indices.map { try makeVoice($0) },
+                sourceCount: sound.sources.count, frameCount: frameCount,
+                seamless: sound.playbackMode == .seamlessLoop)
+        }
         var output = StereoBuffer(frameCount: frameCount)
         for rootID in sound.rootNodeIDs {
             guard rootID >= 0, rootID < sound.renderNodes.count else {
@@ -417,177 +424,20 @@ private struct RenderContext: Sendable {
     }
 
     private mutating func renderSource(_ sourceID: Int) throws -> StereoBuffer {
-        let source = sound.sources[sourceID]
+        if let scheduledSources {
+            let output = scheduledSources[sourceID]
+            sourcePeakEnvelopes[sourceID] = peakEnvelope(for: output)
+            return output
+        }
         var output = StereoBuffer(frameCount: frameCount)
-        let sourceEvents = sound.events.enumerated().filter { $0.element.sourceID == sourceID }
-        for (eventIndex, event) in sourceEvents {
-            let startBeat = try beatValue(event.start)
-            let durationBeats = try beatValue(event.duration)
-            guard event.velocity >= 1, event.velocity <= 127 else {
-                throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "velocity is out of range")
-            }
-            guard event.gate.isFinite, event.gate > 0 else {
-                throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "gate is invalid")
-            }
-            let seamless = sound.playbackMode == .seamlessLoop
-            guard startBeat >= 0,
-                  seamless ? startBeat < beatCount : startBeat < beatCount + 1e-9 else {
-                throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "start is outside loop")
-            }
-            let startFrame = max(0, min(frameCount, Int((startBeat * secondsPerBeat * PreparedLoop.requiredSampleRate).rounded(.down))))
-            if seamless {
-                guard startFrame < frameCount else {
-                    throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "start is outside loop frames")
-                }
-            }
-            let naturalDuration = durationBeats * secondsPerBeat
-            let amplitudeEnvelope = VoiceEnvelope.amplitude(event: event, source: source,
-                                                             secondsPerBeat: secondsPerBeat)
-            let sampleVoice = preparedSamples.voices[eventIndex]
-            let fullDuration = sampleFrames[eventIndex].map { Double($0) / PreparedLoop.requiredSampleRate }
-                ?? amplitudeEnvelope?.duration ?? naturalDuration * event.gate
-            let eventFrames: Int
-            if let count = sampleFrames[eventIndex] {
-                guard count > 0, count <= (seamless ? frameCount : frameCount - startFrame) else {
-                    throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "sample frames exceed loop")
-                }
-                eventFrames = count
-            } else if seamless {
-                let fullGatedDuration = fullDuration
-                guard fullGatedDuration.isFinite,
-                      fullGatedDuration > 0,
-                      fullGatedDuration <= beatCount * secondsPerBeat else {
-                    throw LoopRenderingError.invalidEvent(
-                        index: eventIndex,
-                        reason: "seamless event duration exceeds loop window"
-                    )
-                }
-                let renderedFrames = max(1, Int((fullGatedDuration * PreparedLoop.requiredSampleRate).rounded(.up)))
-                guard renderedFrames <= frameCount else {
-                    throw LoopRenderingError.invalidEvent(
-                        index: eventIndex,
-                        reason: "seamless event duration exceeds loop frame count"
-                    )
-                }
-                eventFrames = renderedFrames
-            } else {
-                let gatedDuration = min(
-                    fullDuration,
-                    max(0, beatCount * secondsPerBeat - startBeat * secondsPerBeat)
-                )
-                eventFrames = min(
-                    frameCount - startFrame,
-                    max(1, Int((gatedDuration * PreparedLoop.requiredSampleRate).rounded(.up)))
-                )
-            }
-            let level = Double(event.velocity) / 127 * 0.35 * event.gain
-            guard event.gain.isFinite, event.gain >= 0, level.isFinite, level <= Double(Float.greatestFiniteMagnitude) else {
-                throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "gain cannot be rendered as finite PCM")
-            }
-            let amplitude = Float(level)
-            if let pan = event.pan, !pan.isFinite || !(-1...1).contains(pan) {
-                throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "pan is invalid")
-            }
-            let leftGain = event.pan.map { Float(cos(($0 + 1) * .pi / 4)) } ?? 1
-            let rightGain = event.pan.map { Float(sin(($0 + 1) * .pi / 4)) } ?? 1
-            let edgeFrames = min(128, max(1, eventFrames / 2))
-            if amplitudeEnvelope == nil, source.tuning == nil, source.pitchEnvelope == nil,
-               source.filter == nil, source.filterEnvelope == nil, event.pitchOffsetSemitones == 0, sampleVoice == nil {
-            for offset in 0..<eventFrames {
-                let frame = seamless ? (startFrame + offset) % frameCount : startFrame + offset
-                let time = Double(offset) / PreparedLoop.requiredSampleRate
-                let edge = min(
-                    1,
-                    min(
-                        Double(offset + 1) / Double(edgeFrames),
-                        Double(eventFrames - offset) / Double(edgeFrames)
-                    )
-                )
-                let value = sample(source.kind, pitch: event.pitch, time: time) * amplitude * Float(edge)
-                output.left[frame] += value * leftGain
-                output.right[frame] += value * rightGain
-            }
-            } else {
-                let pitchContour = source.pitchEnvelope.map {
-                    VoiceEnvelope($0.envelope, noteDuration: naturalDuration, gate: event.gate)
-                }
-                let filterContour = source.filterEnvelope.map {
-                    VoiceEnvelope($0.envelope, noteDuration: naturalDuration, gate: event.gate)
-                }
-                let midi = Double(event.pitch?.midiNote ?? 60) + event.pitchOffsetSemitones
-                let frequency = (source.tuning?.frequencyHz ?? 440)
-                    * pow(2, (midi - Double(source.tuning?.referencePitch.midiNote ?? 69)) / 12)
-                let pitchDepth = source.pitchEnvelope?.depth.value ?? 0
-                let filterDepth = source.filterEnvelope?.depth.value ?? 0
-                if case .synthesizer = source.kind {
-                    try validateFrequency(frequency, depth: pitchDepth, eventIndex: eventIndex)
-                }
-                var filter = source.filter.map(VoiceFilter.init)
-                var rightFilter = source.filter.map(VoiceFilter.init)
-                if filter != nil {
-                    guard let cutoff = event.cutoffHz else {
-                        throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "source filter requires event cutoff")
-                    }
-                    try validateFrequency(cutoff, depth: filterDepth, eventIndex: eventIndex)
-                } else if event.cutoffHz != nil {
-                    throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "cutoff requires a source filter")
-                }
-                var phase = 0.0
-                var samplePosition = 0.0
-                let fixedIncrement = try sampleVoice?.increment(event: event, source: source, time: 0,
-                                                                secondsPerBeat: secondsPerBeat)
-                for offset in 0..<eventFrames {
-                    let frame = seamless ? (startFrame + offset) % frameCount : startFrame + offset
-                    let time = Double(offset) / PreparedLoop.requiredSampleRate
-                    var raw: Double
-                    var right: Double?
-                    switch source.kind {
-                    case .synthesizer(let waveform):
-                        let currentFrequency = frequency * pow(2, pitchDepth * (pitchContour?.value(at: time) ?? 0) / 12)
-                        let currentPhase = pitchContour == nil
-                            ? (time * frequency).truncatingRemainder(dividingBy: 1) : phase
-                        raw = Double(oscillator(waveform, phase: currentPhase, time: time))
-                        phase = (phase + currentFrequency / PreparedLoop.requiredSampleRate)
-                            .truncatingRemainder(dividingBy: 1)
-                    case .sample:
-                        raw = Double(sample(source.kind, pitch: event.pitch, time: time))
-                    case .fileSample, .sampleBank:
-                        guard let sampleVoice, let fixedIncrement else {
-                            throw LoopRenderingError.invalidSound("file event has no decoded sample")
-                        }
-                        raw = sampleVoice.value(at: samplePosition, reversed: source.sampleReversed, channel: 0)
-                        right = sampleVoice.value(at: samplePosition, reversed: source.sampleReversed, channel: 1)
-                        samplePosition += source.pitchEnvelope == nil ? fixedIncrement
-                            : try sampleVoice.increment(event: event, source: source, time: time,
-                                                        secondsPerBeat: secondsPerBeat)
-                    }
-                    if filter != nil, let cutoff = event.cutoffHz {
-                        let frequency = cutoff * pow(2, filterDepth * (filterContour?.value(at: time) ?? 0) / 12)
-                        if let filtered = try filter?.process(raw, cutoff: frequency, eventIndex: eventIndex) {
-                            raw = filtered
-                        }
-                        if let value = right, let filtered = try rightFilter?.process(value, cutoff: frequency, eventIndex: eventIndex) {
-                            right = filtered
-                        }
-                    }
-                    let contour: Double
-                    if let amplitudeEnvelope {
-                        contour = amplitudeEnvelope.value(at: time)
-                    } else {
-                        contour = min(1, min(Double(offset + 1) / Double(edgeFrames),
-                                             Double(eventFrames - offset) / Double(edgeFrames)))
-                    }
-                    let value = raw * Double(amplitude) * contour
-                    guard value.isFinite, abs(value) <= Double(Float.greatestFiniteMagnitude) else {
-                        throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "non-finite source PCM")
-                    }
-                    output.left[frame] += Float(value) * leftGain
-                    let rightValue = (right ?? raw) * Double(amplitude) * contour
-                    guard rightValue.isFinite, abs(rightValue) <= Double(Float.greatestFiniteMagnitude) else {
-                        throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "non-finite stereo sample PCM")
-                    }
-                    output.right[frame] += Float(rightValue) * rightGain
-                }
+        for eventIndex in sound.events.indices where sound.events[eventIndex].sourceID == sourceID {
+            var voice = try makeVoice(eventIndex)
+            for offset in 0..<voice.eventFrames {
+                let frame = sound.playbackMode == .seamlessLoop
+                    ? (voice.startFrame + offset) % frameCount : voice.startFrame + offset
+                let value = try voice.next()
+                output.left[frame] += value.left
+                output.right[frame] += value.right
             }
         }
         sourcePeakEnvelopes[sourceID] = peakEnvelope(for: output)
@@ -610,60 +460,83 @@ private struct RenderContext: Sendable {
         return envelope
     }
 
-    private func sample(_ kind: SourceKind, pitch: Pitch?, time: Double) -> Float {
-        switch kind {
-        case .synthesizer(let waveform):
-            let midi = Double(pitch?.midiNote ?? 60)
-            let frequency = 440 * pow(2, (midi - 69) / 12)
-            let phase = (time * frequency).truncatingRemainder(dividingBy: 1)
-            return oscillator(waveform, phase: phase, time: time)
-        case .fileSample, .sampleBank:
-            preconditionFailure("Decoded file voices use the sample traversal path")
-        case .sample(let name):
-            let decay: Double
-            switch name {
-            case "kick":
-                let frequency = 140 * exp(-18 * time) + 45
-                return Float(sin(2 * .pi * frequency * time) * exp(-11 * time))
-            case "snare":
-                decay = exp(-24 * time)
-                return Float((Double(deterministicNoise(time: time)) * 0.9 + sin(2 * .pi * 180 * time) * 0.1) * decay)
-            case "closedHat":
-                return Float(Double(deterministicNoise(time: time)) * exp(-45 * time))
-            default:
-                return 0
+    private func makeVoice(_ eventIndex: Int) throws -> RenderedVoice {
+        let event = sound.events[eventIndex]
+        let source = sound.sources[event.sourceID]
+        let startBeat = try beatValue(event.start)
+        let durationBeats = try beatValue(event.duration)
+        guard event.velocity >= 1, event.velocity <= 127 else {
+            throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "velocity is out of range")
+        }
+        guard event.gate.isFinite, event.gate > 0 else {
+            throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "gate is invalid")
+        }
+        let seamless = sound.playbackMode == .seamlessLoop
+        guard startBeat >= 0,
+              seamless ? startBeat < beatCount : startBeat < beatCount + 1e-9 else {
+            throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "start is outside loop")
+        }
+        let startFrame = max(0, min(frameCount, Int((startBeat * secondsPerBeat * PreparedLoop.requiredSampleRate).rounded(.down))))
+        if seamless {
+            guard startFrame < frameCount else {
+                throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "start is outside loop frames")
             }
         }
-    }
-
-    private func validateFrequency(_ frequency: Double, depth: Double, eventIndex: Int) throws {
-        let endpoint = frequency * pow(2, depth / 12)
-        let nyquist = PreparedLoop.requiredSampleRate / 2
-        guard frequency.isFinite, frequency > 0, frequency < nyquist,
-              endpoint.isFinite, endpoint > 0, endpoint < nyquist else {
-            throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "frequency must be positive and below Nyquist")
+        let naturalDuration = durationBeats * secondsPerBeat
+        let amplitudeEnvelope = VoiceEnvelope.amplitude(event: event, source: source,
+                                                         secondsPerBeat: secondsPerBeat)
+        let sampleVoice = preparedSamples.voices[eventIndex]
+        let fullDuration = sampleFrames[eventIndex].map { Double($0) / PreparedLoop.requiredSampleRate }
+            ?? amplitudeEnvelope?.duration ?? naturalDuration * event.gate
+        let eventFrames: Int
+        if let count = sampleFrames[eventIndex] {
+            guard count > 0, count <= (seamless ? frameCount : frameCount - startFrame) else {
+                throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "sample frames exceed loop")
+            }
+            eventFrames = count
+        } else if seamless {
+            let fullGatedDuration = fullDuration
+            guard fullGatedDuration.isFinite,
+                  fullGatedDuration > 0,
+                  fullGatedDuration <= beatCount * secondsPerBeat else {
+                throw LoopRenderingError.invalidEvent(
+                    index: eventIndex,
+                    reason: "seamless event duration exceeds loop window"
+                )
+            }
+            let renderedFrames = max(1, Int((fullGatedDuration * PreparedLoop.requiredSampleRate).rounded(.up)))
+            guard renderedFrames <= frameCount else {
+                throw LoopRenderingError.invalidEvent(
+                    index: eventIndex,
+                    reason: "seamless event duration exceeds loop frame count"
+                )
+            }
+            eventFrames = renderedFrames
+        } else {
+            let gatedDuration = min(
+                fullDuration,
+                max(0, beatCount * secondsPerBeat - startBeat * secondsPerBeat)
+            )
+            eventFrames = min(
+                frameCount - startFrame,
+                max(1, Int((gatedDuration * PreparedLoop.requiredSampleRate).rounded(.up)))
+            )
         }
-    }
-
-    private func oscillator(_ waveform: Waveform, phase: Double, time: Double) -> Float {
-        switch waveform {
-        case .sine: Float(sin(2 * .pi * phase))
-        case .square: phase < 0.5 ? 1 : -1
-        case .saw: Float(2 * phase - 1)
-        case .triangle: Float(1 - 4 * abs((phase - 0.5).rounded() - (phase - 0.5)))
-        case .noise: deterministicNoise(time: time)
+        let level = Double(event.velocity) / 127 * 0.35 * event.gain
+        guard event.gain.isFinite, event.gain >= 0, level.isFinite, level <= Double(Float.greatestFiniteMagnitude) else {
+            throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "gain cannot be rendered as finite PCM")
         }
-    }
-
-    private func deterministicNoise(time: Double) -> Float {
-        let frame = UInt64(max(0, Int(time * PreparedLoop.requiredSampleRate)))
-        var value = frame &* 2_862_933_555_777_941_757 &+ 1
-        value ^= value >> 30
-        value &*= 0xbf58476d1ce4e5b9
-        value ^= value >> 27
-        value &*= 0x94d049bb133111eb
-        value ^= value >> 31
-        return Float(Double(Int64(bitPattern: value)) / Double(Int64.max))
+        let amplitude = Float(level)
+        if let pan = event.pan, !pan.isFinite || !(-1...1).contains(pan) {
+            throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "pan is invalid")
+        }
+        let leftGain = event.pan.map { Float(cos(($0 + 1) * .pi / 4)) } ?? 1
+        let rightGain = event.pan.map { Float(sin(($0 + 1) * .pi / 4)) } ?? 1
+        let edgeFrames = min(128, max(1, eventFrames / 2))
+        return try RenderedVoice(event: event, source: source, eventIndex: eventIndex,
+            startFrame: startFrame, eventFrames: eventFrames, secondsPerBeat: secondsPerBeat,
+            sampleVoice: sampleVoice, amplitudeEnvelope: amplitudeEnvelope,
+            amplitude: amplitude, leftGain: leftGain, rightGain: rightGain, edgeFrames: edgeFrames)
     }
 
     private func beatValue(_ time: MusicalTime) throws -> Double {

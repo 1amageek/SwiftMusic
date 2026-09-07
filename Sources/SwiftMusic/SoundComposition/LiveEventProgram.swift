@@ -47,6 +47,7 @@ internal struct _LiveEventProgram {
             return Self(operation: .seeds(finite.events), period: finite.extent,
                         finiteExtent: nil, sourceIDs: sourceIDs, recurringSourceIDs: sourceIDs)
         case .tuning, .sampleRegion, .sampleReversed, .samplePlaybackRate, .unison,
+             .voicePolicy, .chokeGroup,
              .effect, .gain, .pan, .muted, .send, .output,
              .pitchEnvelope, .filterEnvelope:
             return self

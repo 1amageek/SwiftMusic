@@ -366,6 +366,15 @@ internal struct _SoundCompilationContext {
                 }
                 sources[index].unison = unison
             }
+        case .voicePolicy(let policy):
+            try validate(policy)
+            for index in sourceRange { sources[index].voicePolicy = policy }
+        case .chokeGroup(let name):
+            let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else {
+                throw SoundParameterError.invalidValue("chokeGroup")
+            }
+            for index in sourceRange { sources[index].chokeGroup = normalized }
         case .effect(let effect):
             try validate(effect)
             if let root = try processingRoot(fragment.roots) {
@@ -589,6 +598,13 @@ internal struct _SoundCompilationContext {
 
     private func nonnegative(_ value: Double, _ name: String) throws {
         guard value.isFinite, value >= 0 else { throw invalid("\(name) must be finite and nonnegative") }
+    }
+
+    private func validate(_ policy: VoicePolicy) throws {
+        guard case .polyphonic(let limit, _) = policy else { return }
+        guard (1...limits.maximumEvents).contains(limit) else {
+            throw SoundParameterError.invalidVoices
+        }
     }
 
     private func normalized(_ value: Double, _ name: String) throws {

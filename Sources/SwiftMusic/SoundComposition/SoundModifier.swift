@@ -26,6 +26,8 @@ internal enum _SoundModifier: Sendable {
     case sampleReversed
     case samplePlaybackRate(Double)
     case unison(Unison)
+    case voicePolicy(VoicePolicy)
+    case chokeGroup(String)
     case effect(AudioEffect)
     case gain(Double)
     case gainPattern(GainPattern, MusicalTime)

@@ -51,7 +51,7 @@ extension NativeHostTests {
                                         sustainLevel: 0.7, release: .milliseconds(50))
             let sound = Synthesizer(.sine).notes("A4 A4 A4 A4")
                 .transpose(PitchPattern("0.5 -0.5"))
-                .lowPass("800 1600").envelope(envelope).gain(0.1)
+                .lowPass("800 1600").envelope(envelope).gain(0.1).voicePolicy(.monophonic)
             let loop = try LoopRenderer().render(SoundCompiler().compile(sound), bpm: 120, beatsPerBar: 4)
             let engine = try AudioLoopEngine()
             defer { engine.stop() }

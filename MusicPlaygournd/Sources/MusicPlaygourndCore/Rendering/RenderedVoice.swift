@@ -1,0 +1,171 @@
+import Foundation
+import SwiftMusic
+
+/// One deterministic voice; immutable descriptors share sample storage while State owns DSP history.
+internal struct RenderedVoice {
+    struct State: Equatable {
+        var offset = 0
+        var phase = 0.0
+        var samplePosition = 0.0
+        var filter: VoiceFilter?
+        var rightFilter: VoiceFilter?
+        var lastLeft: Float = 0
+        var lastRight: Float = 0
+    }
+    let event: CompiledSoundEvent
+    let source: CompiledSource
+    let eventIndex: Int
+    let startFrame: Int
+    let eventFrames: Int
+    let secondsPerBeat: Double
+    let sampleVoice: PreparedSampleVoice?
+    let amplitudeEnvelope: VoiceEnvelope?
+    let amplitude: Float
+    let leftGain: Float
+    let rightGain: Float
+    let edgeFrames: Int
+    let legacy: Bool
+    let pitchContour: VoiceEnvelope?
+    let filterContour: VoiceEnvelope?
+    let frequency: Double
+    let fixedIncrement: Double?
+    var state: State
+
+    init(event: CompiledSoundEvent, source: CompiledSource, eventIndex: Int,
+         startFrame: Int, eventFrames: Int, secondsPerBeat: Double,
+         sampleVoice: PreparedSampleVoice?, amplitudeEnvelope: VoiceEnvelope?,
+         amplitude: Float, leftGain: Float, rightGain: Float, edgeFrames: Int) throws {
+        self.event = event; self.source = source; self.eventIndex = eventIndex
+        self.startFrame = startFrame; self.eventFrames = eventFrames; self.secondsPerBeat = secondsPerBeat
+        self.sampleVoice = sampleVoice; self.amplitudeEnvelope = amplitudeEnvelope
+        self.amplitude = amplitude; self.leftGain = leftGain; self.rightGain = rightGain
+        self.edgeFrames = edgeFrames
+        legacy = amplitudeEnvelope == nil && source.tuning == nil && source.pitchEnvelope == nil
+            && source.filter == nil && source.filterEnvelope == nil && event.pitchOffsetSemitones == 0 && sampleVoice == nil
+        let naturalDuration = Double(event.duration.numerator) / Double(event.duration.denominator) * secondsPerBeat
+        pitchContour = source.pitchEnvelope.map { VoiceEnvelope($0.envelope, noteDuration: naturalDuration, gate: event.gate) }
+        filterContour = source.filterEnvelope.map { VoiceEnvelope($0.envelope, noteDuration: naturalDuration, gate: event.gate) }
+        let midi = Double(event.pitch?.midiNote ?? 60) + event.pitchOffsetSemitones
+        frequency = (source.tuning?.frequencyHz ?? 440)
+            * pow(2, (midi - Double(source.tuning?.referencePitch.midiNote ?? 69)) / 12)
+        fixedIncrement = try sampleVoice?.increment(event: event, source: source, time: 0, secondsPerBeat: secondsPerBeat)
+        state = State(filter: source.filter.map(VoiceFilter.init), rightFilter: source.filter.map(VoiceFilter.init))
+        if !legacy, case .synthesizer = source.kind {
+            try validateFrequency(frequency, depth: source.pitchEnvelope?.depth.value ?? 0, eventIndex: eventIndex)
+        }
+        if source.filter != nil {
+            guard let cutoff = event.cutoffHz else {
+                throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "source filter requires event cutoff")
+            }
+            try validateFrequency(cutoff, depth: source.filterEnvelope?.depth.value ?? 0, eventIndex: eventIndex)
+        }
+    }
+
+    mutating func next() throws -> (left: Float, right: Float) {
+        let index = eventIndex
+        let offset = state.offset
+        let time = Double(offset) / PreparedLoop.requiredSampleRate
+        let edge = min(1, min(Double(offset + 1) / Double(edgeFrames), Double(eventFrames - offset) / Double(edgeFrames)))
+        let left: Float
+        let rightOutput: Float
+        if legacy {
+            let value = sample(source.kind, pitch: event.pitch, time: time) * amplitude * Float(edge)
+            left = value * leftGain; rightOutput = value * rightGain
+        } else {
+            let pitchDepth = source.pitchEnvelope?.depth.value ?? 0
+            let filterDepth = source.filterEnvelope?.depth.value ?? 0
+            var raw: Double
+            var right: Double?
+            switch source.kind {
+            case .synthesizer(let waveform):
+                let currentFrequency = frequency * pow(2, pitchDepth * (pitchContour?.value(at: time) ?? 0) / 12)
+                let currentPhase = pitchContour == nil ? (time * frequency).truncatingRemainder(dividingBy: 1) : state.phase
+                raw = Double(oscillator(waveform, phase: currentPhase, time: time))
+                state.phase = (state.phase + currentFrequency / PreparedLoop.requiredSampleRate).truncatingRemainder(dividingBy: 1)
+            case .sample:
+                raw = Double(sample(source.kind, pitch: event.pitch, time: time))
+            case .fileSample, .sampleBank:
+                guard let sampleVoice, let fixedIncrement else {
+                    throw LoopRenderingError.invalidSound("file event has no decoded sample")
+                }
+                raw = sampleVoice.value(at: state.samplePosition, reversed: source.sampleReversed, channel: 0)
+                right = sampleVoice.value(at: state.samplePosition, reversed: source.sampleReversed, channel: 1)
+                state.samplePosition += source.pitchEnvelope == nil ? fixedIncrement
+                    : try sampleVoice.increment(event: event, source: source, time: time, secondsPerBeat: secondsPerBeat)
+            }
+            if state.filter != nil, let cutoff = event.cutoffHz {
+                let frequency = cutoff * pow(2, filterDepth * (filterContour?.value(at: time) ?? 0) / 12)
+                if let filtered = try state.filter?.process(raw, cutoff: frequency, eventIndex: index) { raw = filtered }
+                if let value = right, let filtered = try state.rightFilter?.process(value, cutoff: frequency, eventIndex: index) { right = filtered }
+            }
+            let contour = amplitudeEnvelope?.value(at: time) ?? edge
+            let value = raw * Double(amplitude) * contour
+            let rightValue = (right ?? raw) * Double(amplitude) * contour
+            guard value.isFinite, abs(value) <= Double(Float.greatestFiniteMagnitude),
+                  rightValue.isFinite, abs(rightValue) <= Double(Float.greatestFiniteMagnitude) else {
+                throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "non-finite source PCM")
+            }
+            left = Float(value) * leftGain; rightOutput = Float(rightValue) * rightGain
+        }
+        state.offset += 1
+        state.lastLeft = left; state.lastRight = rightOutput
+        return (left, rightOutput)
+    }
+
+    private func sample(_ kind: SourceKind, pitch: Pitch?, time: Double) -> Float {
+        switch kind {
+        case .synthesizer(let waveform):
+            let midi = Double(pitch?.midiNote ?? 60)
+            let frequency = 440 * pow(2, (midi - 69) / 12)
+            let phase = (time * frequency).truncatingRemainder(dividingBy: 1)
+            return oscillator(waveform, phase: phase, time: time)
+        case .fileSample, .sampleBank:
+            preconditionFailure("Decoded file voices use the sample traversal path")
+        case .sample(let name):
+            let decay: Double
+            switch name {
+            case "kick":
+                let frequency = 140 * exp(-18 * time) + 45
+                return Float(sin(2 * .pi * frequency * time) * exp(-11 * time))
+            case "snare":
+                decay = exp(-24 * time)
+                return Float((Double(deterministicNoise(time: time)) * 0.9 + sin(2 * .pi * 180 * time) * 0.1) * decay)
+            case "closedHat":
+                return Float(Double(deterministicNoise(time: time)) * exp(-45 * time))
+            default:
+                return 0
+            }
+        }
+    }
+
+    private func validateFrequency(_ frequency: Double, depth: Double, eventIndex: Int) throws {
+        let endpoint = frequency * pow(2, depth / 12)
+        let nyquist = PreparedLoop.requiredSampleRate / 2
+        guard frequency.isFinite, frequency > 0, frequency < nyquist,
+              endpoint.isFinite, endpoint > 0, endpoint < nyquist else {
+            throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "frequency must be positive and below Nyquist")
+        }
+    }
+
+    private func oscillator(_ waveform: Waveform, phase: Double, time: Double) -> Float {
+        switch waveform {
+        case .sine: Float(sin(2 * .pi * phase))
+        case .square: phase < 0.5 ? 1 : -1
+        case .saw: Float(2 * phase - 1)
+        case .triangle: Float(1 - 4 * abs((phase - 0.5).rounded() - (phase - 0.5)))
+        case .noise: deterministicNoise(time: time)
+        }
+    }
+
+    private func deterministicNoise(time: Double) -> Float {
+        let frame = UInt64(max(0, Int(time * PreparedLoop.requiredSampleRate)))
+        var value = frame &* 2_862_933_555_777_941_757 &+ 1
+        value ^= value >> 30
+        value &*= 0xbf58476d1ce4e5b9
+        value ^= value >> 27
+        value &*= 0x94d049bb133111eb
+        value ^= value >> 31
+        return Float(Double(Int64(bitPattern: value)) / Double(Int64.max))
+    }
+
+}

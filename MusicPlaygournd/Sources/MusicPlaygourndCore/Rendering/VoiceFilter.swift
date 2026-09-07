@@ -2,8 +2,8 @@ import Foundation
 import SwiftMusic
 
 /// RBJ biquads: https://www.w3.org/TR/audio-eq-cookbook/
-internal struct VoiceFilter {
-    private struct Section {
+internal struct VoiceFilter: Equatable {
+    private struct Section: Equatable {
         var z1 = 0.0
         var z2 = 0.0
         mutating func process(_ input: Double, b0: Double, b1: Double, b2: Double,
