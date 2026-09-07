@@ -1,43 +1,55 @@
-import XCTest
+import Testing
 import SwiftMusic
 
-final class MusicalTimeArithmeticTests: XCTestCase {
+struct MusicalTimeArithmeticTests {
+    @Test(.timeLimit(.minutes(3)))
     func testScalingIsExactAndCancelsBeforeMultiplication() throws {
-        XCTAssertEqual(try MusicalTime.eighth.multiplied(by: 3),
-                       try MusicalTime(numerator: 3, denominator: 2))
-        XCTAssertEqual(try MusicalTime.quarter.divided(by: 3),
-                       try MusicalTime(numerator: 1, denominator: 3))
+        let multipliedEighth = try MusicalTime.eighth.multiplied(by: 3)
+        let expectedMultipliedEighth = try MusicalTime(numerator: 3, denominator: 2)
+        #expect(multipliedEighth == expectedMultipliedEighth)
+        let dividedQuarter = try MusicalTime.quarter.divided(by: 3)
+        let expectedDividedQuarter = try MusicalTime(numerator: 1, denominator: 3)
+        #expect(dividedQuarter == expectedDividedQuarter)
         let large = try MusicalTime(numerator: .max, denominator: 2)
-        XCTAssertEqual(try large.multiplied(by: 2),
-                       try MusicalTime(numerator: .max, denominator: 1))
-        XCTAssertEqual(try large.divided(by: .max), .eighth)
-        XCTAssertEqual(try large.multiplied(by: 0), .zero)
-        XCTAssertEqual(try MusicalTime.zero.divided(by: .max), .zero)
+        let multipliedLarge = try large.multiplied(by: 2)
+        let expectedMultipliedLarge = try MusicalTime(numerator: .max, denominator: 1)
+        #expect(multipliedLarge == expectedMultipliedLarge)
+        #expect(try large.divided(by: .max) == .eighth)
+        #expect(try large.multiplied(by: 0) == .zero)
+        #expect(try MusicalTime.zero.divided(by: .max) == .zero)
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testScalingRejectsZeroDivisorAndOverflow() throws {
         for time in [MusicalTime.zero, .quarter] {
-            XCTAssertThrowsError(try time.divided(by: 0)) {
-                XCTAssertEqual($0 as? MusicalTimeError, .divisionByZero)
+            #expect {
+                try time.divided(by: 0)
+            } throws: { error in
+                error as? MusicalTimeError == .divisionByZero
             }
         }
         let large = try MusicalTime(numerator: .max, denominator: 1)
-        XCTAssertThrowsError(try large.multiplied(by: 2)) {
-            XCTAssertEqual($0 as? MusicalTimeError, .overflow)
+        #expect {
+            try large.multiplied(by: 2)
+        } throws: { error in
+            error as? MusicalTimeError == .overflow
         }
         let small = try MusicalTime(numerator: 1, denominator: .max)
-        XCTAssertThrowsError(try small.divided(by: 2)) {
-            XCTAssertEqual($0 as? MusicalTimeError, .overflow)
+        #expect {
+            try small.divided(by: 2)
+        } throws: { error in
+            error as? MusicalTimeError == .overflow
         }
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testScalingRoundTripsAcrossFractionalBeatGrid() throws {
         for numerator in UInt64(0)...12 {
             for denominator in UInt64(1)...12 {
                 let time = try MusicalTime(numerator: numerator, denominator: denominator)
                 for factor in UInt64(1)...8 {
-                    XCTAssertEqual(try time.multiplied(by: factor).divided(by: factor), time)
-                    XCTAssertEqual(try time.divided(by: factor).multiplied(by: factor), time)
+                    #expect(try time.multiplied(by: factor).divided(by: factor) == time)
+                    #expect(try time.divided(by: factor).multiplied(by: factor) == time)
                 }
             }
         }

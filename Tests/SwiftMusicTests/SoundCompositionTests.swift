@@ -1,11 +1,12 @@
-import XCTest
+import Testing
 import SwiftMusic
 
-final class SoundCompositionTests: XCTestCase {
+struct SoundCompositionTests {
     private func pitch(_ value: UInt8) throws -> Pitch {
         try Pitch(midiNote: value)
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testMusicSoundBuilderSourcesAndParallelDefaults() throws {
         struct Fragment: Sound {
             var body: some Sound {
@@ -23,16 +24,17 @@ final class SoundCompositionTests: XCTestCase {
 
         let compiled = try SoundCompiler().compile(Song())
 
-        XCTAssertEqual(compiled.events.count, 2)
-        XCTAssertEqual(compiled.events.map(\.start), [.zero, .zero])
-        XCTAssertEqual(compiled.events.map(\.duration), [.quarter, .quarter])
-        XCTAssertEqual(compiled.events[0].pitch, nil)
-        XCTAssertEqual(compiled.events[1].pitch, .middleC)
-        XCTAssertEqual(compiled.sources.map(\.id), [0, 1])
-        XCTAssertEqual(compiled.sources.map(\.kind), [.sample("kick"), .synthesizer(.sine)])
-        XCTAssertEqual(compiled.tracks.map(\.name), ["empty"])
+        #expect(compiled.events.count == 2)
+        #expect(compiled.events.map(\.start) == [.zero, .zero])
+        #expect(compiled.events.map(\.duration) == [.quarter, .quarter])
+        #expect(compiled.events[0].pitch == nil)
+        #expect(compiled.events[1].pitch == .middleC)
+        #expect(compiled.sources.map(\.id) == [0, 1])
+        #expect(compiled.sources.map(\.kind) == [.sample("kick"), .synthesizer(.sine)])
+        #expect(compiled.tracks.map(\.name) == ["empty"])
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testSoundBuilderBranchesAvailabilityOptionalAndFiniteLoops() throws {
         struct Branches: Sound {
             let includeFirst: Bool
@@ -61,55 +63,59 @@ final class SoundCompositionTests: XCTestCase {
         }
 
         let included = try SoundCompiler().compile(Branches(includeFirst: true))
-        XCTAssertEqual(included.sources.map(\.kind), [
+        #expect(included.sources.map(\.kind) == [
             .sample("first"), .sample("optional"), .sample("available"),
             .sample("loop-a"), .sample("loop-b")
         ])
 
         let excluded = try SoundCompiler().compile(Branches(includeFirst: false))
-        XCTAssertEqual(excluded.sources.map(\.kind), [
+        #expect(excluded.sources.map(\.kind) == [
             .sample("alternate"), .sample("available"),
             .sample("loop-a"), .sample("loop-b")
         ])
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testRhythmOffsetRepeatFastSlowAndTrailingExtent() throws {
         let pattern = try RhythmPattern(validating: "x ~ x")
         let rhythmic = Sample("hat").rhythm(pattern, cycle: .whole)
         let compiled = try SoundCompiler().compile(rhythmic)
 
-        XCTAssertEqual(compiled.events.count, 2)
-        XCTAssertEqual(compiled.events.map(\.start), [
+        #expect(compiled.events.count == 2)
+        #expect(compiled.events.map(\.start) == [
             .zero,
             try MusicalTime(numerator: 8, denominator: 3)
         ])
-        XCTAssertEqual(compiled.events.map(\.duration), [
+        #expect(compiled.events.map(\.duration) == [
             try MusicalTime(numerator: 4, denominator: 3),
             try MusicalTime(numerator: 4, denominator: 3)
         ])
-        XCTAssertEqual(compiled.extent, .whole)
+        #expect(compiled.extent == .whole)
 
         let repeated = try SoundCompiler().compile(
             Sample("hat").repeated(3)
         )
-        XCTAssertEqual(repeated.events.map(\.start), [.zero, .quarter, .half])
-        XCTAssertEqual(repeated.extent, try .quarter.multiplied(by: 3))
+        #expect(repeated.events.map(\.start) == [.zero, .quarter, .half])
+        let repeatedExtent = try MusicalTime.quarter.multiplied(by: 3)
+        #expect(repeated.extent == repeatedExtent)
 
         let fast = try SoundCompiler().compile(Sample("hat").fast(2))
-        XCTAssertEqual(fast.events[0].duration, .eighth)
-        XCTAssertEqual(fast.extent, .eighth)
+        #expect(fast.events[0].duration == .eighth)
+        #expect(fast.extent == .eighth)
 
         let slow = try SoundCompiler().compile(Sample("hat").slow(2))
-        XCTAssertEqual(slow.events[0].duration, .half)
-        XCTAssertEqual(slow.extent, .half)
+        #expect(slow.events[0].duration == .half)
+        #expect(slow.extent == .half)
 
         let shifted = try SoundCompiler().compile(
             Sample("hat").offset(.half)
         )
-        XCTAssertEqual(shifted.events[0].start, .half)
-        XCTAssertEqual(shifted.extent, try .half.adding(.quarter))
+        #expect(shifted.events[0].start == .half)
+        let shiftedExtent = try MusicalTime.half.adding(.quarter)
+        #expect(shifted.extent == shiftedExtent)
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testPitchHarmonyAndEventOrder() throws {
         let sound = Synthesizer(.sine)
             .notes([try pitch(60)])
@@ -117,26 +123,27 @@ final class SoundCompositionTests: XCTestCase {
             .transpose(1)
         let compiled = try SoundCompiler().compile(sound)
 
-        XCTAssertEqual(compiled.events.map { $0.pitch?.midiNote }, [61, 65, 68])
+        #expect(compiled.events.map { $0.pitch?.midiNote } == [61, 65, 68])
 
         let cycling = try SoundCompiler().compile(
             Synthesizer(.square).repeated(3).notes([try pitch(60), try pitch(64)])
         )
-        XCTAssertEqual(cycling.events.map { $0.pitch?.midiNote }, [60, 64, 60])
+        #expect(cycling.events.map { $0.pitch?.midiNote } == [60, 64, 60])
 
-        XCTAssertThrowsError(
+        #expect {
             try SoundCompiler().compile(Sample("noise").transpose(1))
-        ) { error in
-            XCTAssertEqual(error as? SoundCompilationError, .missingPitch)
+        } throws: { error in
+            error as? SoundCompilationError == .missingPitch
         }
 
-        XCTAssertThrowsError(
+        #expect {
             try SoundCompiler().compile(Synthesizer(.sine).notes([try pitch(127)]).transpose(1))
-        ) { error in
-            XCTAssertEqual(error as? SoundCompilationError, .pitchOutOfRange)
+        } throws: { error in
+            error as? SoundCompilationError == .pitchOutOfRange
         }
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testFixedChordPresetsExpandExpectedIntervals() throws {
         let expected: [(Chord, [UInt8])] = [
             (.minor, [60, 63, 67]),
@@ -150,10 +157,11 @@ final class SoundCompositionTests: XCTestCase {
                     .notes([try pitch(60)])
                     .chord(chord)
             )
-            XCTAssertEqual(compiled.events.compactMap(\.pitch?.midiNote), notes)
+            #expect(compiled.events.compactMap(\.pitch?.midiNote) == notes)
         }
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testExpressionModifiersPreserveTime() throws {
         let sound = Synthesizer(.sine)
             .dynamic(.ff)
@@ -162,12 +170,13 @@ final class SoundCompositionTests: XCTestCase {
             .staccato()
         let compiled = try SoundCompiler().compile(sound)
 
-        XCTAssertEqual(compiled.events[0].velocity, 100)
-        XCTAssertEqual(compiled.events[0].gate, 0.25, accuracy: 0.000_001)
-        XCTAssertEqual(compiled.events[0].duration, .quarter)
-        XCTAssertEqual(compiled.extent, .quarter)
+        #expect(compiled.events[0].velocity == 100)
+        #expect(abs((compiled.events[0].gate) - (0.25)) < 0.000_001)
+        #expect(compiled.events[0].duration == .quarter)
+        #expect(compiled.extent == .quarter)
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testSourceSettingsAndCapabilityBoundaries() throws {
         let tuning = try Tuning(referencePitch: .middleC, frequencyHz: 442)
         let envelope = try Envelope(
@@ -185,10 +194,10 @@ final class SoundCompositionTests: XCTestCase {
                 .envelope(envelope)
                 .sampleRegion(region)
         )
-        XCTAssertEqual(sample.sources[0].tuning, tuning)
-        XCTAssertEqual(sample.sources[0].envelope, envelope)
-        XCTAssertEqual(sample.sources[0].sampleRegion, region)
-        XCTAssertNil(sample.sources[0].unison)
+        #expect(sample.sources[0].tuning == tuning)
+        #expect(sample.sources[0].envelope == envelope)
+        #expect(sample.sources[0].sampleRegion == region)
+        #expect(sample.sources[0].unison == nil)
 
         let synth = try SoundCompiler().compile(
             Synthesizer(.saw)
@@ -196,19 +205,22 @@ final class SoundCompositionTests: XCTestCase {
                 .envelope(envelope)
                 .unison(unison)
         )
-        XCTAssertEqual(synth.sources[0].tuning, tuning)
-        XCTAssertEqual(synth.sources[0].envelope, envelope)
-        XCTAssertEqual(synth.sources[0].unison, unison)
+        #expect(synth.sources[0].tuning == tuning)
+        #expect(synth.sources[0].envelope == envelope)
+        #expect(synth.sources[0].unison == unison)
 
-        XCTAssertThrowsError(
+        #expect {
             try SoundCompiler().compile(Sample("piano").unison(unison))
-        ) { error in
+        } throws: { error in
             guard case .unsupportedSourceSetting = error as? SoundCompilationError else {
-                return XCTFail("Expected unsupported source setting, received \(error)")
+                Issue.record("Expected unsupported source setting, received \(error)")
+                return false
             }
+            return true
         }
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testEffectsMixAndRoutingRenderPlanOrder() throws {
         let delay = AudioEffect.delay(time: .quarter, feedback: 0.2, wet: 0.4)
         let reverb = AudioEffect.reverb(roomSize: 0.5, wet: 0.3)
@@ -217,16 +229,19 @@ final class SoundCompositionTests: XCTestCase {
             .effect(reverb)
         let compiled = try SoundCompiler().compile(chain)
 
-        XCTAssertEqual(compiled.renderNodes.count, 3)
-        XCTAssertEqual(compiled.rootNodeIDs, [2])
+        #expect(compiled.renderNodes.count == 3)
+        #expect(compiled.rootNodeIDs == [2])
         guard case .source(sourceID: 0) = compiled.renderNodes[0] else {
-            return XCTFail("expected source node")
+            Issue.record("expected source node")
+            return
         }
         guard case .effect(input: 0, effect: delay) = compiled.renderNodes[1] else {
-            return XCTFail("expected first effect node")
+            Issue.record("expected first effect node")
+            return
         }
         guard case .effect(input: 1, effect: reverb) = compiled.renderNodes[2] else {
-            return XCTFail("expected second effect node")
+            Issue.record("expected second effect node")
+            return
         }
 
         struct Pair: Sound {
@@ -238,12 +253,9 @@ final class SoundCompositionTests: XCTestCase {
         let mixed = try SoundCompiler().compile(
             Pair().effect(.distortion(drive: 0.5))
         )
-        XCTAssertEqual(mixed.rootNodeIDs, [3])
-        XCTAssertEqual(mixed.renderNodes[2], CompiledRenderNode.mix(inputs: [0, 1]))
-        XCTAssertEqual(
-            mixed.renderNodes[3],
-            CompiledRenderNode.effect(input: 2, effect: .distortion(drive: 0.5))
-        )
+        #expect(mixed.rootNodeIDs == [3])
+        #expect(mixed.renderNodes[2] == CompiledRenderNode.mix(inputs: [0, 1]))
+        #expect(mixed.renderNodes[3] == CompiledRenderNode.effect(input: 2, effect: .distortion(drive: 0.5)))
 
         let routed = try SoundCompiler().compile(
             Synthesizer(.triangle)
@@ -253,10 +265,11 @@ final class SoundCompositionTests: XCTestCase {
                 .send(to: "reverb", level: 0.2)
                 .output("main")
         )
-        XCTAssertEqual(routed.renderNodes.count, 6)
-        XCTAssertEqual(routed.rootNodeIDs, [5])
+        #expect(routed.renderNodes.count == 6)
+        #expect(routed.rootNodeIDs == [5])
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testEveryEffectAcceptsValidValuesAndRejectsInvalidValues() throws {
         let valid: [AudioEffect] = [
             .equalizer(frequencyHz: 440, gainDecibels: -3, q: 0.7),
@@ -272,10 +285,7 @@ final class SoundCompositionTests: XCTestCase {
             let compiled = try SoundCompiler().compile(
                 Synthesizer(.sine).effect(effect)
             )
-            XCTAssertEqual(
-                compiled.renderNodes.last,
-                CompiledRenderNode.effect(input: 0, effect: effect)
-            )
+            #expect(compiled.renderNodes.last == CompiledRenderNode.effect(input: 0, effect: effect))
         }
 
         let invalid: [AudioEffect] = [
@@ -292,12 +302,13 @@ final class SoundCompositionTests: XCTestCase {
         ]
 
         for effect in invalid {
-            XCTAssertThrowsError(try SoundCompiler().compile(
-                Synthesizer(.sine).effect(effect)
-            ))
+            #expect(throws: (any Error).self) {
+                try SoundCompiler().compile(Synthesizer(.sine).effect(effect))
+            }
         }
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testTrackScopeAndTempoIndependence() throws {
         struct Song: Music {
             var body: some Sound {
@@ -309,35 +320,44 @@ final class SoundCompositionTests: XCTestCase {
         }
 
         let compiled = try SoundCompiler().compile(Song())
-        XCTAssertEqual(compiled.tracks.count, 1)
-        XCTAssertEqual(compiled.events[0].trackID, compiled.tracks[0].id)
-        XCTAssertNil(compiled.events[1].trackID)
+        #expect(compiled.tracks.count == 1)
+        #expect(compiled.events[0].trackID == compiled.tracks[0].id)
+        #expect(compiled.events[1].trackID == nil)
 
         let slow = try Tempo(beatsPerMinute: 60)
         let fast = try Tempo(beatsPerMinute: 120)
-        XCTAssertEqual(try slow.seconds(for: compiled.extent), 1, accuracy: 0.000_001)
-        XCTAssertEqual(try fast.seconds(for: compiled.extent), 0.5, accuracy: 0.000_001)
-        XCTAssertEqual(compiled.events, try SoundCompiler().compile(Song()).events)
+        #expect(abs((try slow.seconds(for: compiled.extent)) - (1)) < 0.000_001)
+        #expect(abs((try fast.seconds(for: compiled.extent)) - (0.5)) < 0.000_001)
+        let expectedEvents = try SoundCompiler().compile(Song()).events
+        #expect(compiled.events == expectedEvents)
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testTypedParsingParametersAndCompilerBounds() throws {
-        XCTAssertThrowsError(try RhythmPattern(validating: "")) { error in
-            XCTAssertEqual(error as? RhythmPatternError, .emptyInput)
+        #expect {
+            try RhythmPattern(validating: "")
+        } throws: { error in
+            error as? RhythmPatternError == .emptyInput
         }
-        XCTAssertThrowsError(try RhythmPattern(validating: "x nope")) { error in
-            XCTAssertEqual(
-                error as? RhythmPatternError,
-                .invalidToken(token: "nope", index: 1)
+        #expect {
+            try RhythmPattern(validating: "x nope")
+        } throws: { error in
+            error as? RhythmPatternError == .invalidToken(token: "nope", index: 1)
+        }
+        #expect(throws: (any Error).self) {
+            try Envelope(
+                attackSeconds: -1,
+                decaySeconds: 0,
+                sustainLevel: 1,
+                releaseSeconds: 0
             )
         }
-        XCTAssertThrowsError(try Envelope(
-            attackSeconds: -1,
-            decaySeconds: 0,
-            sustainLevel: 1,
-            releaseSeconds: 0
-        ))
-        XCTAssertThrowsError(try SampleRegion(startFraction: 0.8, endFraction: 0.2))
-        XCTAssertThrowsError(try Unison(voices: 17, detuneCents: 1))
+        #expect(throws: (any Error).self) {
+            try SampleRegion(startFraction: 0.8, endFraction: 0.2)
+        }
+        #expect(throws: (any Error).self) {
+            try Unison(voices: 17, detuneCents: 1)
+        }
 
         let limits = try SoundCompiler.Limits(
             maximumDepth: 10,
@@ -352,8 +372,10 @@ final class SoundCompositionTests: XCTestCase {
                 Sample("b")
             }
         }
-        XCTAssertThrowsError(try SoundCompiler(limits: limits).compile(Many())) { error in
-            XCTAssertEqual(error as? SoundCompilationError, .maximumEventsExceeded(limit: 1))
+        #expect {
+            try SoundCompiler(limits: limits).compile(Many())
+        } throws: { error in
+            error as? SoundCompilationError == .maximumEventsExceeded(limit: 1)
         }
 
         let invalidSounds: [() throws -> CompiledSound] = [
@@ -367,7 +389,9 @@ final class SoundCompositionTests: XCTestCase {
             { try SoundCompiler().compile(Synthesizer(.sine).notes([])) }
         ]
         for compile in invalidSounds {
-            XCTAssertThrowsError(try compile())
+            #expect(throws: (any Error).self) {
+                try compile()
+            }
         }
 
         struct TrackPair: Sound {
@@ -377,13 +401,17 @@ final class SoundCompositionTests: XCTestCase {
             }
         }
         let trackLimit = try SoundCompiler.Limits(maximumTracks: 1)
-        XCTAssertThrowsError(try SoundCompiler(limits: trackLimit).compile(TrackPair())) { error in
-            XCTAssertEqual(error as? SoundCompilationError, .maximumTracksExceeded(limit: 1))
+        #expect {
+            try SoundCompiler(limits: trackLimit).compile(TrackPair())
+        } throws: { error in
+            error as? SoundCompilationError == .maximumTracksExceeded(limit: 1)
         }
 
         let sourceLimit = try SoundCompiler.Limits(maximumSources: 1)
-        XCTAssertThrowsError(try SoundCompiler(limits: sourceLimit).compile(Many())) { error in
-            XCTAssertEqual(error as? SoundCompilationError, .maximumSourcesExceeded(limit: 1))
+        #expect {
+            try SoundCompiler(limits: sourceLimit).compile(Many())
+        } throws: { error in
+            error as? SoundCompilationError == .maximumSourcesExceeded(limit: 1)
         }
 
         struct Nested: Sound {
@@ -396,8 +424,10 @@ final class SoundCompositionTests: XCTestCase {
             }
         }
         let depthLimit = try SoundCompiler.Limits(maximumDepth: 1)
-        XCTAssertThrowsError(try SoundCompiler(limits: depthLimit).compile(Nested())) { error in
-            XCTAssertEqual(error as? SoundCompilationError, .maximumDepthExceeded(limit: 1))
+        #expect {
+            try SoundCompiler(limits: depthLimit).compile(Nested())
+        } throws: { error in
+            error as? SoundCompilationError == .maximumDepthExceeded(limit: 1)
         }
     }
 }

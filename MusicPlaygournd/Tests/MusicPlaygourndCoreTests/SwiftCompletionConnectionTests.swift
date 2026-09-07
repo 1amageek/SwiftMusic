@@ -1,8 +1,9 @@
 import Foundation
-import XCTest
+import Testing
 @testable import MusicPlaygourndCore
 
-final class SwiftCompletionConnectionTests: XCTestCase {
+struct SwiftCompletionConnectionTests {
+    @Test(.timeLimit(.minutes(3)))
     func testFrameParserHandlesSplitHeaderAndBody() throws {
         let body = Data(#"{"jsonrpc":"2.0","id":1,"result":[]}"#.utf8)
         let frame = Data("Content-Length: \(body.count)\r\n\r\n".utf8) + body
@@ -11,19 +12,21 @@ final class SwiftCompletionConnectionTests: XCTestCase {
         for byte in frame {
             frames.append(contentsOf: try parser.append(byte))
         }
-        XCTAssertEqual(frames, [body])
+        #expect(frames == [body])
         var invalid = SwiftCompletionFrameParser()
-        XCTAssertThrowsError(try Data("Content-Length: -1\r\n\r\n".utf8).forEach { _ = try invalid.append($0) }) { error in
-            guard case SwiftCompletionError.protocolError = error else {
-                return XCTFail("Expected a typed protocol error, received \(error)")
-            }
+        #expect {
+            try Data("Content-Length: -1\r\n\r\n".utf8).forEach { _ = try invalid.append($0) }
+        } throws: { error in
+            if case SwiftCompletionError.protocolError = error { return true }
+            return false
         }
     }
 
+    @Test(.timeLimit(.minutes(3)),
+        .enabled(if: try SwiftCompletionConnectionTests.resolveSourceKitLSP() != nil,
+                 "The Swift 6.4 SourceKit-LSP toolchain is unavailable."))
     func testRealSourceKitLSPInitializeAndBoundedShutdown() async throws {
-        guard let executable = try Self.resolveSourceKitLSP() else {
-            throw XCTSkip("The Swift 6.4 SourceKit-LSP toolchain is unavailable.")
-        }
+        let executable = try #require(try Self.resolveSourceKitLSP())
 
         let workspace = FileManager.default.temporaryDirectory
             .appending(path: "SwiftCompletionConnection-\(UUID().uuidString)")
@@ -44,9 +47,9 @@ final class SwiftCompletionConnectionTests: XCTestCase {
                 parameters: parameters,
                 timeout: .seconds(30)
             )
-            let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: response) as? [String: Any])
-            XCTAssertEqual((object["id"] as? NSNumber)?.intValue, 1)
-            XCTAssertNotNil(object["result"] as? [String: Any])
+            let object = try #require(try JSONSerialization.jsonObject(with: response) as? [String: Any])
+            #expect((object["id"] as? NSNumber)?.intValue == 1)
+            #expect(object["result"] as? [String: Any] != nil)
             try await connection.notify(method: "initialized", parameters: Data("{}".utf8))
         } catch {
             failure = error
@@ -65,6 +68,7 @@ final class SwiftCompletionConnectionTests: XCTestCase {
         if let failure { throw failure }
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testUnresponsiveInitializationTimesOutAndShutsDown() async throws {
         let (workspace, executable) = try makeUnresponsiveFixture()
         let connection = SwiftCompletionConnection(executable: executable.path, workspace: workspace)
@@ -95,6 +99,7 @@ final class SwiftCompletionConnectionTests: XCTestCase {
         if let failure { throw failure }
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testCancelledInitializationCanShutdownWithPendingRequest() async throws {
         let (workspace, executable) = try makeUnresponsiveFixture()
         let connection = SwiftCompletionConnection(executable: executable.path, workspace: workspace)
@@ -130,6 +135,7 @@ final class SwiftCompletionConnectionTests: XCTestCase {
         if let failure { throw failure }
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testLargeRequestDoesNotBlockActorWhenPeerDoesNotRead() async throws {
         let (workspace, executable) = try makeUnresponsiveFixture()
         let connection = SwiftCompletionConnection(executable: executable.path, workspace: workspace)
@@ -161,6 +167,7 @@ final class SwiftCompletionConnectionTests: XCTestCase {
         if let failure { throw failure }
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testServerRequestsAreAnsweredWithoutCompletingClientRequest() async throws {
         let (workspace, executable) = try makeServerRequestFixture()
         let connection = SwiftCompletionConnection(executable: executable.path, workspace: workspace)
@@ -172,9 +179,9 @@ final class SwiftCompletionConnectionTests: XCTestCase {
                 parameters: Data(#"{"processId":1}"#.utf8),
                 timeout: .seconds(2)
             )
-            let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: response) as? [String: Any])
-            XCTAssertEqual((object["id"] as? NSNumber)?.intValue, 1)
-            XCTAssertNotNil(object["result"])
+            let object = try #require(try JSONSerialization.jsonObject(with: response) as? [String: Any])
+            #expect((object["id"] as? NSNumber)?.intValue == 1)
+            #expect(object["result"] != nil)
             try await connection.shutdown()
         } catch {
             failure = error
@@ -187,6 +194,7 @@ final class SwiftCompletionConnectionTests: XCTestCase {
         if let failure { throw failure }
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testCancelledShutdownCompletesProcessCleanup() async throws {
         let (workspace, executable) = try makeUnresponsiveFixture()
         let connection = SwiftCompletionConnection(executable: executable.path, workspace: workspace)

@@ -1,7 +1,8 @@
-import XCTest
+import Testing
 @testable import MusicPlaygourndCore
 
-final class PreparedLoopTests: XCTestCase {
+struct PreparedLoopTests {
+    @Test(.timeLimit(.minutes(3)))
     func testDecodedLoopValidationRejectsNonFiniteAndMismatchedSamples() throws {
         let invalidSamples = PreparedLoop(
             sampleRate: 44_100,
@@ -11,8 +12,10 @@ final class PreparedLoopTests: XCTestCase {
             samples: [Float.nan, 0],
             events: []
         )
-        XCTAssertThrowsError(try invalidSamples.validate()) { error in
-            XCTAssertEqual(error as? PreparedLoopValidationError, .invalidSampleCount(2))
+        #expect {
+            try invalidSamples.validate()
+        } throws: { error in
+            error as? PreparedLoopValidationError == .invalidSampleCount(2)
         }
 
         let invalidEvent = PreparedLoop(
@@ -30,13 +33,15 @@ final class PreparedLoopTests: XCTestCase {
                 velocity: 80
             )]
         )
-        XCTAssertThrowsError(try invalidEvent.validate()) { error in
-            guard case .invalidEvent(index: 0, reason: "MIDI note is out of range") = error as? PreparedLoopValidationError else {
-                return XCTFail("Expected an event validation error, got \(error)")
-            }
+        #expect {
+            try invalidEvent.validate()
+        } throws: { error in
+            if case .invalidEvent(index: 0, reason: "MIDI note is out of range") = error as? PreparedLoopValidationError { return true }
+            return false
         }
     }
 
+    @Test(.timeLimit(.minutes(3)))
     func testDecodedLoopValidationRejectsDuplicateRowsAndInvalidPeaks() throws {
         let duplicateRows = PreparedLoop(
             sampleRate: 44_100,
@@ -50,10 +55,11 @@ final class PreparedLoopTests: XCTestCase {
                 LoopRow(sourceID: 0, label: "second", anchor: nil, peaks: [0])
             ]
         )
-        XCTAssertThrowsError(try duplicateRows.validate()) { error in
-            guard case .invalidRow(index: 1, reason: "duplicate source ID") = error as? PreparedLoopValidationError else {
-                return XCTFail("Expected duplicate row validation error, got \(error)")
-            }
+        #expect {
+            try duplicateRows.validate()
+        } throws: { error in
+            if case .invalidRow(index: 1, reason: "duplicate source ID") = error as? PreparedLoopValidationError { return true }
+            return false
         }
 
         let invalidPeaks = PreparedLoop(
@@ -67,10 +73,11 @@ final class PreparedLoopTests: XCTestCase {
                 LoopRow(sourceID: 0, label: "lead", anchor: nil, peaks: [Float.nan])
             ]
         )
-        XCTAssertThrowsError(try invalidPeaks.validate()) { error in
-            guard case .invalidRow(index: 0, reason: "peak envelope contains an invalid value") = error as? PreparedLoopValidationError else {
-                return XCTFail("Expected invalid peak validation error, got \(error)")
-            }
+        #expect {
+            try invalidPeaks.validate()
+        } throws: { error in
+            if case .invalidRow(index: 0, reason: "peak envelope contains an invalid value") = error as? PreparedLoopValidationError { return true }
+            return false
         }
 
         let negativePatternIndex = PreparedLoop(
@@ -90,10 +97,11 @@ final class PreparedLoopTests: XCTestCase {
             )],
             rows: [LoopRow(sourceID: 0, label: "lead", anchor: nil, peaks: [0], patternText: "x ~")]
         )
-        XCTAssertThrowsError(try negativePatternIndex.validate()) { error in
-            guard case .invalidEvent(index: 0, reason: "negative pattern step index") = error as? PreparedLoopValidationError else {
-                return XCTFail("Expected negative pattern index validation error, got \(error)")
-            }
+        #expect {
+            try negativePatternIndex.validate()
+        } throws: { error in
+            if case .invalidEvent(index: 0, reason: "negative pattern step index") = error as? PreparedLoopValidationError { return true }
+            return false
         }
 
         let outOfRangePatternIndex = PreparedLoop(
@@ -113,10 +121,11 @@ final class PreparedLoopTests: XCTestCase {
             )],
             rows: [LoopRow(sourceID: 0, label: "lead", anchor: nil, peaks: [0], patternText: "x ~")]
         )
-        XCTAssertThrowsError(try outOfRangePatternIndex.validate()) { error in
-            guard case .invalidEvent(index: 0, reason: "pattern step index is outside pattern text") = error as? PreparedLoopValidationError else {
-                return XCTFail("Expected pattern text bound validation error, got \(error)")
-            }
+        #expect {
+            try outOfRangePatternIndex.validate()
+        } throws: { error in
+            if case .invalidEvent(index: 0, reason: "pattern step index is outside pattern text") = error as? PreparedLoopValidationError { return true }
+            return false
         }
     }
 }
