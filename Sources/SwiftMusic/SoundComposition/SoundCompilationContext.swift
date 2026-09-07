@@ -79,21 +79,21 @@ internal struct _SoundCompilationContext {
         switch modifier {
         case .rhythm(let pattern, let cycle, let anchor):
             guard cycle > .zero else { throw invalid("Rhythm cycle must be positive") }
-            let steps = try pattern.steps
+            let leaves = try pattern.timedLeaves
             applyPatternProvenance(anchor, text: pattern.rawValue, to: sourceRange)
-            let step = try cycle.divided(by: UInt64(steps.count))
-            let hitCount = steps.reduce(0) { $0 + ($1 ? 1 : 0) }
+            let hitCount = leaves.reduce(0) { $0 + ($1.token == "x" ? 1 : 0) }
             let count = try expandedCount(fragment.events.count, multiplier: hitCount)
             try replaceEventCount(fragment.events.count, with: count)
             var events: [CompiledSoundEvent] = []
             events.reserveCapacity(count)
-            for (index, hit) in steps.enumerated() where hit {
-                let start = try step.multiplied(by: UInt64(index))
+            for leaf in leaves where leaf.token == "x" {
+                let start = try _scalePatternTime(cycle, by: leaf.start)
+                let duration = try _scalePatternTime(cycle, by: leaf.duration)
                 for original in fragment.events {
                     var event = original
                     event.start = try original.start.adding(start)
-                    event.duration = step
-                    event.patternStepIndex = index
+                    event.duration = duration
+                    event.patternStepIndex = leaf.index
                     events.append(event)
                 }
             }
@@ -101,23 +101,23 @@ internal struct _SoundCompilationContext {
             fragment.extent = try extent(events, minimum: cycle)
         case .notePattern(let pattern, let cycle, let anchor):
             guard cycle > .zero else { throw invalid("Note cycle must be positive") }
-            let steps = try pattern.steps
+            let leaves = try pattern.timedLeaves
             applyPatternProvenance(anchor, text: pattern.rawValue, to: sourceRange)
-            let step = try cycle.divided(by: UInt64(steps.count))
-            let hitCount = steps.reduce(0) { $0 + ($1 == nil ? 0 : 1) }
+            let hitCount = leaves.reduce(0) { $0 + ($1.token == "~" ? 0 : 1) }
             let count = try expandedCount(fragment.events.count, multiplier: hitCount)
             try replaceEventCount(fragment.events.count, with: count)
             var events: [CompiledSoundEvent] = []
             events.reserveCapacity(count)
-            for (index, pitch) in steps.enumerated() {
-                guard let pitch else { continue }
-                let start = try step.multiplied(by: UInt64(index))
+            for leaf in leaves where leaf.token != "~" {
+                let pitch = try NotePattern.pitch(from: leaf.token, index: leaf.index)
+                let start = try _scalePatternTime(cycle, by: leaf.start)
+                let duration = try _scalePatternTime(cycle, by: leaf.duration)
                 for original in fragment.events {
                     var event = original
                     event.start = try original.start.adding(start)
-                    event.duration = step
+                    event.duration = duration
                     event.pitch = pitch
-                    event.patternStepIndex = index
+                    event.patternStepIndex = leaf.index
                     events.append(event)
                 }
             }
@@ -226,6 +226,28 @@ internal struct _SoundCompilationContext {
             try nonnegative(gain, "Gain")
             if let root = try processingRoot(fragment.roots) {
                 fragment.roots = [try appendNode(.gain(input: root, value: gain))]
+            }
+        case .gainPattern(let pattern, let cycle):
+            guard cycle > .zero else { throw invalid("Gain pattern cycle must be positive") }
+            let leaves = try pattern.timedLeaves
+            for index in fragment.events.indices {
+                let eventStart = fragment.events[index].start
+                guard let leafPosition = _patternLeafIndex(
+                    at: eventStart,
+                    cycle: cycle,
+                    leaves: leaves
+                ) else {
+                    throw invalid("Gain pattern phase did not resolve to a leaf")
+                }
+                guard let value = Double(leaves[leafPosition].token),
+                      value.isFinite, value >= 0 else {
+                    throw invalid("Gain pattern value must be finite and nonnegative")
+                }
+                let product = fragment.events[index].gain * value
+                guard product.isFinite else {
+                    throw invalid("Gain pattern product must be finite")
+                }
+                fragment.events[index].gain = product
             }
         case .pan(let pan):
             guard pan.isFinite, (-1...1).contains(pan) else { throw invalid("Pan must be in -1...1") }

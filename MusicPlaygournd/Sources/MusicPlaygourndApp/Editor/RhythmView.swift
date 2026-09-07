@@ -51,7 +51,7 @@ struct RhythmView: View {
                                 for event in events {
                                     let rect = CGRect(x: event.startBeat * scale + 1, y: 8,
                                         width: max(3, min(event.durationBeats, loop.beatCount - event.startBeat) * scale - 3), height: size.height - 16)
-                                    let active = isPlaying && beatPosition >= event.startBeat && beatPosition < event.startBeat + event.durationBeats
+                                    let active = isPlaying && event.gain > 0 && beatPosition >= event.startBeat && beatPosition < event.startBeat + event.durationBeats
                                     context.fill(Path(roundedRect: rect, cornerRadius: 5), with: .color(colors[index % colors.count].opacity(active ? 1 : 0.5)))
                                     if let note = event.midiNote, rect.width > 23 {
                                         let pitchNames = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"]

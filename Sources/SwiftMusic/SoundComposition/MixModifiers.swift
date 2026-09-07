@@ -3,6 +3,10 @@ public extension Sound {
         ModifiedSound(base: self, modifier: .gain(value))
     }
 
+    func gain(_ pattern: GainPattern, cycle: MusicalTime = .whole) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .gainPattern(pattern, cycle))
+    }
+
     func pan(_ value: Double) -> ModifiedSound {
         ModifiedSound(base: self, modifier: .pan(value))
     }

@@ -16,6 +16,12 @@ final class VisualFeedbackTests: XCTestCase {
         XCTAssertEqual(map.currentLine(for: 3, in: source), 3)
     }
 
+    func testNestedPatternHighlightsOnlyLeafTokens() {
+        let source = ".rhythm(\"x [x [~ x]]\")"
+        let tokens = PlayingLiteral.tokenRanges(pattern: "x [x [~ x]]", line: 1, source: source)
+        XCTAssertEqual(tokens.map { (source as NSString).substring(with: $0) }, ["x", "x", "~", "x"])
+    }
+
     func testOnlyUniqueDirectPlainPlayingLiteralIsHighlighted() {
         let source = "// 🎵\n    Sample(\"kick\").rhythm(\"x x ~ x\")"
         let tokens = PlayingLiteral.tokenRanges(pattern: "x x ~ x", line: 2, source: source)

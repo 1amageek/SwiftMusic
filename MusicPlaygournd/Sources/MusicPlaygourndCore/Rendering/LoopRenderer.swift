@@ -85,7 +85,8 @@ public struct LoopRenderer: Sendable {
                 durationBeats: audibleDuration,
                 midiNote: event.pitch.map { Int($0.midiNote) },
                 velocity: event.velocity,
-                patternStepIndex: event.patternStepIndex
+                patternStepIndex: event.patternStepIndex,
+                gain: event.gain
             )
         }
         let rows = sound.sources.enumerated().map { index, source in
@@ -352,7 +353,11 @@ private struct RenderContext: Sendable {
             let naturalDuration = durationBeats * secondsPerBeat
             let gatedDuration = min(naturalDuration * event.gate, max(0, beatCount * secondsPerBeat - startBeat * secondsPerBeat))
             let eventFrames = min(frameCount - startFrame, max(1, Int((gatedDuration * PreparedLoop.requiredSampleRate).rounded(.up))))
-            let amplitude = Float(event.velocity) / 127 * 0.35
+            let level = Double(event.velocity) / 127 * 0.35 * event.gain
+            guard event.gain.isFinite, event.gain >= 0, level.isFinite, level <= Double(Float.greatestFiniteMagnitude) else {
+                throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "gain cannot be rendered as finite PCM")
+            }
+            let amplitude = Float(level)
             for offset in 0..<eventFrames {
                 let frame = startFrame + offset
                 let time = Double(offset) / PreparedLoop.requiredSampleRate

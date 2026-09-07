@@ -26,29 +26,47 @@ public struct NotePattern: Sendable, Equatable, ExpressibleByStringLiteral {
         }
     }
 
-    private static func parse(_ value: String) throws -> [Pitch?] {
-        let tokens = value.split(whereSeparator: Self.isASCIIWhitespace)
-        guard !tokens.isEmpty else {
-            throw NotePatternError.emptyInput
+    /// Resolves the source text into exact recursive leaf timings for compilation.
+    internal var timedLeaves: [_PatternTimedLeaf] {
+        get throws {
+            try Self.parseTimedLeaves(rawValue)
         }
+    }
 
+    private static func parse(_ value: String) throws -> [Pitch?] {
+        let leaves = try parseTimedLeaves(value)
         var parsed: [Pitch?] = []
-        parsed.reserveCapacity(tokens.count)
-        for (index, token) in tokens.enumerated() {
-            if token == "~" {
+        parsed.reserveCapacity(leaves.count)
+        for leaf in leaves {
+            if leaf.token == "~" {
                 parsed.append(nil)
-                continue
+            } else {
+                parsed.append(try pitch(from: leaf.token, index: leaf.index))
             }
-            parsed.append(try pitch(from: token, index: index))
         }
         return parsed
     }
 
-    private static func pitch(from token: Substring, index: Int) throws -> Pitch {
+    private static func parseTimedLeaves(_ value: String) throws -> [_PatternTimedLeaf] {
+        do {
+            var parser = try _MiniPatternParser(value)
+            let leaves = try parser.parse()
+            for leaf in leaves where leaf.token != "~" {
+                _ = try pitch(from: leaf.token, index: leaf.index)
+            }
+            return leaves
+        } catch let error as NotePatternError {
+            throw error
+        } catch let error as _PatternParserError {
+            throw map(error)
+        }
+    }
+
+    internal static func pitch(from token: String, index: Int) throws -> Pitch {
         let characters = Array(token)
         guard characters.count >= 2,
               let letter = characters[0].asciiValue else {
-            throw NotePatternError.invalidToken(token: String(token), index: index)
+            throw NotePatternError.invalidToken(token: token, index: index)
         }
 
         let semitone: Int
@@ -61,7 +79,7 @@ public struct NotePattern: Sendable, Equatable, ExpressibleByStringLiteral {
         case 70, 102: semitone = 5 // F / f
         case 71, 103: semitone = 7 // G / g
         default:
-            throw NotePatternError.invalidToken(token: String(token), index: index)
+            throw NotePatternError.invalidToken(token: token, index: index)
         }
 
         var cursor = 1
@@ -80,7 +98,7 @@ public struct NotePattern: Sendable, Equatable, ExpressibleByStringLiteral {
         }
 
         guard cursor < characters.count else {
-            throw NotePatternError.invalidToken(token: String(token), index: index)
+            throw NotePatternError.invalidToken(token: token, index: index)
         }
 
         var negative = false
@@ -89,13 +107,13 @@ public struct NotePattern: Sendable, Equatable, ExpressibleByStringLiteral {
             cursor += 1
         }
         guard cursor < characters.count else {
-            throw NotePatternError.invalidToken(token: String(token), index: index)
+            throw NotePatternError.invalidToken(token: token, index: index)
         }
 
         var octave = 0
         for character in characters[cursor...] {
             guard let ascii = character.asciiValue, (48...57).contains(ascii) else {
-                throw NotePatternError.invalidToken(token: String(token), index: index)
+                throw NotePatternError.invalidToken(token: token, index: index)
             }
             let digit = Int(ascii - 48)
             let (shifted, shiftOverflow) = octave.multipliedReportingOverflow(by: 10)
@@ -120,14 +138,22 @@ public struct NotePattern: Sendable, Equatable, ExpressibleByStringLiteral {
         do {
             return try Pitch(midiNote: UInt8(midi))
         } catch {
-            throw NotePatternError.pitchOutOfRange(token: String(token), index: index)
+            throw NotePatternError.pitchOutOfRange(token: token, index: index)
         }
     }
 
-    private static func isASCIIWhitespace(_ character: Character) -> Bool {
-        switch character.asciiValue {
-        case 9, 10, 11, 12, 13, 32: true
-        default: false
+    private static func map(_ error: _PatternParserError) -> NotePatternError {
+        switch error {
+        case .emptyInput: return .emptyInput
+        case .emptyGroup(let offset): return .emptyGroup(offset: offset)
+        case .invalidToken(let token, let index, _):
+            return .invalidToken(token: token, index: index)
+        case .unmatchedOpeningBracket(let offset): return .unmatchedOpeningBracket(offset: offset)
+        case .unmatchedClosingBracket(let offset): return .unmatchedClosingBracket(offset: offset)
+        case .inputTooLong(let limit): return .inputTooLong(limit: limit)
+        case .tooManyLeaves(let limit): return .tooManyLeaves(limit: limit)
+        case .nestingTooDeep(let limit): return .nestingTooDeep(limit: limit)
+        case .timingOverflow: return .timingOverflow
         }
     }
 }

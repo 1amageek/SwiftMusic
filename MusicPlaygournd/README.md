@@ -26,13 +26,23 @@ The app bundle includes its evaluation package sources. It retains the installed
 - Click the diagnostic heading to select a reported Swift source line. Direct pattern literals glow while their compiled source events play. The attached timeline scrolls with the code; scroll over either pane.
 - Use the lower-right layout button to put the rhythm view below the code.
 
+## Patterned rhythm and gain
+
+```swift
+Sample("kick")
+    .rhythm("x [x x] ~ x")
+    .gain("1 [0.3 0.6] 0 0.8")
+```
+
+Brackets subdivide one parent slot. Gain patterns repeat over their cycle and select a value at each event onset, holding it for that voice. Patterned gain applies before mixing; numeric `.gain(0.5)` retains its existing post-mix behavior. Rhythm and note leaf tokens glow; gain literals currently affect the sound and waveform but are not highlighted.
+
 ## Playback support
 
 | Supported | Behavior |
 |---|---|
 | `Sample("kick")`, `Sample("snare")`, `Sample("closedHat")` | Original built-in percussion sounds |
 | `Synthesizer(.sine/.square/.saw/.triangle/.noise)` | Basic oscillator voices |
-| Rhythm, notes, transpose, chords, velocity, gate | Compiled by SwiftMusic, rendered as events |
+| Nested `[]` rhythm/notes, per-event gain patterns, transpose, chords, velocity, gate | Compiled by SwiftMusic, rendered as events |
 | Gain, pan, mute | Applied in render-plan order |
 | Other source settings, effects, buses | Explicit unsupported-feature diagnostic; current audio survives |
 

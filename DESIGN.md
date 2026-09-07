@@ -77,3 +77,5 @@ This release promises native Swift value and compiler behavior only. It makes no
 Public tests execute custom `Music` and `Sound` bodies, builder control flow, literal grammar and diagnostics, parallel timing, all supported event transforms, source-setting capability failures, effect and mix order and scope, track transparency, resource bounds, exact time arithmetic, separate tempo mapping, and live update state transitions. Tests must show a valid current sound survives invalid and stale edits until a later valid candidate is explicitly adopted. README code must compile and run as an external client.
 
 Changes to event semantics, modifier placement, source provenance, node order, IDs, bounds, or public names require review of the module and [`SoundComposition`](Sources/SwiftMusic/SoundComposition/DESIGN.md) designs.
+
+The [SoundComposition nested-pattern contract](Sources/SwiftMusic/SoundComposition/DESIGN.md#nested-mini-notation-and-gain-patterns) extends rhythm and notes with exact bracket subdivisions and adds onset-sampled per-event gain. Existing scalar gain node ordering and the external playback-clock boundary remain unchanged.

@@ -8,12 +8,12 @@ SoundComposition owns the path from declarative `Sound` through six modifier cat
 |---|---|
 | Rhythm | `rhythm(_:cycle:)`, `offset(_:)`, `repeated(_:)`, `fast(_:)`, `slow(_:)` |
 | Pitch and harmony | `notes(_:)`, `transpose(_:)`, `chord(_:)` |
-| Expression | `dynamic(_:)`, `velocity(_:)`, `gate(_:)`, `staccato()` |
+| Expression | `dynamic(_:)`, `velocity(_:)`, `gate(_:)`, `staccato()`, pattern `gain(_:cycle:)` |
 | Source settings | `tuning(_:)`, `envelope(_:)`, `sampleRegion(_:)`, `unison(_:)` |
 | Audio effects | `effect(_:)` with EQ, filter, compressor, distortion, delay, reverb, chorus |
-| Mix and routing | `gain(_:)`, `pan(_:)`, `muted()`, `send(to:level:)`, `output(_:)` |
+| Mix and routing | scalar `gain(_:)`, `pan(_:)`, `muted()`, `send(to:level:)`, `output(_:)` |
 
-Swing, quantization, scales, voicing, arpeggiation, accent, legato, techniques, pitch envelopes, automation, and broader pattern syntax are deferred without placeholder APIs.
+Swing, quantization, scales, voicing, arpeggiation, accent, legato, techniques, pitch envelopes, general automation, and mini-notation operators beyond recursive brackets are deferred without placeholder APIs.
 
 ## Responsibilities and Boundaries
 
@@ -69,19 +69,19 @@ Migration is complete in this task: only `Music.body: some Sound`, `Sound`, `Sou
 
 `MusicalTime` retains normalized non-negative `UInt64` rational storage and adds checked `multiplied(by: UInt64)` and `divided(by: UInt64)`. Multiplication throws overflow; zero division throws `MusicalTimeError.divisionByZero`. Successful results are exact.
 
-`RhythmPattern` supports `ExpressibleByStringLiteral`. A literal retains its text until resolution and never traps on invalid input. Its `steps` getter throws if resolution fails. Explicit `init(_ value: String)` and `init(steps:)` validate eagerly and throw. Grammar remains one or more ASCII-whitespace-separated `x` and `~` tokens; errors report empty input or the first invalid token and zero-based token index. The modifier accepts `RhythmPattern`, with cycle defaulting to `.whole` (four quarter beats, not an implicit meter). The old throwing String modifier overload is removed so literals in `body` require no `try`; dynamic text uses the explicit throwing pattern initializer.
+`RhythmPattern` supports `ExpressibleByStringLiteral`. A literal retains its text until resolution and never traps on invalid input. Its `steps` getter preserves source compatibility by returning leaf values in depth-first source order. Explicit `init(_ value: String)` and `init(steps:)` validate eagerly and throw. Grammar is a nonempty ASCII-whitespace-separated sequence of `x`, `~`, or recursively nested `[ sequence ]` groups. Brackets are structural and are not leaves. A sequence divides its parent slot equally among its elements; a group occupies one such slot and recursively subdivides it. One internal parser emits each leaf's stable depth-first index and exact unit-cycle start/duration. Pattern source is bounded to 64 KiB UTF-8, 1,024 leaves, and nesting depth 32 before allocation or recursion; empty groups, unmatched brackets, invalid tokens, and exceeded bounds are typed failures. No other mini-notation operator is accepted. The modifier accepts `RhythmPattern`, with cycle defaulting to `.whole`.
 
-`rhythm(pattern, cycle)` requires nonzero cycle and divides it equally by step count. Each hit clones each child event, adds the step onset to its start, and sets duration to one step; rests emit nothing. Extent is at least the full cycle, preserving trailing rests. Nested modifiers apply inner-to-outer. `offset` adds to starts and extent. `repeated(count)` requires positive `Int`, copies the child sequentially at multiples of child extent, and multiplies extent. `fast` and `slow` require positive `UInt64` and divide or multiply starts, durations, and extent. Expansion and arithmetic are bounded before allocation.
+`rhythm(pattern, cycle)` requires nonzero cycle and maps exact timed leaves into that cycle. Each hit clones each child event, adds its leaf onset, sets its leaf duration, and records its leaf index; rests emit nothing. Extent is at least the full cycle, preserving trailing rests. Nested modifiers apply inner-to-outer. `offset` adds to starts and extent. `repeated(count)` requires positive `Int`, copies the child sequentially at multiples of child extent, and multiplies extent. `fast` and `slow` require positive `UInt64` and divide or multiply starts, durations, and extent. Expansion and arithmetic are bounded before allocation.
 
 Both pattern types provide `init(validating:)` to unambiguously request eager validation even for a literal argument. Swift may treat `RhythmPattern("...")` or `NotePattern("...")` as literal conversion rather than the throwing unlabeled String initializer. Use the labeled initializer at eager-validation boundaries. Literal equality compares retained source text; whitespace differences remain different declaration values even when they resolve to the same steps.
 
 ### Pitch, harmony, and expression
 
-`NotePattern` also supports deferred string literals and an eager throwing String initializer. Its throwing `steps` getter returns `[Pitch?]`, where nil is an explicit rest. ASCII-whitespace-separated tokens are `~` or scientific pitch names: A-G (case insensitive), optionally one ASCII `#` or `b`, followed by a decimal octave with optional minus sign. C4 is MIDI 60; enharmonic spellings resolve through the same arithmetic, and results must be 0...127. Empty input, malformed tokens, and out-of-range pitches produce `NotePatternError` with token/index where applicable. Numeric parsing must reject overflow, not trap. `Pitch` itself remains a validated MIDI value and does not store invalid literals.
+`NotePattern` uses the same bounded bracket structure and deferred/eager construction contract. Its throwing `steps` getter returns depth-first `[Pitch?]`, where nil is an explicit rest. Leaf tokens are `~` or scientific pitch names: A-G (case insensitive), optionally one ASCII `#` or `b`, followed by a decimal octave with optional minus sign. C4 is MIDI 60; enharmonic spellings resolve through the same arithmetic, and results must be 0...127. Structural, malformed-token, and out-of-range failures remain typed with leaf index or source offset where applicable. Numeric parsing rejects overflow rather than trapping.
 
-`notes(_ pattern: NotePattern, cycle: MusicalTime = .whole)` generates a timed sequence. Each pitched step clones every child event, adds the step onset to its start, sets duration to cycle/stepCount and replaces pitch. Rests clone no events; extent is at least the full cycle. Event limits are checked before expansion, and invalid patterns fail even on an empty subtree. Nested pattern modifiers expand inner-to-outer by these same rules. This overload differs intentionally from `[Pitch]` assignment below: a standalone synthesizer with four note tokens emits all four notes.
+`notes(_ pattern: NotePattern, cycle: MusicalTime = .whole)` maps exact timed leaves into the cycle. Each pitched leaf clones every child event, adds its onset, sets its leaf duration, replaces pitch, and records its leaf index. Rests clone no events; extent is at least the full cycle. Event limits are checked before expansion, and invalid patterns fail even on an empty subtree. Nested pattern modifiers expand inner-to-outer by these same rules.
 
-`rhythm` and note-pattern overloads add defaulted `fileID: String = #fileID`, `line: UInt = #line`, and `column: UInt = #column` parameters without changing existing call syntax. They store a validated `SoundSourceAnchor` on every source in their subtree. Each emitted event also stores the zero-based lexical token index from the pattern expansion that owns the source anchor; rests emit no event. Nested pattern modifiers apply inner-to-outer, so the outermost pattern anchor and emitted step index win; other transforms preserve both. `CompiledSource.patternAnchor` remains present when a pattern emits only rests, and events resolve their row through `sourceID` rather than duplicating source provenance.
+`rhythm` and note-pattern overloads add defaulted `fileID: String = #fileID`, `line: Int = #line`, and `column: Int = #column` parameters without changing existing call syntax. They store a validated `SoundSourceAnchor` on every source in their subtree. Each emitted event also stores the zero-based lexical token index from the pattern expansion that owns the source anchor; rests emit no event. Nested pattern modifiers apply inner-to-outer, so the outermost pattern anchor and emitted step index win; other transforms preserve both. `CompiledSource.patternAnchor` remains present when a pattern emits only rests, and events resolve their row through `sourceID` rather than duplicating source provenance.
 
 Pattern failures are exposed as `SoundCompilationError.invalidRhythm(RhythmPatternError)` and `.invalidNotes(NotePatternError)`. An unexpected thrown preparation error must remain an explicit failure (`unexpectedFailure(String)`), never a default sound.
 
@@ -159,3 +159,22 @@ Declaration construction and client getter execution before a value returns are 
 | Foundation | Rational operations remain checked; one compiled sound maps through distinct tempi unchanged |
 
 The focused suite runs after stable integration. Deferred operations require explicit semantics, errors, bounds, and output evidence before implementation.
+
+## Nested Mini-Notation and Gain Patterns
+
+The shared internal parser owns only whitespace-separated leaves and recursively nested `[]` subdivisions. Each outer child has equal duration; a group divides that child's duration equally among its children. Depth-first leaf indices include rests but exclude brackets. Bounds are 64 KiB UTF-8 input, 1,024 leaves and 32 group levels; empty input/groups, unmatched brackets and exceeded limits fail with typed errors before unbounded allocation. Other mini-notation operators are not accepted. RhythmPattern and NotePattern retain rawValue, deferred literals, eager validation and flattened `steps` values; the compiler consumes exact timed leaves. Existing flat syntax retains its timing. Group syntax extends the earlier flat step descriptions in this document.
+
+A timed leaf carries exact nonnegative rational start and positive duration. Resolution starts with the modifier's positive cycle and recursively divides each parent slot using MusicalTime checked arithmetic. Rhythm and notes clone child events at each non-rest leaf onset, use that leaf duration, and preserve the leaf index in patternStepIndex. Extent preserves the full cycle including trailing rests. Expansion uses existing compiler event limits before allocation.
+
+`GainPattern: ExpressibleByStringLiteral` accepts finite nonnegative Double leaves and the same bracket grammar; zero is silence, and `~` is invalid (use zero). `.gain(_ pattern: GainPattern, cycle: MusicalTime = .whole)` samples the pattern at each current event start modulo the cycle, multiplies `CompiledSoundEvent.gain` (default 1), and holds that value for the voice lifetime. Sampling uses exact rational boundaries, never floating-point time. Stacked patterns multiply; nonfinite products fail. Empty subtrees still validate patterns/cycles. Events and extent are not added or removed by gain patterns. Time transforms after gain assignment preserve the assigned value; applying the pattern after a time transform samples the transformed onset, consistent with inner-to-outer modifier order.
+
+The existing `.gain(Double)` remains an ordered post-mix render node. Patterned gain is per-voice performance gain before mixing and effects; the distinction preserves the existing scalar API contract. Clients must render CompiledSoundEvent.gain, validate representability in their PCM format and retain zero-gain events as musical metadata. Gain patterns do not replace rhythm/note source anchors or leaf indices.
+
+```text
+raw pattern -> bounded bracket parser -> exact timed leaves
+rhythm/notes -> cloned events + leaf index
+gain pattern + current event onset -> exact cycle phase -> event.gain
+compiled events -> client per-voice gain -> existing ordered mix graph
+```
+
+Tests own nested/nonuniform timing, rest/token provenance, flat compatibility, bracket failures and bounds, gain onset sampling with unequal pattern counts and repeated cycles, exact boundary arithmetic, stacked/zero/nonfinite gain, modifier order and preservation through transforms. Parent and MusicPlaygournd renderer contracts must be rechecked when event fields or pattern timing change.

@@ -132,6 +132,9 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
             guard (1...127).contains(event.velocity) else {
                 throw PreparedLoopValidationError.invalidEvent(index: index, reason: "velocity is out of range")
             }
+            guard event.gain.isFinite, event.gain >= 0 else {
+                throw PreparedLoopValidationError.invalidEvent(index: index, reason: "gain must be finite and nonnegative")
+            }
             if let patternStepIndex = event.patternStepIndex {
                 guard patternStepIndex >= 0 else {
                     throw PreparedLoopValidationError.invalidEvent(index: index, reason: "negative pattern step index")
@@ -141,7 +144,7 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
                 }
                 if let row = rows.first(where: { $0.sourceID == event.sourceID }),
                    let patternText = row.patternText {
-                    let tokenCount = patternText.split(whereSeparator: Self.isASCIIWhitespace).count
+                    let tokenCount = patternText.split(whereSeparator: Self.isPatternDelimiter).count
                     guard patternStepIndex < tokenCount else {
                         throw PreparedLoopValidationError.invalidEvent(index: index, reason: "pattern step index is outside pattern text")
                     }
@@ -152,8 +155,9 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
 
     private static let maximumPatternTokenCount = 1_024
 
-    private static func isASCIIWhitespace(_ character: Character) -> Bool {
-        switch character.asciiValue {
+    private static func isPatternDelimiter(_ character: Character) -> Bool {
+        if character == "[" || character == "]" { return true }
+        return switch character.asciiValue {
         case 9, 10, 11, 12, 13, 32: true
         default: false
         }

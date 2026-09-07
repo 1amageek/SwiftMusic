@@ -6,11 +6,11 @@ public enum PlayingLiteral {
     public static func tokenRanges(pattern: String, line: Int, source: String) -> [NSRange] {
         guard let literal = range(pattern: pattern, line: line, source: source) else { return [] }
         let units = Array(pattern.utf16)
-        let whitespace: Set<UInt16> = [9, 10, 11, 12, 13, 32]
+        let delimiters: Set<UInt16> = [9, 10, 11, 12, 13, 32, 91, 93]
         var ranges: [NSRange] = []
         var start: Int?
         for index in 0...units.count {
-            if index == units.count || whitespace.contains(units[index]) {
+            if index == units.count || delimiters.contains(units[index]) {
                 if let first = start {
                     ranges.append(NSRange(location: literal.location + 1 + first, length: index - first))
                     start = nil

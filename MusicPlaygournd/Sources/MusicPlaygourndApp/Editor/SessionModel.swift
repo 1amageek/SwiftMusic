@@ -130,7 +130,7 @@ final class SessionModel {
     var activeTokens: [Int: Set<Int>] {
         guard isPlaying, let loop else { return [:] }
         var tokens: [Int: Set<Int>] = [:]
-        for event in loop.events where beatPosition >= event.startBeat && beatPosition < event.startBeat + event.durationBeats {
+        for event in loop.events where event.gain > 0 && beatPosition >= event.startBeat && beatPosition < event.startBeat + event.durationBeats {
             if let index = event.patternStepIndex { tokens[event.sourceID, default: []].insert(index) }
         }
         return tokens
@@ -230,19 +230,19 @@ final class SessionModel {
             Track("Kick") {
                 Sample("kick")
                     .rhythm("x ~ x ~")
-                    .gain(0.8)
+                    .gain("0.8 0.6")
             }
 
             Track("Hi-hat") {
                 Sample("closedHat")
-                    .rhythm("x x x x x x x x")
-                    .gain(0.3)
+                    .rhythm("x [x x] x [x x]")
+                    .gain("0.5 [0.2 0.4] 0.5 [0.2 0.3]")
                     .pan(0.2)
             }
 
             Track("Bass") {
                 Synthesizer(.sine)
-                    .notes("C2 ~ Eb2 G2")
+                    .notes("C2 ~ [Eb2 G2] G2")
                     .gain(0.4)
             }
         }

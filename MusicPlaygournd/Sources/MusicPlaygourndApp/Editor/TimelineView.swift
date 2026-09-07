@@ -44,7 +44,7 @@ struct TimelineView: View {
                             for event in loop.events where event.sourceID == row.sourceID {
                                 let box = CGRect(x: inset + event.startBeat * scale, y: center - height / 2,
                                     width: max(2, event.durationBeats * scale - 1), height: height)
-                                let active = isPlaying && beatPosition >= event.startBeat && beatPosition < event.startBeat + event.durationBeats
+                                let active = isPlaying && event.gain > 0 && beatPosition >= event.startBeat && beatPosition < event.startBeat + event.durationBeats
                                 context.fill(Path(roundedRect: box, cornerRadius: 3), with: .color(color.opacity(active ? 0.28 : 0.09)))
                                 var onset = Path()
                                 onset.move(to: CGPoint(x: box.minX, y: box.minY))

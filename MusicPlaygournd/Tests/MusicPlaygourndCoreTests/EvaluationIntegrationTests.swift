@@ -86,6 +86,15 @@ final class EvaluationIntegrationTests: XCTestCase {
         try engine.play()
         XCTAssertEqual(engine.snapshot().revision, 3)
         engine.stop()
+        let nested = source.replacingOccurrences(of: "x ~ x ~", with: "x [x x] ~ x")
+            .replacingOccurrences(of: ".gain(0.8)", with: ".gain(\"1 [0 0.5] 0.2 0.8\")")
+        let patterned = try await evaluator.evaluate(source: nested, bpm: 120, beatsPerBar: 4)
+        XCTAssertEqual(patterned.events.filter { $0.label == "Kick" }.map(\.gain), [1, 0, 0.5, 0.8])
+        XCTAssertEqual(patterned.events.filter { $0.label == "Kick" }.map(\.startBeat), [0, 1, 1.5, 3])
+        do {
+            _ = try await evaluator.evaluate(source: nested.replacingOccurrences(of: "x [x x] ~ x", with: "x [x x ~ x"), bpm: 120, beatsPerBar: 4)
+            XCTFail("Unbalanced pattern groups must fail")
+        } catch { XCTAssertFalse(error.localizedDescription.isEmpty) }
         try await evaluator.shutdown()
     }
 }

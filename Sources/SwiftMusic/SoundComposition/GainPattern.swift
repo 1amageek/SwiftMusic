@@ -1,5 +1,5 @@
-/// A deferred sequence of hit (`x`) and rest (`~`) steps.
-public struct RhythmPattern: Sendable, Equatable, ExpressibleByStringLiteral {
+/// A deferred recursively subdivided sequence of per-event gain values.
+public struct GainPattern: Sendable, Equatable, ExpressibleByStringLiteral {
     /// The source text retained by a literal or an eagerly validated value.
     public let rawValue: String
 
@@ -14,24 +14,13 @@ public struct RhythmPattern: Sendable, Equatable, ExpressibleByStringLiteral {
         try self.init(value)
     }
 
-    /// Creates and eagerly validates a pattern from explicit steps.
-    public init(steps: [Bool]) throws {
-        guard !steps.isEmpty else {
-            throw RhythmPatternError.emptyInput
-        }
-        guard steps.count <= _MiniPatternParser.maximumLeaves else {
-            throw RhythmPatternError.tooManyLeaves(limit: _MiniPatternParser.maximumLeaves)
-        }
-        rawValue = steps.map { $0 ? "x" : "~" }.joined(separator: " ")
-    }
-
     /// Retains literal input without validating it during Swift source evaluation.
     public init(stringLiteral value: String) {
         rawValue = value
     }
 
-    /// Resolves the source text for the compiler.
-    public var steps: [Bool] {
+    /// Resolves the source text into flat values for clients that need the legacy view.
+    public var steps: [Double] {
         get throws {
             try Self.parse(rawValue)
         }
@@ -44,15 +33,12 @@ public struct RhythmPattern: Sendable, Equatable, ExpressibleByStringLiteral {
         }
     }
 
-    private static func parse(_ value: String) throws -> [Bool] {
+    private static func parse(_ value: String) throws -> [Double] {
         try parseTimedLeaves(value).map { leaf in
-            switch leaf.token {
-            case "x": return true
-            case "~": return false
-            default:
-                // parseTimedLeaves validates tokens before returning, so this is unreachable.
-                throw RhythmPatternError.invalidToken(token: leaf.token, index: leaf.index)
+            guard let gain = Double(leaf.token) else {
+                throw GainPatternError.invalidToken(token: leaf.token, index: leaf.index)
             }
+            return gain
         }
     }
 
@@ -61,19 +47,28 @@ public struct RhythmPattern: Sendable, Equatable, ExpressibleByStringLiteral {
             var parser = try _MiniPatternParser(value)
             let leaves = try parser.parse()
             for leaf in leaves {
-                guard leaf.token == "x" || leaf.token == "~" else {
-                    throw RhythmPatternError.invalidToken(token: leaf.token, index: leaf.index)
+                guard leaf.token != "~" else {
+                    throw GainPatternError.invalidToken(token: leaf.token, index: leaf.index)
+                }
+                guard let value = Double(leaf.token) else {
+                    throw GainPatternError.invalidToken(token: leaf.token, index: leaf.index)
+                }
+                guard value.isFinite else {
+                    throw GainPatternError.nonFiniteValue(token: leaf.token, index: leaf.index)
+                }
+                guard value >= 0 else {
+                    throw GainPatternError.negativeValue(token: leaf.token, index: leaf.index)
                 }
             }
             return leaves
-        } catch let error as RhythmPatternError {
+        } catch let error as GainPatternError {
             throw error
         } catch let error as _PatternParserError {
             throw map(error)
         }
     }
 
-    private static func map(_ error: _PatternParserError) -> RhythmPatternError {
+    private static func map(_ error: _PatternParserError) -> GainPatternError {
         switch error {
         case .emptyInput: return .emptyInput
         case .emptyGroup(let offset): return .emptyGroup(offset: offset)

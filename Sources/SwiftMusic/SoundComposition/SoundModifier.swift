@@ -18,6 +18,7 @@ internal enum _SoundModifier: Sendable {
     case unison(Unison)
     case effect(AudioEffect)
     case gain(Double)
+    case gainPattern(GainPattern, MusicalTime)
     case pan(Double)
     case muted
     case send(String, Double)

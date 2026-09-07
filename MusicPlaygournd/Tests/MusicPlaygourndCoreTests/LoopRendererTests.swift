@@ -33,6 +33,25 @@ final class LoopRendererTests: XCTestCase {
         XCTAssertLessThanOrEqual(loop.rows[0].peaks.count, PreparedLoop.maximumPeakBins)
     }
 
+    func testNestedGainPatternChangesActualVoicePCM() throws {
+        let sound = Synthesizer(.sine).notes("C4 [C4 C4] C4 C4").gain("1 [0 0.5] 0.25 0.75")
+        let loop = try renderer.render(SoundCompiler().compile(sound), bpm: 120, beatsPerBar: 4)
+        XCTAssertEqual(loop.events.map(\.startBeat), [0, 1, 1.5, 2, 3])
+        XCTAssertEqual(loop.events.map(\.gain), [1, 0, 0.5, 0.25, 0.75])
+        XCTAssertEqual(loop.events.map(\.patternStepIndex), [0, 1, 2, 3, 4])
+        func peak(_ start: Double, _ end: Double) -> Float {
+            let lower = Int(start * 22050) * 2
+            let upper = Int(end * 22050) * 2
+            return loop.samples[lower..<upper].reduce(0) { max($0, abs($1)) }
+        }
+        let full = peak(0, 1)
+        XCTAssertGreaterThan(full, 0.1)
+        XCTAssertEqual(peak(1, 1.5), 0)
+        XCTAssertEqual(peak(1.5, 2), full * 0.5, accuracy: 0.001)
+        XCTAssertEqual(peak(2, 3), full * 0.25, accuracy: 0.001)
+        XCTAssertEqual(peak(3, 4), full * 0.75, accuracy: 0.001)
+    }
+
     func testGainPanAndMuteChangeAudiblePCM() throws {
         let plainSound = Synthesizer(.sine).notes("C4")
         let plain = try renderer.render(
