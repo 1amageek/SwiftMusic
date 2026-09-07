@@ -94,7 +94,7 @@ Synthesizer(.sine)
     .pan("-1 1")
 ```
 
-`GainPattern` and `PanPattern` support independent integer `fast` and `slow` transformations. Values are sampled at each note onset using exact beat time. Gain values multiply; the last pan pattern selects each voice's pan. Invalid literals report typed compilation errors. Pan accepts finite values from -1 to 1 and uses equal-power panning. Omitting pan preserves existing centered audio; explicitly setting zero applies the same center attenuation as scalar `.pan(0)`. Scalar gain and pan remain ordered post-mix operations.
+`GainPattern` and `PanPattern` support independent `fast` and `slow` transformations with integer or fractional rates, such as `pattern.fast(1.5)`. Fractional literals use deferred `PatternRate`; an explicit `try PatternRate(numerator: 3, denominator: 2)` expresses an eagerly validated exact ratio, and `try PatternRate(validating: dynamicDouble)` requests eager validation for dynamic decimal input. Decimal inputs use Swift's shortest decimal spelling, so successive rates of 1.1 and 1.2 compose exactly to 33/25. Values are sampled at each note onset using exact beat time. Gain values multiply; the last pan pattern selects each voice's pan. Invalid literals report typed compilation errors when resolved. Pan accepts finite values from -1 to 1 and uses equal-power panning. Omitting pan preserves existing centered audio; explicitly setting zero applies the same center attenuation as scalar `.pan(0)`. Scalar gain and pan remain ordered post-mix operations.
 
 ## License
 

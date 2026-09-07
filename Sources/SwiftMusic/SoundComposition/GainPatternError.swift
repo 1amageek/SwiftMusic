@@ -12,4 +12,5 @@ public enum GainPatternError: Error, Equatable, Sendable {
     case nestingTooDeep(limit: Int)
     case timingOverflow
     case zeroFactor
+    case invalidRate(PatternRateError)
 }

@@ -165,6 +165,7 @@ internal func _scalePatternTime(_ cycle: MusicalTime, by fraction: MusicalTime) 
 
 internal enum _PatternPhaseFailure: Error, Equatable, Sendable {
     case zeroFactor
+    case invalidRate(PatternRateError)
     case overflow
 }
 
@@ -187,14 +188,7 @@ internal struct _PatternPhaseScale: Sendable, Equatable {
         guard factor > 0 else {
             return Self(numerator: numerator, denominator: denominator, failure: .zeroFactor)
         }
-        let cancellation = MusicalTime.greatestCommonDivisor(numerator, factor)
-        let reducedNumerator = numerator / cancellation
-        let reducedFactor = factor / cancellation
-        let (scaledDenominator, overflow) = denominator.multipliedReportingOverflow(by: reducedFactor)
-        guard !overflow else {
-            return Self(numerator: numerator, denominator: denominator, failure: .overflow)
-        }
-        return normalized(numerator: reducedNumerator, denominator: scaledDenominator)
+        return composing(numerator: 1, denominator: factor)
     }
 
     func slow(_ factor: UInt64) -> Self {
@@ -202,14 +196,27 @@ internal struct _PatternPhaseScale: Sendable, Equatable {
         guard factor > 0 else {
             return Self(numerator: numerator, denominator: denominator, failure: .zeroFactor)
         }
-        let cancellation = MusicalTime.greatestCommonDivisor(denominator, factor)
-        let reducedDenominator = denominator / cancellation
-        let reducedFactor = factor / cancellation
-        let (scaledNumerator, overflow) = numerator.multipliedReportingOverflow(by: reducedFactor)
-        guard !overflow else {
-            return Self(numerator: numerator, denominator: denominator, failure: .overflow)
+        return composing(numerator: factor, denominator: 1)
+    }
+
+    func fast(_ rate: PatternRate) -> Self {
+        guard failure == nil else { return self }
+        switch rate.resolvedOrError {
+        case .success(let rational):
+            return composing(numerator: rational.denominator, denominator: rational.numerator)
+        case .failure(let error):
+            return Self(numerator: numerator, denominator: denominator, failure: .invalidRate(error))
         }
-        return normalized(numerator: scaledNumerator, denominator: reducedDenominator)
+    }
+
+    func slow(_ rate: PatternRate) -> Self {
+        guard failure == nil else { return self }
+        switch rate.resolvedOrError {
+        case .success(let rational):
+            return composing(numerator: rational.numerator, denominator: rational.denominator)
+        case .failure(let error):
+            return Self(numerator: numerator, denominator: denominator, failure: .invalidRate(error))
+        }
     }
 
     func resolvedCycle(from cycle: MusicalTime) throws -> MusicalTime {
@@ -229,6 +236,24 @@ internal struct _PatternPhaseScale: Sendable, Equatable {
             denominator: denominator / divisor,
             failure: nil
         )
+    }
+
+    private func composing(numerator factorNumerator: UInt64, denominator factorDenominator: UInt64) -> Self {
+        guard failure == nil else { return self }
+
+        let firstCancellation = MusicalTime.greatestCommonDivisor(numerator, factorDenominator)
+        let secondCancellation = MusicalTime.greatestCommonDivisor(factorNumerator, denominator)
+        let leftNumerator = numerator / firstCancellation
+        let rightDenominator = factorDenominator / firstCancellation
+        let rightNumerator = factorNumerator / secondCancellation
+        let leftDenominator = denominator / secondCancellation
+
+        let (combinedNumerator, numeratorOverflow) = leftNumerator.multipliedReportingOverflow(by: rightNumerator)
+        let (combinedDenominator, denominatorOverflow) = leftDenominator.multipliedReportingOverflow(by: rightDenominator)
+        guard !numeratorOverflow, !denominatorOverflow else {
+            return Self(numerator: numerator, denominator: denominator, failure: .overflow)
+        }
+        return normalized(numerator: combinedNumerator, denominator: combinedDenominator)
     }
 }
 

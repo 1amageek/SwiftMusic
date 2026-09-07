@@ -39,6 +39,16 @@ public struct GainPattern: Sendable, Equatable, ExpressibleByStringLiteral {
         Self(rawValue: rawValue, phase: phase.slow(factor))
     }
 
+    /// Defers a rational phase-speed transformation until the pattern is resolved.
+    public func fast(_ rate: PatternRate) -> Self {
+        Self(rawValue: rawValue, phase: phase.fast(rate))
+    }
+
+    /// Defers a rational phase-slowing transformation until the pattern is resolved.
+    public func slow(_ rate: PatternRate) -> Self {
+        Self(rawValue: rawValue, phase: phase.slow(rate))
+    }
+
     /// Resolves the source text into exact recursive leaf timings for compilation.
     internal var timedLeaves: [_PatternTimedLeaf] {
         get throws {
@@ -51,6 +61,8 @@ public struct GainPattern: Sendable, Equatable, ExpressibleByStringLiteral {
             return try phase.resolvedCycle(from: cycle)
         } catch _PatternPhaseFailure.zeroFactor {
             throw GainPatternError.zeroFactor
+        } catch _PatternPhaseFailure.invalidRate(let error) {
+            throw GainPatternError.invalidRate(error)
         } catch _PatternPhaseFailure.overflow {
             throw GainPatternError.timingOverflow
         }

@@ -193,14 +193,72 @@ Tests own GainPattern/PanPattern deferred validation and parser bounds, integer 
 
 ## Rational Pattern Rates
 
-`PatternRate` is the public time-domain value for an exact positive pattern speed. It is not a generic parameter-pattern abstraction. `PatternRate(numerator:denominator:)` and `PatternRate(_ value: Double)` validate eagerly and throw `PatternRateError` for zero, negative, nonfinite, zero-denominator, or reduced values that cannot fit its bounded `UInt64` rational representation. `ExpressibleByFloatLiteral` retains the same validation result so source such as `.fast(1.5)` remains nonthrowing during Swift expression construction and reports a typed domain-pattern compilation failure when resolved. Binary floating-point input is converted to its exact reduced rational value; it is never rounded to a decimal approximation.
+`PatternRate` is the public time-domain value for an exact positive pattern speed. It is not a generic parameter-pattern abstraction. `PatternRate(numerator:denominator:)` and `PatternRate(validating value: Double)` validate eagerly and throw `PatternRateError` for zero, negative, nonfinite, zero-denominator, or reduced values that cannot fit its bounded `UInt64` rational representation. There is no unlabeled throwing Double initializer because Swift would select literal conversion for direct literal syntax and make its eager behavior ambiguous. `ExpressibleByFloatLiteral` retains the same validation result, so direct construction such as `PatternRate(1.5)` and contextual source such as `.fast(1.5)` are deferred and report a typed domain-pattern compilation failure only when resolved. Dynamic input that must fail at construction uses `try PatternRate(validating: value)`.
+
+A `Double` rate uses its locale-independent shortest round-trip decimal spelling as the musical value, including checked scientific-notation expansion, then reduces that decimal exactly into the bounded rational representation. This makes ordinary source values compose musically: `1.1` is `11/10`, `1.2` is `6/5`, and their product is exactly `33/25`. It does not preserve the hidden IEEE binary fraction and does not round to a fixed decimal precision. Computed values whose canonical spelling exposes floating-point residue retain that residue exactly; values or powers of ten that cannot be represented within the rational bound fail explicitly.
 
 `GainPattern` and `PanPattern` add `fast(_ rate: PatternRate)` and `slow(_ rate: PatternRate)` while retaining the existing `UInt64` overloads unchanged. An integer literal therefore continues to select the existing overload, and a fractional literal selects `PatternRate`. Fast resolves the pattern cycle as `cycle / rate`; slow resolves it as `cycle * rate`. Chained transforms compose normalized rational factors exactly and defer parsing of pattern source text. Invalid deferred rates and checked-arithmetic overflow map to the receiving domain's typed compilation error. These operations change only phase sampling: values, leaf indices, event onsets, event counts, sound extent, scalar modifiers, and source provenance remain unchanged.
 
 ```text
 integer factor -> existing UInt64 overload ----\
-fractional literal -> PatternRate exact p/q ----+-> deferred phase scale -> onset sampling
-explicit p/q -> validated PatternRate ----------/
+fractional literal -> deferred PatternRate p/q --+-> deferred phase scale -> onset sampling
+validating Double / explicit p/q -> eager rate --/
 ```
 
-Focused tests distinguish integer-overload source compatibility from fractional-literal selection; prove exact `3/2`, reciprocal fast/slow, chained reduction and cycle-boundary sampling for gain and pan; reject zero, negative, nonfinite, zero-denominator and unrepresentable ratios through typed failures; and cover checked composition overflow without parsing or retiming events. Alternation grammar, reverse/repetition, independent track cycles, and typed musical parameter units remain separate work items.
+Focused tests distinguish integer-overload source compatibility from fractional-literal selection; prove exact `3/2`, canonical-decimal `1.1 * 1.2 == 33/25`, scientific notation, reciprocal fast/slow, chained reduction and cycle-boundary sampling for gain and pan; reject zero, negative, nonfinite, zero-denominator and unrepresentable decimal/rational values through typed failures; and cover checked composition overflow without parsing or retiming events. Alternation grammar, reverse/repetition, independent track cycles, and typed musical parameter units remain separate work items.
+
+## Cycle Mini-Notation
+
+The bounded internal parser extends its SwiftMusic notation without exposing a Strudel AST. Whitespace still sequences slots, `[]` still subdivides one parent slot, and the following ASCII forms are added:
+
+| Form | Meaning |
+|---|---|
+| `<a b>` | Select top-level alternative `a` on one pattern cycle and `b` on the next, then repeat that finite alternation period. An alternative may be a leaf or a bracketed subdivision. |
+| `token*count` | Repeat one leaf token `count` times sequentially inside that leaf's slot; count is a positive decimal integer. |
+| `~` | Preserve a timed rest in rhythm and note patterns. Gain and pan continue to reject rests. |
+| `C4,E4,G4` | Emit the comma-separated pitches simultaneously from one NotePattern leaf. Empty members and non-pitch members fail. Commas remain invalid in other domains. |
+
+Operators are separated structurally: angle brackets cannot be embedded in a leaf, repetition is a leaf postfix, and comma separation belongs only to a note leaf before its optional repetition suffix. Existing pitch accidentals and negative octaves keep their current token meaning. Existing flat and nested-bracket source retains identical timing and values.
+
+The parsed program owns lexical leaf indices and UTF-8 byte ranges. Repetition occurrences share the repeated leaf's lexical index; simultaneous notes share their chord leaf's index; alternation branches retain their own source indices. Every pattern-source failure exposes its exact zero-based UTF-8 byte offset. `RhythmPatternError`, `NotePatternError`, `GainPatternError`, and `PanPatternError` add `offset` to every token-carried invalid/value/range case, including note pitch range, gain negative/nonfinite, and pan nonfinite/out-of-range failures. Parser input-length, leaf-count, depth and timing/period-overflow cases also carry the first byte that violates the bound or the structural operator whose resolution overflowed; empty input is position zero, and existing bracket/group cases retain their delimiter offsets. Associated `offset` arguments default to zero only for source construction compatibility, while every parser-emitted error supplies the real location. Each domain error exposes `utf8Offset`, and equality includes location rather than ignoring it. This intentional 0.2 API change alters associated-value pattern-matching arity. General non-pattern `SoundParameterError` remains outside this source-location contract. Deferred literals report the same located typed error during compilation as eager validation reports directly.
+
+An alternation program has a finite natural period measured in pattern cycles. A sequence or subdivision containing periodic siblings has their checked least-common-multiple period. An alternation with `n` alternatives has `n * LCM(child periods)` as its checked natural period; parent cycle `c` selects alternative `c % n` and evaluates that child at local cycle `c / n`. Thus `<a <b c>>` resolves as `a, b, a, c`, rather than losing the inner branch under a plain LCM. Resolution fails before event allocation if the natural period or the fully realized leaf occurrences across that period exceeds 1,024; the existing 64 KiB input and 32-level nesting limits still apply, and repeat expansion counts toward the realized limit. `steps` presents the fully realized natural period in cycle and time order, with simultaneous pitches adjacent and repeated leaves repeated, so existing syntax remains a one-cycle special case.
+
+RhythmPattern and NotePattern compile every cycle in their natural period at exact offsets from zero. Their minimum extent becomes `cycle * naturalPeriod`; rests retain that extent, and simultaneous notes emit same-start/same-duration events. Expansion checks `SoundCompiler.Limits.maximumEvents` before allocation. `patternStepIndex` remains the lexical leaf index, including repeated and simultaneous emissions.
+
+GainPattern and PanPattern do not add events or extent. For each existing event onset they compute the exact absolute cycle quotient and in-cycle phase, select the alternation branch by quotient modulo natural period, then sample its timed leaf. An event outside the first cycle can therefore observe later alternatives without floating-point time. Empty subtrees still validate the complete program.
+
+```text
+source -> bounded program + lexical byte ranges + finite natural period
+       -> rhythm/notes: expand every syntactic cycle -> events + period extent
+       -> gain/pan: event onset quotient/phase -> selected value, no new event
+siblings with shorter extents ---------------------------------> P02.3
+```
+
+This increment does not repeat a shorter sibling track to another sibling's or the renderer's extent. Independent track cycles and bounded host-window filling remain P02.3. A native client may reject the resulting finite extent under its existing duration/beat limits; it must not truncate the alternation or claim that rendering only its first cycle is complete.
+
+Focused tests cover flat and `[]` compatibility; two- and nested-period branch order over all cycles; checked period/realized-leaf bounds; token and rest repetition timing; simultaneous note pitch/start/duration and MIDI bounds; lexical indices; gain/pan sampling after the first cycle; empty/all-rest extent; pre-allocation event limits; and exact UTF-8 offsets with multibyte prefixes for syntax, invalid tokens, note pitch range, gain value, pan value and parser-bound failures. Client integration proves that a complete in-bound alternation reaches event metadata and PCM, while an out-of-bound native loop fails explicitly.
+
+## Native Source Performance
+
+P03 turns existing source descriptors into audible native behavior while keeping musical compilation independent of file and audio I/O. SwiftMusic validates and emits immutable source/event policy; MusicPlaygournd resolves files, allocates voices, and renders PCM. No compiler API reads a file, opens an audio device, or silently substitutes a built-in sound.
+
+Existing `Envelope` remains the amplitude ADSR descriptor and its current initializer remains source compatible. Additive defaults describe linear attack/decay/release curves and release anchored at the gated note end. `EnvelopeCurve` supports bounded linear and exponential shapes; `EnvelopeReleaseAnchor` selects gated note end or ungated event end. Attack and decay begin at event onset, sustain follows decay, and release begins only at the selected anchor. The P02.4 `EnvelopePattern` may replace the source envelope per event onset; outermost assignment wins. `pitchEnvelope(_:depth:)` and `filterEnvelope(_:depth:)` reuse the same normalized ADSR contour with signed semitone depth, returning to zero modulation after release. Static source settings remain the fallback when an event has no patterned override.
+
+`SourceFilter` owns low-pass, high-pass, or band-pass kind, positive cutoff, positive resonance Q, and `FilterSlope` of 12 or 24 dB per octave. `.filter(_:)` applies it to source descriptors; the P02.4 cutoff pattern supplies an optional per-event cutoff. Cutoff must be finite and positive at compilation and below the native Nyquist frequency at rendering. A cutoff pattern without a source filter is a typed compilation failure after the complete modifier subtree is known, so modifier order does not create a false failure. Existing `AudioEffect.filter` remains a post-mix render node owned by P04 and is not reinterpreted as this per-voice source filter.
+
+```text
+oscillator/sample frame
+  -> sample traversal or pitch + pitch envelope
+  -> per-voice source filter + filter envelope
+  -> amplitude ADSR -> velocity -> event gain/pan
+  -> source mix -> existing ordered render nodes
+```
+
+`Sample(_ name:)` keeps its named built-in behavior. Additive file and bank initializers produce descriptor-only source kinds. `SampleBank` contains an ordered, nonempty set of unique nonblank keys and explicit file URLs; it never relies on directory enumeration order. `SampleSelectionPattern` is a separate bounded string domain whose leaves select bank keys at exact event onsets. Missing keys fail compilation, while unreadable/unsupported files fail native preparation. Existing `SampleRegion` crops the selected decoded asset before traversal. Additive reverse and positive playback-rate source settings change traversal inside that region and do not change musical event onset, gate, or extent; pitch-preserving stretch remains P06.
+
+The native client decodes actual local PCM through its injected sample-loading protocol. It accepts mono or stereo finite PCM, converts supported source sample rates to the required output rate, caches only assets selected by the current immutable render, and rejects unsupported formats, channels, nonfinite samples, files longer than the prepared-loop duration ceiling, or more than 32 distinct selected assets. Failure is typed and retains the previously adopted loop. Built-in kick/snare/closedHat generation remains available only for their existing names and is never a fallback for a failed file or bank reference.
+
+`VoicePolicy` is an optional source setting. Nil preserves the current behavior of rendering every compiled overlap within existing event bounds. `.monophonic` permits one active voice; `.polyphonic(limit:stealing:)` requires a positive limit no greater than the compiler event limit. `VoiceStealing` supports oldest and quietest, with onset then compiled event order as deterministic ties. A nonblank choke group may span sources: a new onset terminates older active voices in that group with the renderer's bounded click-suppression ramp. Release tails count as active voices; a stolen or choked voice does not continue its release. These policies do not delete compiled musical events or their provenance.
+
+Compiler tests own initializer/domain validation, inner-to-outer replacement, event-onset pattern selection, empty-subtree failure, capability errors, deterministic bank keys, voice policy and choke metadata, and unchanged legacy descriptors. Native tests own oscillator frequency, exact ADSR segment boundaries and release horizon, pitch/filter modulation, 12/24 dB filter response, resonance stability, real temporary-file decode, stereo preservation, selection/region/reverse/rate traversal, typed I/O failures and limits, deterministic stealing/choke output, nil-policy PCM compatibility, and nonzero hardware playback of a prepared result. All new tests use Swift Testing.

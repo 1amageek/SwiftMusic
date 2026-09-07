@@ -5,6 +5,25 @@ import Testing
 
 struct PanPatternRenderingTests {
     @Test(.timeLimit(.minutes(3)))
+    func fractionalRatesChangeParametersWithoutRetimingNotes() throws {
+        let pan: PanPattern = "-1 1"
+        let gain: GainPattern = "1 0.5"
+        let sound = Synthesizer(.sine).notes("C4 C4 C4 C4")
+        let compiler = SoundCompiler()
+        let renderer = LoopRenderer()
+        let actual = try renderer.render(compiler.compile(
+            sound.pan(pan.fast(1.5)).gain(gain.fast(1.5))
+        ), bpm: 120, beatsPerBar: 4)
+        let expected = try renderer.render(compiler.compile(
+            sound.pan("-1 -1 1 -1").gain("1 1 0.5 1")
+        ), bpm: 120, beatsPerBar: 4)
+        #expect(actual.events.map(\.startBeat) == [0, 1, 2, 3])
+        #expect(actual.events.map(\.pan) == [-1, -1, 1, -1])
+        #expect(actual.events.map(\.gain) == [1, 1, 0.5, 1])
+        #expect(actual.samples == expected.samples)
+    }
+
+    @Test(.timeLimit(.minutes(3)))
     func testPatternedPanAndGainReachStereoPCM() throws {
         let sound = Synthesizer(.sine).notes("C4 C4 C4 C4")
         let renderer = LoopRenderer()
