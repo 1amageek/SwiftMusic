@@ -18,7 +18,9 @@ final class InlineRhythmLayout: NSObject, @MainActor NSLayoutManagerDelegate {
         editor.layoutManager?.delegate = self
     }
 
-    func update(loop: PreparedLoop?, rowLines: [Int: Int], enabled: Bool, beat: Double, isPlaying: Bool, visualization: PreparedControlVisualization? = nil) {
+    func update(loop: PreparedLoop?, rowLines: [Int: Int], enabled: Bool, beat: Double, isPlaying: Bool,
+                mutedTracks: [Int: Bool] = [:], onToggleTrackMute: @escaping (Int) -> Void = { _ in },
+                visualization: PreparedControlVisualization? = nil) {
         guard let editor, let manager = editor.layoutManager else { return }
         let rows = enabled ? (loop?.rows ?? []) : []
         let mapped = Dictionary(uniqueKeysWithValues: rows.compactMap { row in
@@ -54,9 +56,12 @@ final class InlineRhythmLayout: NSObject, @MainActor NSLayoutManagerDelegate {
                 if card.superview == nil { editor.addSubview(card) }
                 cards[row.sourceID] = card
                 card.update(row: row, events: loop.events.filter { $0.sourceID == row.sourceID },
-                    beats: loop.beatCount, meter: loop.beatsPerBar, beat: beat, playing: isPlaying, visualization: visualization)
+                    beats: loop.beatCount, meter: loop.beatsPerBar, beat: beat, playing: isPlaying,
+                    trackID: row.trackID, isMuted: row.trackID.flatMap { mutedTracks[$0] },
+                    onToggleTrackMute: onToggleTrackMute, visualization: visualization)
             }
         }
+        editor.setAccessibilityChildren(cards.keys.sorted().compactMap { cards[$0] })
         layoutCards()
     }
 
@@ -70,7 +75,7 @@ final class InlineRhythmLayout: NSObject, @MainActor NSLayoutManagerDelegate {
         manager.ensureLayout(for: container)
         cardFrames = [:]
         let origin = editor.textContainerOrigin
-        let width = max(160, (editor.enclosingScrollView?.contentSize.width ?? editor.bounds.width) - origin.x * 2)
+        let width = max(160, (editor.enclosingScrollView?.contentView.bounds.width ?? editor.bounds.width) - origin.x * 2)
         for (line, end) in lineEnds {
             guard end < (editor.string as NSString).length else { continue }
             let glyph = manager.glyphIndexForCharacter(at: end)

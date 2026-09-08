@@ -173,6 +173,7 @@ internal enum ControlVisualizationRenderer {
         case .track(let id):
             let value: Double?
             switch address.parameter {
+            case .trackMute: value = (overlay?.trackMute[id] ?? sound.tracks[id].isMuted) ? 1 : 0
             case .trackLevel: value = overlay?.trackLevel[id] ?? sound.tracks[id].level
             case .trackPan: value = overlay.map { $0.effectiveTrackPan(id, baseline: sound.tracks[id].pan) } ?? sound.tracks[id].pan
             default: value = nil

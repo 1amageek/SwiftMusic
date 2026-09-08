@@ -28,7 +28,7 @@ struct ContentView: View {
                 HSplitView {
                     editor
                     if !model.inlineLayout && !model.bottomLayout {
-                        TimelineView(loop: model.editorLoop, rowLines: model.rowLines, lineRects: lineRects, beatPosition: model.beatPosition, isPlaying: model.isPlaying, onScroll: { timelineScroll += $0 })
+                        TimelineView(loop: model.editorLoop, rowLines: model.rowLines, lineRects: lineRects, beatPosition: model.beatPosition, isPlaying: model.isPlaying, onScroll: { timelineScroll += $0 }, mutedTracks: model.rowMuteStates, onToggleTrackMute: model.toggleTrackMute)
                             .frame(minWidth: 340)
                     }
                 }
@@ -157,7 +157,8 @@ struct ContentView: View {
                 scrollDelta: timelineScroll, onLayout: { lineRects = $0 },
                 beforeEdit: model.beforeEdit, onEdit: model.sourceChanged,
                 completions: { source, offset in try await model.completions(source: source, utf16Offset: offset) },
-                onCompletionStatus: { model.completionStatus = $0 }, selectionRange: model.selectionRange, visualization: model.editorLoop == nil ? nil : model.controlVisualization,
+                onCompletionStatus: { model.completionStatus = $0 },
+                mutedTracks: model.rowMuteStates, onToggleTrackMute: model.toggleTrackMute, selectionRange: model.selectionRange, visualization: model.editorLoop == nil ? nil : model.controlVisualization,
                 documentID: model.activeDocumentID, editorState: model.activeDocument.editorState, openDocumentIDs: Set(model.documents.map(\.id)),
                 onEditorStateChange: { id, state in model.documents.first { $0.id == id }?.editorState = state })
         }.frame(minWidth: 350, minHeight: 220)
@@ -228,7 +229,7 @@ struct ContentView: View {
 
     private var rhythm: some View {
         VStack(spacing: 0) {
-        RhythmView(loop: model.editorLoop, beatPosition: model.beatPosition, isPlaying: model.isPlaying, revealTrack: model.revealTrack)
+        RhythmView(loop: model.editorLoop, beatPosition: model.beatPosition, isPlaying: model.isPlaying, revealTrack: model.revealTrack, mutedTracks: model.rowMuteStates, onToggleTrackMute: model.toggleTrackMute)
             .frame(minWidth: 340, minHeight: 230)
         selectedResult
         }

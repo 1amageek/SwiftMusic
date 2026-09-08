@@ -13,6 +13,7 @@ internal struct RenderControlOverlay: Sendable {
     var nodeGain: [Int: Double] = [:]
     var nodePan: [Int: Double] = [:]
     var trackLevel: [Int: Double] = [:]
+    var trackMute: [Int: Bool] = [:]
     var trackPan: [Int: Value] = [:]
 
     static func make(
@@ -60,6 +61,8 @@ internal struct RenderControlOverlay: Sendable {
                 }
             case .track(let id):
                 switch address.parameter {
+                case .trackMute:
+                    result.trackMute[id] = try number(override.value, address: address, valid: { $0 == 0 || $0 == 1 }) == 1
                 case .trackLevel:
                     result.trackLevel[id] = try number(override.value, address: address, valid: { $0.isFinite && $0 >= 0 })
                 case .trackPan:

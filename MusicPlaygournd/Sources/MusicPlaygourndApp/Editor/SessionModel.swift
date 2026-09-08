@@ -434,6 +434,23 @@ final class SessionModel {
         }
     }
 
+    var rowMuteStates: [Int: Bool] {
+        guard audibleDocumentID == activeDocumentID, controlsAvailable, !isPreparing else { return [:] }
+        return Dictionary(uniqueKeysWithValues: (controlCatalog?.descriptors ?? []).compactMap { descriptor in
+            guard descriptor.address.parameter == .trackMute,
+                  case .track(let id) = descriptor.address.target else { return nil }
+            return (id, controlValue(descriptor) == 1)
+        })
+    }
+
+    func toggleTrackMute(_ id: Int) {
+        guard let muted = rowMuteStates[id], let revision = currentRevision else { return }
+        do {
+            try setControl(.init(revision: revision, target: .track(id), parameter: .trackMute),
+                           value: .number(muted ? 0 : 1))
+        } catch { hostDiagnostic = error.localizedDescription }
+    }
+
     /// A nil value releases this address back to its score or persistent master target.
     func setControl(_ address: LiveControlAddress, value: LiveControlValue?) throws {
         try setControls([address: value])

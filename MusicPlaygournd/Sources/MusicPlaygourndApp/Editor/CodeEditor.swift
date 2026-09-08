@@ -27,6 +27,8 @@ struct CodeEditor: NSViewRepresentable {
     let onEdit: () -> Void
     let completions: @MainActor (String, Int) async throws -> [SwiftCompletion]
     let onCompletionStatus: (String) -> Void
+    var mutedTracks: [Int: Bool] = [:]
+    var onToggleTrackMute: (Int) -> Void = { _ in }
     var selectionRange: NSRange? = nil
     var visualization: PreparedControlVisualization? = nil
     var documentID: UUID? = nil
@@ -81,6 +83,12 @@ struct CodeEditor: NSViewRepresentable {
         editor.setAccessibilityIdentifier("swift-source-editor")
         editor.setAccessibilityLabel("Swift source code")
         scroll.documentView = editor
+        let ruler = LineNumberRulerView(scrollView: scroll, orientation: .verticalRuler)
+        ruler.clientView = editor
+        scroll.verticalRulerView = ruler
+        scroll.hasVerticalRuler = true
+        scroll.rulersVisible = true
+        context.coordinator.lineNumberRuler = ruler
         context.coordinator.scroll = scroll
         scroll.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.scrolled), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
@@ -121,7 +129,7 @@ struct CodeEditor: NSViewRepresentable {
             clip.scroll(to: CGPoint(x: clip.bounds.minX, y: y))
             scroll.reflectScrolledClipView(clip)
         }
-        context.coordinator.inlineLayout?.update(loop: inlineLoop, rowLines: resultLines, enabled: inlineEnabled, beat: beatPosition, isPlaying: isPlaying, visualization: visualization)
+        context.coordinator.inlineLayout?.update(loop: inlineLoop, rowLines: resultLines, enabled: inlineEnabled, beat: beatPosition, isPlaying: isPlaying, mutedTracks: mutedTracks, onToggleTrackMute: onToggleTrackMute, visualization: visualization)
         context.coordinator.publishLayout()
         context.coordinator.highlightPlayback(editor)
         if context.coordinator.lastSelection != selectionToken, let range = selectionRange {
@@ -148,6 +156,7 @@ struct CodeEditor: NSViewRepresentable {
         var lastSelection = 0
         var lastScrollDelta: CGFloat = 0
         weak var scroll: NSScrollView?
+        weak var lineNumberRuler: LineNumberRulerView?
         var inlineLayout: InlineRhythmLayout?
         private var published: [Int: CGRect] = [:]
         private var rangeSource = ""
@@ -262,6 +271,7 @@ struct CodeEditor: NSViewRepresentable {
             guard let scroll, let editor = scroll.documentView as? NSTextView,
                   let layout = editor.layoutManager, let container = editor.textContainer else { return }
             layout.ensureLayout(for: container)
+            lineNumberRuler?.needsDisplay = true
             let text = editor.string as NSString
             let requested = Set(parent.rhythmLines)
             var rectangles: [Int: CGRect] = [:]

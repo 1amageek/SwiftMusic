@@ -7,7 +7,11 @@ final class InlineRhythmView: NSView {
     private let titleLabel = NSTextField(labelWithString: "")
     private let lowLabel = NSTextField(labelWithString: "")
     private let highLabel = NSTextField(labelWithString: "")
+    private let muteButton = NSButton()
     private var row: LoopRow?
+    private var trackID: Int?
+    private var isMuted: Bool?
+    private var onToggleTrackMute: (Int) -> Void = { _ in }
     private var visualization: PreparedControlVisualization?
 
     override init(frame frameRect: NSRect) {
@@ -17,9 +21,28 @@ final class InlineRhythmView: NSView {
             label.textColor = .secondaryLabelColor
             addSubview(label)
         }
+        configureMuteButton()
     }
 
-    required init?(coder: NSCoder) { super.init(coder: coder) }
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureMuteButton()
+    }
+
+    private func configureMuteButton() {
+        muteButton.isBordered = false
+        muteButton.setButtonType(.momentaryPushIn)
+        muteButton.imagePosition = .imageOnly
+        muteButton.imageScaling = .scaleProportionallyDown
+        muteButton.focusRingType = .none
+        muteButton.target = self
+        muteButton.action = #selector(toggleMute(_:))
+        muteButton.setAccessibilityElement(true)
+        muteButton.setAccessibilityRole(.button)
+        muteButton.isHidden = true
+        muteButton.isEnabled = false
+        addSubview(muteButton)
+    }
 
     private var events: [LoopEvent] = []
     private var beats = 4.0
@@ -27,11 +50,23 @@ final class InlineRhythmView: NSView {
     private var beat = 0.0
     private var playing = false
     override var isFlipped: Bool { true }
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !muteButton.isHidden, muteButton.isEnabled else { return nil }
+        guard let superview else { return nil }
+        let localPoint = convert(point, from: superview)
+        let buttonPoint = muteButton.convert(localPoint, from: self)
+        return muteButton.bounds.contains(buttonPoint) ? muteButton : nil
+    }
 
-    func update(row: LoopRow, events: [LoopEvent], beats: Double, meter: Int, beat: Double, playing: Bool, visualization: PreparedControlVisualization? = nil) {
+    func update(row: LoopRow, events: [LoopEvent], beats: Double, meter: Int, beat: Double, playing: Bool,
+                trackID: Int? = nil, isMuted: Bool? = nil,
+                onToggleTrackMute: @escaping (Int) -> Void = { _ in },
+                visualization: PreparedControlVisualization? = nil) {
         self.visualization = visualization
         self.row = row
+        self.trackID = trackID
+        self.isMuted = isMuted
+        self.onToggleTrackMute = onToggleTrackMute
         self.events = events
         self.beats = beats
         self.meter = meter
@@ -50,16 +85,50 @@ final class InlineRhythmView: NSView {
         let names = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"]
         lowLabel.stringValue = notes.isEmpty ? "" : "\(names[low % 12])\(low / 12 - 1)"
         highLabel.stringValue = high == low ? "" : "\(names[high % 12])\(high / 12 - 1)"
+        let muteAvailable = trackID != nil && isMuted != nil
+        muteButton.isHidden = trackID == nil
+        muteButton.isEnabled = muteAvailable
+        if let isMuted, muteAvailable {
+            let symbol = isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill"
+            let label = isMuted ? "Unmute track \(row.label)" : "Mute track \(row.label)"
+            muteButton.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+            muteButton.contentTintColor = isMuted ? .systemOrange : .secondaryLabelColor
+            muteButton.toolTip = label
+            muteButton.setAccessibilityLabel(label)
+            muteButton.setAccessibilityValue(isMuted ? "Muted" : "Unmuted")
+            muteButton.setAccessibilityElement(true)
+        } else if trackID != nil {
+            muteButton.image = NSImage(systemSymbolName: "speaker.wave.2.fill", accessibilityDescription: "Mute unavailable")
+            muteButton.contentTintColor = .tertiaryLabelColor
+            muteButton.toolTip = "Mute unavailable for \(row.label)"
+            muteButton.setAccessibilityLabel("Mute unavailable for \(row.label)")
+            muteButton.setAccessibilityValue("Unavailable")
+            muteButton.setAccessibilityElement(true)
+        } else {
+            muteButton.image = nil
+            muteButton.toolTip = nil
+            muteButton.setAccessibilityElement(false)
+        }
         needsLayout = true
         setAccessibilityElement(true)
-        setAccessibilityRole(.image)
+        setAccessibilityRole(.group)
         setAccessibilityLabel("Inline rhythm, \(row.label), \(events.count) events, \(Int(beats)) beats")
         needsDisplay = true
     }
 
+    @objc private func toggleMute(_ sender: NSButton) {
+        guard sender === muteButton, let trackID, isMuted != nil, !muteButton.isHidden, muteButton.isEnabled else { return }
+        onToggleTrackMute(trackID)
+    }
+
     override func layout() {
         super.layout()
-        titleLabel.frame = CGRect(x: 12, y: 5, width: max(1, bounds.width - 24), height: 16)
+        let buttonWidth: CGFloat = 22
+        let buttonInset: CGFloat = 8
+        muteButton.frame = CGRect(x: buttonInset, y: 3,
+                                  width: buttonWidth, height: 20)
+        let titleLeading = muteButton.isHidden ? 12 : buttonWidth + buttonInset + 4
+        titleLabel.frame = CGRect(x: titleLeading, y: 5, width: max(1, bounds.width - titleLeading - 12), height: 16)
         let notes = events.compactMap(\.displayedMIDINote)
         let low = notes.min() ?? 0
         let high = notes.max() ?? low

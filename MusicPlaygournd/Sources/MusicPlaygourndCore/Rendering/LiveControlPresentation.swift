@@ -41,7 +41,7 @@ public struct LiveControlPresentation: Codable, Sendable, Hashable {
         case .pitchOffsetSemitones: unit = .semitones; range = -12...12
         case .cutoffHz, .lowPassCutoff: unit = .hertz; range = 20...20_000; scale = .logarithmic
         case .playbackRate: unit = .ratio; range = (40.0 / 120)...(240.0 / 120)
-        case .delayMix, .reverbMix: unit = .normalized; range = 0...1
+        case .delayMix, .reverbMix, .trackMute: unit = .normalized; range = 0...1
         }
         for value in values {
             guard value.isFinite else { throw LiveControlError.invalidCatalog("Nonfinite presentation endpoint") }

@@ -157,6 +157,7 @@ extension NativeHostTests {
 
         private static func completeValue(for parameter: LiveControlParameter) -> LiveControlValue {
             switch parameter {
+            case .trackMute: .number(1)
             case .gain, .trackLevel: .number(0.5)
             case .pan, .trackPan: .number(0.25)
             case .pitchOffsetSemitones: .number(1)

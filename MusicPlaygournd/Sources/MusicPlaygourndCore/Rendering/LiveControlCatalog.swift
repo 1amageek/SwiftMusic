@@ -48,7 +48,7 @@ public struct LiveControlCatalog: Codable, Sendable, Equatable, Hashable {
 
     internal init(sound: CompiledSound, revision: UInt64) throws {
         var descriptors: [LiveControlDescriptor] = []
-        descriptors.reserveCapacity(sound.sources.count * 4 + sound.renderNodes.count + sound.tracks.count * 2)
+        descriptors.reserveCapacity(sound.sources.count * 4 + sound.renderNodes.count + sound.tracks.count * 3)
 
         func address(_ target: LiveControlTarget, _ parameter: LiveControlParameter) -> LiveControlAddress {
             LiveControlAddress(revision: revision, target: target, parameter: parameter)
@@ -95,12 +95,14 @@ public struct LiveControlCatalog: Codable, Sendable, Equatable, Hashable {
 
         for track in sound.tracks {
             let target = LiveControlTarget.track(track.id)
+            descriptors.append(.init(address: address(target, .trackMute), label: track.name.isEmpty ? "Track \(track.id)" : track.name, baseline: .scalar(track.isMuted ? 1 : 0)))
             descriptors.append(.init(address: address(target, .trackLevel), label: "Track \(track.id) Level", baseline: .scalar(track.level)))
             descriptors.append(.init(address: address(target, .trackPan), label: "Track \(track.id) Pan",
                                      baseline: track.pan.map(LiveControlBaseline.scalar) ?? .bypassed))
         }
 
         descriptors = try descriptors.map { descriptor in
+            if descriptor.address.parameter == .trackMute { return descriptor }
             var values: [Double] = []
             if case .scalar(let value) = descriptor.baseline { values.append(value) }
             switch descriptor.address.target {

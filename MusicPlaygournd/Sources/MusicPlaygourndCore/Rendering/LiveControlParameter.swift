@@ -6,6 +6,7 @@ public enum LiveControlParameter: Codable, Sendable, Equatable, Hashable {
     case pitchOffsetSemitones
     case cutoffHz
     case trackLevel
+    case trackMute
     case trackPan
     case playbackRate
     case lowPassCutoff

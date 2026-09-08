@@ -241,7 +241,8 @@ public struct LoopRenderer: Sendable {
                 label: self.label(for: source.id, in: sound),
                 anchor: source.patternAnchor,
                 peaks: context.sourcePeakEnvelopes[index],
-                patternText: source.patternText
+                patternText: source.patternText,
+                trackID: sound.events.first(where: { $0.sourceID == source.id })?.trackID
             )
         }
 
@@ -942,7 +943,7 @@ private struct RenderContext {
                 }
             }
             if let pan { output.applyPan(pan) }
-            if track.isMuted || !audibleTracks[id] { output.mute() }
+            if (overlay?.trackMute[id] ?? track.isMuted) || !audibleTracks[id] { output.mute() }
             if captureTrackStems {
                 guard capturedStems[id] == nil else {
                     throw LoopRenderingError.invalidSound("Track stem boundary was captured twice.")
@@ -987,7 +988,7 @@ private struct RenderContext {
             guard audibleTracks[track] else { return 0 }
             var owner: Int? = track
             while let id = owner {
-                if sound.tracks[id].isMuted { return 0 }
+                if overlay?.trackMute[id] ?? sound.tracks[id].isMuted { return 0 }
                 owner = sound.tracks[id].parentID
             }
             return level

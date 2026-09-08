@@ -56,6 +56,17 @@ struct BusRoutingRenderingTests {
             return preLeft && preRight && postLeft && postRight
         }
         #expect(matches)
+        let live = try LoopRenderSession(sound: SoundCompiler().compile(
+            Routed(source: lead.send(to: "room", level: 1, placement: .preFader))),
+            bpm: 120, beatsPerBar: 4, revision: 1)
+        let mute = LiveControlAddress(revision: 1, target: .track(0), parameter: .trackMute)
+        #expect(live.baseline.samples.contains { $0 != 0 })
+        #expect(try live.render(overrides: [.init(address: mute, value: .number(1))]).samples.allSatisfy { $0 == 0 })
+        #expect(try live.render(overrides: [.init(address: mute, value: .number(0))]).samples == live.baseline.samples)
+        #expect(try live.render().samples == live.baseline.samples)
+        #expect(throws: LiveControlError.self) {
+            try live.render(overrides: [.init(address: mute, value: .number(0.5))])
+        }
         let muted = lead.trackMuted().send(to: "room", level: 1, placement: .preFader)
         #expect(try render(Routed(source: muted)).samples.allSatisfy { $0 == 0 })
         let parent = Track("parent") { lead.send(to: "room", level: 1, placement: .preFader) }.trackMuted()

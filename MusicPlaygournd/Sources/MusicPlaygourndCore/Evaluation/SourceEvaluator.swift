@@ -356,7 +356,7 @@ public actor SourceEvaluator {
             beatCount: loop.beatCount, samples: loop.samples, events: loop.events,
             rows: loop.rows.map { row in
                 LoopRow(sourceID: row.sourceID, label: row.label, anchor: row.anchor, peaks: row.peaks,
-                    patternText: row.patternText, resultLine: resultLines[row.sourceID])
+                    patternText: row.patternText, resultLine: resultLines[row.sourceID], trackID: row.trackID)
             }, meters: loop.meters)
         try located.validate()
         try Task.checkCancellation()
@@ -438,7 +438,7 @@ public actor SourceEvaluator {
             beatsPerBar: loop.beatsPerBar, beatCount: loop.beatCount, samples: loop.samples,
             events: loop.events, rows: loop.rows.map {
                 LoopRow(sourceID: $0.sourceID, label: $0.label, anchor: $0.anchor, peaks: $0.peaks,
-                        patternText: $0.patternText, resultLine: worker.resultLines[$0.sourceID])
+                        patternText: $0.patternText, resultLine: worker.resultLines[$0.sourceID], trackID: $0.trackID)
             }, meters: loop.meters)
         try located.validate()
         return located
@@ -572,7 +572,7 @@ public actor SourceEvaluator {
             beatsPerBar: loop.beatsPerBar, beatCount: loop.beatCount, samples: loop.samples,
             events: loop.events, rows: loop.rows.map { row in
                 LoopRow(sourceID: row.sourceID, label: row.label, anchor: row.anchor, peaks: row.peaks,
-                    patternText: row.patternText, resultLine: lines[row.sourceID])
+                    patternText: row.patternText, resultLine: lines[row.sourceID], trackID: row.trackID)
             }, meters: loop.meters)
         try result.validate()
         return result

@@ -6,6 +6,8 @@ struct RhythmView: View {
     let beatPosition: Double
     let isPlaying: Bool
     let revealTrack: (String) -> Void
+    var mutedTracks: [Int: Bool] = [:]
+    var onToggleTrackMute: (Int) -> Void = { _ in }
     private let colors: [Color] = [.mint, .orange, .purple, .cyan, .pink, .yellow]
 
     var body: some View {
@@ -21,7 +23,7 @@ struct RhythmView: View {
             if let loop {
                 let ids = Array(Set(loop.events.map(\.sourceID))).sorted()
                 HStack(spacing: 0) {
-                    Color.clear.frame(width: 84)
+                    Color.clear.frame(width: 122)
                     ForEach(0..<Int(ceil(loop.beatCount)), id: \.self) { beat in
                         Text(beat % loop.beatsPerBar == 0 ? "\(beat / loop.beatsPerBar + 1).1" : "\(beat % loop.beatsPerBar + 1)")
                             .font(.system(size: 10, design: .monospaced))
@@ -34,6 +36,11 @@ struct RhythmView: View {
                         let events = loop.events.filter { $0.sourceID == id }
                         let name = events.first?.label ?? "Source \(id + 1)"
                         HStack(spacing: 12) {
+                            if let track = loop.rows.first(where: { $0.sourceID == id })?.trackID {
+                                TrackMuteButton(name: name, muted: mutedTracks[track]) { onToggleTrackMute(track) }
+                            } else {
+                                Color.clear.frame(width: 26, height: 22)
+                            }
                             Button { revealTrack(name) } label: {
                                 Text(name).font(.system(size: 12, weight: .medium)).lineLimit(2)
                                     .foregroundStyle(colors[index % colors.count])

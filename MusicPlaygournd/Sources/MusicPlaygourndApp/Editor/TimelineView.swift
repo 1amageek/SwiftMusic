@@ -10,6 +10,8 @@ struct TimelineView: View {
     let beatPosition: Double
     let isPlaying: Bool
     let onScroll: (CGFloat) -> Void
+    var mutedTracks: [Int: Bool] = [:]
+    var onToggleTrackMute: (Int) -> Void = { _ in }
     private let colors: [Color] = [.mint, .cyan, .orange, .purple, .pink, .yellow]
 
     var body: some View {
@@ -32,7 +34,9 @@ struct TimelineView: View {
                             let color = colors[row.sourceID % colors.count]
                             let center = rect.midY
                             let height = max(8, rect.height - 4)
-                            context.draw(Text("\(line)").font(.system(size: 9, design: .monospaced)).foregroundColor(.secondary), at: CGPoint(x: 16, y: center))
+                            if row.trackID == nil {
+                                context.draw(Text("\(line)").font(.system(size: 9, design: .monospaced)).foregroundColor(.secondary), at: CGPoint(x: 16, y: center))
+                            }
                             for event in loop.events where event.sourceID == row.sourceID {
                                 event.forEachBeatRange(in: loop.beatCount) { range in
                                     let box = CGRect(x: inset + range.lowerBound * scale, y: center - height / 2,
@@ -82,6 +86,19 @@ struct TimelineView: View {
                     }.frame(width: geometry.size.width, height: geometry.size.height)
                 }
             }.clipped().overlay { TimelineScrollRelay(onScroll: onScroll) }
+                .overlay(alignment: .topLeading) {
+                    GeometryReader { geometry in
+                        if let loop {
+                            ForEach(loop.rows, id: \.sourceID) { row in
+                                if let track = row.trackID, let line = rowLines[row.sourceID],
+                                   let rect = lineRects[line], rect.maxY > 0, rect.minY < geometry.size.height {
+                                    TrackMuteButton(name: row.label, muted: mutedTracks[track]) { onToggleTrackMute(track) }
+                                        .position(x: 16, y: rect.midY)
+                                }
+                            }
+                        }
+                    }
+                }.clipped()
         }.background(Color(red: 0.055, green: 0.075, blue: 0.085))
     }
 }
