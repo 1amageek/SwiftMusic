@@ -5,17 +5,20 @@ import SwiftMusic
 public struct RenderWorkerPreparation: Sendable {
     public let session: LoopRenderSession
     public let metadata: EditorSemanticMetadata?
+    public let source: String?
     public let performanceControls: [PerformanceControlMetadata]
     public let performanceAdapter: (any RenderWorkerPerformanceAdapter)?
 
     public init(
         session: LoopRenderSession,
         metadata: EditorSemanticMetadata? = nil,
+        source: String? = nil,
         performanceControls: [PerformanceControlMetadata] = [],
         performanceAdapter: (any RenderWorkerPerformanceAdapter)? = nil
     ) {
         self.session = session
         self.metadata = metadata
+        self.source = source
         self.performanceControls = performanceControls
         self.performanceAdapter = performanceAdapter
     }

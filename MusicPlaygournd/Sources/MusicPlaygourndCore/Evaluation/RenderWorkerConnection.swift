@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import SwiftMusic
+import SwiftMusic
 
 /// Owns one child and bounded nonblocking pipes; the pump never blocks an actor executor.
 internal actor RenderWorkerConnection {
@@ -12,6 +13,9 @@ internal actor RenderWorkerConnection {
 
     private enum CommandKind: Equatable {
         case render
+        case renderPerformance
+        case adoptPerformance
+        case discardPerformance
         case export
         case cancelExport
         case visualize
@@ -41,6 +45,17 @@ internal actor RenderWorkerConnection {
     private var renderWaiter: CheckedContinuation<WorkerOperationResult, any Error>?
     private var exportWaiter: CheckedContinuation<WorkerOperationResult, any Error>?
     private var visualizationWaiter: CheckedContinuation<WorkerOperationResult, any Error>?
+    private var performanceWaiter: CheckedContinuation<RetainedEvaluation, any Error>?
+    private var performanceCommandWaiter: CheckedContinuation<Bool, any Error>?
+    private var pendingPerformance: (generation: UInt64, result: RetainedEvaluation)?
+    private var adoptedPerformanceGeneration: UInt64 = 0
+    private var latestPerformanceGeneration: UInt64 = 0
+    private var latestPerformanceOperationID: UInt64 = 0
+    private var performanceCommandOperationID: UInt64 = 0
+    private var performanceCommandGeneration: UInt64 = 0
+    private var performanceCommandKind: CommandKind?
+    private var performanceDeadline: ContinuousClock.Instant?
+    private var performanceCommandDeadline: ContinuousClock.Instant?
     private var readyWaiter: CheckedContinuation<RetainedEvaluation, any Error>?
     private var readyResult: RetainedEvaluation?
     private var failure: EvaluationError?
@@ -114,6 +129,9 @@ internal actor RenderWorkerConnection {
     }
 
     func render(overrides: [LiveControlOverride], generation: UInt64) async throws -> PreparedLoop {
+        while performanceWaiter != nil || performanceCommandWaiter != nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         try Task.checkCancellation()
         if let failure { throw failure }
         guard readyResult != nil, !stopping, !closing else { throw EvaluationError.invalidResult("Worker is unavailable.") }
@@ -143,6 +161,96 @@ internal actor RenderWorkerConnection {
             throw EvaluationError.invalidResult("Worker returned a stem export for a render request.")
         }
         return prepared.loop
+    }
+
+    func renderPerformance(values: [String: PerformanceControlValue],
+                           overrides: [LiveControlOverride], generation: UInt64) async throws -> RetainedEvaluation {
+        while renderWaiter != nil || performanceCommandWaiter != nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try Task.checkCancellation()
+        if let failure { throw failure }
+        guard let readyResult, isAvailable, let modelID = readyResult.performanceControls.first?.modelID else {
+            throw EvaluationError.invalidResult("This worker has no mapped performance controls.")
+        }
+        guard generation > latestPerformanceGeneration else {
+            throw EvaluationError.invalidResult("Performance generation is stale.")
+        }
+        guard values.count == readyResult.performanceControls.count,
+              overrides.count <= readyResult.catalog.descriptors.count else {
+            throw EvaluationError.invalidResult("Performance request exceeds its declared catalog.")
+        }
+        let checked = try readyResult.performanceControls.map { control in
+            guard let value = values[control.controlID] else {
+                throw PerformanceControlError.missingValue(control.controlID)
+            }
+            return PerformanceControlMetadata(modelID: control.modelID, controlID: control.controlID,
+                label: control.label, domain: control.domain, value: value)
+        }
+        try PerformanceControlMetadata.validate(checked)
+        let operationID = try allocateOperationID()
+        let frame = try RenderWorkerFraming.encode(RenderWorkerCommand.renderPerformance(
+            revision: revision, generation: generation, operationID: operationID,
+            modelID: modelID, values: values, overrides: overrides))
+        performanceWaiter?.resume(throwing: CancellationError())
+        performanceWaiter = nil
+        pendingPerformance = nil
+        latestPerformanceGeneration = generation
+        latestPerformanceOperationID = operationID
+        performanceDeadline = .now.advanced(by: .seconds(10))
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                performanceWaiter = continuation
+                enqueue(.renderPerformance, frame)
+            }
+        } onCancel: {
+            Task { await self.cancelPerformance(operationID: operationID) }
+        }
+    }
+
+    func adoptPerformance(generation: UInt64) async -> Bool {
+        guard isAvailable else { return false }
+        if generation > 0, generation == adoptedPerformanceGeneration { return true }
+        do { return try await performanceCommand(.adoptPerformance, generation: generation) }
+        catch {
+            await abort(.processFailed("Performance acknowledgement failed: \(error.localizedDescription)"))
+            return false
+        }
+    }
+
+    func discardPerformance(generation: UInt64) async {
+        guard isAvailable, generation == latestPerformanceGeneration else { return }
+        do { _ = try await performanceCommand(.discardPerformance, generation: generation) }
+        catch {
+            await abort(.processFailed("Performance discard failed: \(error.localizedDescription)"))
+        }
+    }
+
+    private func performanceCommand(_ kind: CommandKind, generation: UInt64) async throws -> Bool {
+        guard performanceCommandWaiter == nil else {
+            throw EvaluationError.invalidResult("A performance acknowledgement is already pending.")
+        }
+        let operationID = try allocateOperationID()
+        let command: RenderWorkerCommand = kind == .adoptPerformance
+            ? .adoptPerformance(revision: revision, generation: generation, operationID: operationID)
+            : .discardPerformance(revision: revision, generation: generation, operationID: operationID)
+        let frame = try RenderWorkerFraming.encode(command)
+        performanceCommandOperationID = operationID
+        performanceCommandGeneration = generation
+        performanceCommandKind = kind
+        performanceCommandDeadline = .now.advanced(by: .seconds(10))
+        // Adoption is a transaction: cancellation cannot abandon an ambiguous acknowledgement.
+        return try await withCheckedThrowingContinuation { continuation in
+            performanceCommandWaiter = continuation
+            enqueue(kind, frame)
+        }
+    }
+
+    private func cancelPerformance(operationID: UInt64) {
+        guard latestPerformanceOperationID == operationID else { return }
+        performanceWaiter?.resume(throwing: CancellationError())
+        performanceWaiter = nil
+        // Keep the watchdog until discard or the worker's terminal response arrives.
     }
 
     func exportStems(
@@ -312,6 +420,9 @@ internal actor RenderWorkerConnection {
 
     private func closeWorker() async {
         closing = true
+        performanceWaiter?.resume(throwing: CancellationError()); performanceWaiter = nil
+        performanceCommandWaiter?.resume(throwing: CancellationError()); performanceCommandWaiter = nil
+        pendingPerformance = nil
         renderWaiter?.resume(throwing: CancellationError()); renderWaiter = nil
         visualizationWaiter?.resume(throwing: CancellationError()); visualizationWaiter = nil
         readyWaiter?.resume(throwing: CancellationError()); readyWaiter = nil
@@ -355,6 +466,9 @@ internal actor RenderWorkerConnection {
 
     private func abort(_ error: EvaluationError) async {
         failure = error
+        performanceWaiter?.resume(throwing: error); performanceWaiter = nil
+        performanceCommandWaiter?.resume(throwing: error); performanceCommandWaiter = nil
+        pendingPerformance = nil
         renderWaiter?.resume(throwing: error); renderWaiter = nil
         exportWaiter?.resume(throwing: error); exportWaiter = nil
         visualizationWaiter?.resume(throwing: error); visualizationWaiter = nil
@@ -389,7 +503,7 @@ internal actor RenderWorkerConnection {
                 } else if errno != EAGAIN && errno != EINTR {
                     throw EvaluationError.processFailed("Worker protocol read failed.")
                 }
-                let deadlines = [readyDeadline, renderDeadline, exportDeadline, visualizationDeadline].compactMap { $0 }
+                let deadlines = [readyDeadline, renderDeadline, exportDeadline, visualizationDeadline, performanceDeadline, performanceCommandDeadline].compactMap { $0 }
                 if let deadline = deadlines.min(), ContinuousClock.now >= deadline {
                     throw EvaluationError.timedOut("Worker exceeded 10 seconds; the previous loop continues.")
                 }
@@ -483,6 +597,64 @@ internal actor RenderWorkerConnection {
             renderDeadline = nil
             renderWaiter = nil
             waiter.resume(returning: .loop(result))
+        case .performanceRendered(let responseRevision, let generation, let operationID, let catalog, let controls):
+            guard responseRevision == revision, operationID <= latestOperationID else {
+                throw EvaluationError.invalidResult("Invalid performance render identity.")
+            }
+            guard operationID == latestPerformanceOperationID else { return }
+            guard generation == latestPerformanceGeneration,
+                  catalog.descriptors.allSatisfy({ $0.address.revision == revision }) else {
+                throw EvaluationError.invalidResult("Invalid performance render catalog or generation.")
+            }
+            try PerformanceControlMetadata.validate(controls)
+            performanceDeadline = nil
+            guard let waiter = performanceWaiter else { return }
+            let result = try readResult(generation: generation)
+            let prepared = RetainedEvaluation(loop: result.loop, catalog: catalog,
+                metadata: result.metadata, performanceControls: controls)
+            pendingPerformance = (generation, prepared)
+            performanceWaiter = nil
+            waiter.resume(returning: prepared)
+        case .performanceAdopted(let responseRevision, let generation, let operationID, let accepted):
+            guard responseRevision == revision, operationID == performanceCommandOperationID,
+                  generation == performanceCommandGeneration, performanceCommandKind == .adoptPerformance else {
+                throw EvaluationError.invalidResult("Invalid performance adoption acknowledgement.")
+            }
+            if accepted {
+                guard let pendingPerformance, pendingPerformance.generation == generation else {
+                    throw EvaluationError.invalidResult("Worker adopted an unknown performance candidate.")
+                }
+                readyResult = pendingPerformance.result
+                adoptedPerformanceGeneration = generation
+            }
+            pendingPerformance = nil
+            performanceCommandDeadline = nil
+            performanceCommandWaiter?.resume(returning: accepted); performanceCommandWaiter = nil
+        case .performanceDiscarded(let responseRevision, let generation, let operationID):
+            guard responseRevision == revision, operationID == performanceCommandOperationID,
+                  generation == performanceCommandGeneration, performanceCommandKind == .discardPerformance else {
+                throw EvaluationError.invalidResult("Invalid performance discard acknowledgement.")
+            }
+            if pendingPerformance?.generation == generation { pendingPerformance = nil }
+            if latestPerformanceGeneration == generation { performanceDeadline = nil }
+            performanceCommandDeadline = nil
+            performanceCommandWaiter?.resume(returning: true); performanceCommandWaiter = nil
+        case .performanceFailed(let responseRevision, let generation, let operationID, let diagnostic):
+            guard responseRevision == revision, diagnostic.revision == revision, operationID <= latestOperationID else {
+                throw EvaluationError.invalidResult("Invalid performance compiler diagnostic identity.")
+            }
+            guard operationID == latestPerformanceOperationID else { return }
+            guard generation == latestPerformanceGeneration,
+                  (1...65_536).contains(diagnostic.line), (1...65_536).contains(diagnostic.column),
+                  diagnostic.fileID.utf8.count <= 256,
+                  diagnostic.patternText?.utf8.count ?? 0 <= 65_536,
+                  diagnostic.utf8Offset.map({ (0...65_536).contains($0) }) ?? true else {
+                throw EvaluationError.invalidResult("Invalid performance compiler diagnostic provenance.")
+            }
+            _ = try diagnostic.encodedStderrLine()
+            performanceDeadline = nil
+            performanceWaiter?.resume(throwing: EvaluationError.workerCompilerDiagnostic(diagnostic))
+            performanceWaiter = nil
         case .stemsExported(let snapshot, let operationID):
             guard snapshot.revision == revision, operationID <= latestOperationID else {
                 throw EvaluationError.invalidResult("Invalid worker stem export identity.")
@@ -526,7 +698,13 @@ internal actor RenderWorkerConnection {
             guard responseRevision == revision, operationID <= latestOperationID else {
                 throw EvaluationError.invalidResult("Invalid worker failure identity.")
             }
-            if operationID == latestRenderOperationID {
+            if operationID == latestPerformanceOperationID {
+                performanceDeadline = nil
+                performanceWaiter?.resume(throwing: EvaluationError.invalidResult(message)); performanceWaiter = nil
+            } else if operationID == performanceCommandOperationID {
+                performanceCommandDeadline = nil
+                performanceCommandWaiter?.resume(throwing: EvaluationError.processFailed(message)); performanceCommandWaiter = nil
+            } else if operationID == latestRenderOperationID {
                 renderDeadline = nil
                 renderWaiter?.resume(throwing: EvaluationError.processFailed(message)); renderWaiter = nil
             } else if operationID == latestExportOperationID {
@@ -548,6 +726,8 @@ internal actor RenderWorkerConnection {
             readyDeadline = nil
             renderDeadline = nil
             exportDeadline = nil
+            performanceDeadline = nil
+            performanceCommandDeadline = nil
         }
     }
 

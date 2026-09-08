@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import SwiftMusic
 
 /// Evaluates trusted local Swift in a cancellable child process, outside the audio path.
 public actor SourceEvaluator {
@@ -11,8 +12,23 @@ public actor SourceEvaluator {
         let revision: UInt64
         let connection: RenderWorkerConnection
         let directory: URL
-        let resultLines: [Int: Int]
+        var resultLines: [Int: Int]
+        let source: String
+        let ast: Data
+        let prefixBytes: Int
+        var performanceControls: [PerformanceControlMetadata]
+        var performanceGenerationOffset: UInt64 = 0
+        var confirmedPerformanceGeneration: UInt64 = 0
+        var latestPerformanceGeneration: UInt64 = 0
+        var pendingPerformance: PerformanceCandidate?
     }
+    private struct PerformanceCandidate {
+        let generation: UInt64
+        let evaluation: RetainedEvaluation
+        var adoptionRequested = false
+        var acknowledged = false
+    }
+    private var audiblePerformanceControls: [PerformanceControlMetadata] = []
     private var adopted: Worker?
     private var candidate: Worker?
     private var exportingWorker: Worker?
@@ -187,7 +203,23 @@ public actor SourceEvaluator {
             executable: URL(fileURLWithPath: binaryPath).appending(path: "Evaluation"),
             outputURL: output, revision: revision)
         do {
-        let initial = try await connection.ready()
+        var initial = try await connection.ready()
+        var performanceGenerationOffset: UInt64 = 0
+        var transferIssue: PerformanceControlError?
+        let acceptedControls = audiblePerformanceControls
+        if !acceptedControls.isEmpty {
+            if Self.samePerformanceSchema(acceptedControls, initial.performanceControls) {
+                initial = try await connection.renderPerformance(
+                    values: Dictionary(uniqueKeysWithValues: acceptedControls.map { ($0.controlID, $0.value) }),
+                    overrides: [], generation: 1)
+                guard await connection.adoptPerformance(generation: 1) else {
+                    throw EvaluationError.invalidResult("The candidate worker did not accept transferred performance values.")
+                }
+                performanceGenerationOffset = 1
+            } else {
+                transferIssue = .invalidMapping("The edited performance schema differs; source-declared initial values are used.")
+            }
+        }
         let loop = initial.loop
         let prefix = "import Foundation\nimport SwiftMusic\nimport MusicPlaygourndCore\n"
         let displaySource = workspace.appending(path: "ResultLocations.swift")
@@ -226,12 +258,16 @@ public actor SourceEvaluator {
         try located.validate()
         try Task.checkCancellation()
         candidate = Worker(revision: revision, connection: connection,
-                           directory: workerDirectory, resultLines: resultLines)
+                           directory: workerDirectory, resultLines: resultLines, source: source,
+                           ast: Data(ast.utf8), prefixBytes: prefix.utf8.count,
+                           performanceControls: initial.performanceControls,
+                           performanceGenerationOffset: performanceGenerationOffset)
         return RetainedEvaluation(
             loop: located,
             catalog: initial.catalog,
             metadata: initial.metadata,
-            performanceControls: initial.performanceControls
+            performanceControls: initial.performanceControls,
+            performanceTransferIssue: transferIssue
         )
         } catch let error as EvaluationError {
             await connection.shutdown()
@@ -260,6 +296,7 @@ public actor SourceEvaluator {
         guard candidate?.revision == revision else { return false }
         let previous = adopted
         adopted = next
+        audiblePerformanceControls = next.performanceControls
         candidate = nil
         if let previous {
             if exportingWorker?.revision == previous.revision {
@@ -302,6 +339,140 @@ public actor SourceEvaluator {
             }, meters: loop.meters)
         try located.validate()
         return located
+    }
+
+    /// Prepares a complete model value set without accepting it for playback or hot edits.
+    public func renderPerformance(
+        values: [String: PerformanceControlValue],
+        overrides: [LiveControlOverride] = [],
+        revision: UInt64,
+        generation: UInt64
+    ) async throws -> RetainedEvaluation {
+        try Task.checkCancellation()
+        guard let worker = adopted, worker.revision == revision else {
+            throw EvaluationError.invalidResult("Performance revision is not adopted.")
+        }
+        guard worker.pendingPerformance?.adoptionRequested != true else {
+            throw EvaluationError.invalidResult("Performance adoption is awaiting audible confirmation.")
+        }
+        guard generation > worker.latestPerformanceGeneration else {
+            throw EvaluationError.invalidResult("Performance generation is stale.")
+        }
+        let wire = try Self.wireGeneration(generation, in: worker)
+        adopted?.latestPerformanceGeneration = generation
+        adopted?.pendingPerformance = nil
+        do {
+            if let previous = worker.pendingPerformance {
+                await worker.connection.discardPerformance(generation: try Self.wireGeneration(previous.generation, in: worker))
+            }
+            try Task.checkCancellation()
+            guard adopted?.revision == revision, adopted?.latestPerformanceGeneration == generation else {
+                throw CancellationError()
+            }
+            let result = try await worker.connection.renderPerformance(
+                values: values, overrides: overrides, generation: wire)
+            try Task.checkCancellation()
+            guard adopted?.revision == revision,
+                  adopted?.latestPerformanceGeneration == generation else { throw CancellationError() }
+            let located = try Self.locate(result.loop, in: worker)
+            let prepared = RetainedEvaluation(loop: located, catalog: result.catalog,
+                metadata: result.metadata, performanceControls: result.performanceControls)
+            adopted?.pendingPerformance = PerformanceCandidate(generation: generation, evaluation: prepared)
+            return prepared
+        } catch {
+            if let wire = Self.checkedWireGeneration(generation, in: worker) {
+                await worker.connection.discardPerformance(generation: wire)
+            }
+            if case EvaluationError.workerCompilerDiagnostic(let diagnostic) = error {
+                let range = try ExpressionResultLocations.diagnosticRange(source: worker.source, diagnostic: diagnostic)
+                throw EvaluationError.compilerDiagnostic(message: diagnostic.message, range: range)
+            }
+            throw error
+        }
+    }
+
+    /// Acknowledges an admitted candidate. The host confirms it after the audio fade completes.
+    @discardableResult
+    public func adoptPerformance(revision: UInt64, generation: UInt64) async -> Bool {
+        guard let worker = adopted, worker.revision == revision else { return false }
+        if worker.confirmedPerformanceGeneration == generation, generation > 0 { return true }
+        guard let pending = worker.pendingPerformance, pending.generation == generation else { return false }
+        if pending.acknowledged { return true }
+        guard !pending.adoptionRequested else { return false }
+        adopted?.pendingPerformance?.adoptionRequested = true
+        guard let wire = Self.checkedWireGeneration(generation, in: worker) else { return false }
+        let accepted = await worker.connection.adoptPerformance(generation: wire)
+        guard adopted?.revision == revision,
+              adopted?.pendingPerformance?.generation == generation else { return false }
+        if accepted {
+            adopted?.pendingPerformance?.acknowledged = true
+            adopted?.resultLines = Dictionary(uniqueKeysWithValues: pending.evaluation.loop.rows.compactMap { row in
+                row.resultLine.map { (row.sourceID, $0) }
+            })
+        }
+        else { adopted?.pendingPerformance = nil }
+        return accepted
+    }
+
+    /// Releases an unacknowledged candidate. An active handshake must finish first.
+    public func discardPerformance(revision: UInt64, generation: UInt64) async {
+        guard let worker = adopted, worker.revision == revision,
+              worker.pendingPerformance?.generation == generation,
+              worker.pendingPerformance?.adoptionRequested != true else { return }
+        adopted?.pendingPerformance = nil
+        if let wire = Self.checkedWireGeneration(generation, in: worker) {
+            await worker.connection.discardPerformance(generation: wire)
+        }
+    }
+
+    /// Confirms the generation reported as fully audible by PlaybackSnapshot.
+    @discardableResult
+    public func confirmPerformance(revision: UInt64, generation: UInt64) -> Bool {
+        guard let worker = adopted, worker.revision == revision else { return false }
+        if worker.confirmedPerformanceGeneration == generation, generation > 0 { return true }
+        guard let pending = worker.pendingPerformance, pending.generation == generation,
+              pending.acknowledged else { return false }
+        audiblePerformanceControls = pending.evaluation.performanceControls
+        adopted?.performanceControls = pending.evaluation.performanceControls
+        adopted?.confirmedPerformanceGeneration = generation
+        adopted?.pendingPerformance = nil
+        return true
+    }
+
+    private static func checkedWireGeneration(_ generation: UInt64, in worker: Worker) -> UInt64? {
+        let (wire, overflow) = generation.addingReportingOverflow(worker.performanceGenerationOffset)
+        return overflow ? nil : wire
+    }
+
+    private static func wireGeneration(_ generation: UInt64, in worker: Worker) throws -> UInt64 {
+        guard let wire = checkedWireGeneration(generation, in: worker) else {
+            throw EvaluationError.invalidResult("Performance generation limit reached.")
+        }
+        return wire
+    }
+
+    private static func samePerformanceSchema(
+        _ lhs: [PerformanceControlMetadata], _ rhs: [PerformanceControlMetadata]
+    ) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        let other = Dictionary(uniqueKeysWithValues: rhs.map { ($0.controlID, $0) })
+        return lhs.allSatisfy { control in
+            guard let value = other[control.controlID] else { return false }
+            return control.modelID == value.modelID && control.domain == value.domain
+        }
+    }
+
+    private static func locate(_ loop: PreparedLoop, in worker: Worker) throws -> PreparedLoop {
+        let lines = try ExpressionResultLocations.lines(ast: worker.ast, source: worker.source,
+            prefixBytes: worker.prefixBytes, rows: loop.rows)
+        let result = PreparedLoop(sampleRate: loop.sampleRate, bpm: loop.bpm,
+            beatsPerBar: loop.beatsPerBar, beatCount: loop.beatCount, samples: loop.samples,
+            events: loop.events, rows: loop.rows.map { row in
+                LoopRow(sourceID: row.sourceID, label: row.label, anchor: row.anchor, peaks: row.peaks,
+                    patternText: row.patternText, resultLine: lines[row.sourceID])
+            }, meters: loop.meters)
+        try result.validate()
+        return result
     }
 
     /// Samples one selected control through the retained worker without changing PCM or render generation.
@@ -385,6 +556,7 @@ public actor SourceEvaluator {
             workers.append(worker)
         }
         adopted = nil
+        audiblePerformanceControls = []
         candidate = nil
         exportingWorker = nil
         retiredExportWorker = nil

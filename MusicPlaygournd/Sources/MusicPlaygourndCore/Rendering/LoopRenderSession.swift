@@ -92,6 +92,69 @@ public struct LoopRenderSession: Sendable {
             descriptor: descriptor, overlay: overlay)
     }
 
+    /// Numeric control addresses are reusable only when their compiled owners are unchanged.
+    func validateControlIdentity(comparedTo previous: LoopRenderSession) throws {
+        func mismatch() -> PerformanceControlError {
+            .invalidMapping("Performance graph identity changed; release score overrides before retrying.")
+        }
+        guard sound.sources.count == previous.sound.sources.count,
+              sound.tracks.count == previous.sound.tracks.count,
+              sound.renderNodes.count == previous.sound.renderNodes.count,
+              sound.rootNodeIDs == previous.sound.rootNodeIDs,
+              catalog.descriptors.count == previous.catalog.descriptors.count else { throw mismatch() }
+        var anchors = Set<SoundSourceAnchor>()
+        for (current, old) in zip(sound.sources, previous.sound.sources) {
+            guard current.id == old.id, let anchor = current.patternAnchor,
+                  anchor == old.patternAnchor, anchors.insert(anchor).inserted else { throw mismatch() }
+        }
+        for (current, old) in zip(sound.tracks, previous.sound.tracks) {
+            guard current.id == old.id, current.name == old.name, current.parentID == old.parentID,
+                  current.renderNodeID == old.renderNodeID else { throw mismatch() }
+        }
+        for (current, old) in zip(catalog.descriptors, previous.catalog.descriptors) {
+            guard current.address == old.address else { throw mismatch() }
+        }
+        for (current, old) in zip(sound.renderNodes, previous.sound.renderNodes) {
+            guard Self.sameNodeIdentity(current, old) else { throw mismatch() }
+        }
+    }
+
+    private static func sameNodeIdentity(_ lhs: CompiledRenderNode, _ rhs: CompiledRenderNode) -> Bool {
+        switch (lhs, rhs) {
+        case let (.source(a), .source(b)): return a == b
+        case let (.mix(a), .mix(b)): return a == b
+        case let (.effect(a, effectA), .effect(b, effectB)):
+            return a == b && sameEffectIdentity(effectA, effectB)
+        case let (.sidechainEffect(a, sideA, _), .sidechainEffect(b, sideB, _)):
+            return a == b && sideA == sideB
+        case let (.gain(a, _), .gain(b, _)), let (.gainAutomation(a, _), .gainAutomation(b, _)),
+             let (.pan(a, _), .pan(b, _)), let (.panAutomation(a, _), .panAutomation(b, _)),
+             let (.mute(a), .mute(b)):
+            return a == b
+        case let (.track(a, trackA), .track(b, trackB)): return a == b && trackA == trackB
+        case let (.send(a, busA, _), .send(b, busB, _)), let (.output(a, busA), .output(b, busB)):
+            return a == b && busA == busB
+        case let (.trackSend(a, busA, _, trackA, placementA), .trackSend(b, busB, _, trackB, placementB)):
+            return a == b && busA == busB && trackA == trackB && placementA == placementB
+        case let (.busReturn(busA, inputsA), .busReturn(busB, inputsB)):
+            return busA == busB && inputsA == inputsB
+        case let (.eventDuck(a, rulesA), .eventDuck(b, rulesB)): return a == b && rulesA == rulesB
+        default: return false
+        }
+    }
+
+    private static func sameEffectIdentity(_ lhs: AudioEffect, _ rhs: AudioEffect) -> Bool {
+        switch (lhs, rhs) {
+        case let (.filter(kindA, _, _), .filter(kindB, _, _)): return kindA == kindB
+        case (.equalizer, .equalizer), (.compressor, .compressor),
+             (.sidechainCompressor, .sidechainCompressor), (.noiseGate, .noiseGate),
+             (.limiter, .limiter), (.saturation, .saturation), (.distortion, .distortion),
+             (.delay, .delay), (.reverb, .reverb), (.chorus, .chorus),
+             (.flanger, .flanger), (.phaser, .phaser), (.stereoWidth, .stereoWidth): return true
+        default: return false
+        }
+    }
+
     private func makeOverlay(_ overrides: [LiveControlOverride]) throws -> RenderControlOverlay? {
         guard !overrides.isEmpty else { return nil }
         let overlay = try RenderControlOverlay.make(

@@ -1,8 +1,19 @@
 import Foundation
+import SwiftMusic
 
 /// Commands accepted by a retained evaluation worker.
 public enum RenderWorkerCommand: Codable, Sendable, Equatable {
     case render(revision: UInt64, generation: UInt64, operationID: UInt64, overrides: [LiveControlOverride])
+    case renderPerformance(
+        revision: UInt64,
+        generation: UInt64,
+        operationID: UInt64,
+        modelID: String,
+        values: [String: PerformanceControlValue],
+        overrides: [LiveControlOverride]
+    )
+    case adoptPerformance(revision: UInt64, generation: UInt64, operationID: UInt64)
+    case discardPerformance(revision: UInt64, generation: UInt64, operationID: UInt64)
     case exportStems(revision: UInt64, generation: UInt64, operationID: UInt64, overrides: [LiveControlOverride], destination: URL)
     case visualize(revision: UInt64, selectionGeneration: UInt64, operationID: UInt64,
                    address: LiveControlAddress, overrides: [LiveControlOverride])

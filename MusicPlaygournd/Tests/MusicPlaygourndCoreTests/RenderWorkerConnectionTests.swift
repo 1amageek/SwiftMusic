@@ -266,12 +266,54 @@ struct RenderWorkerConnectionTests {
         try fixture.remove()
     }
 
+    @Test(.timeLimit(.minutes(1)), arguments: ["cancel", "timeout", "badAck"])
+    func performanceProtocolCancellationAndFatalBoundaries(mode: String) async throws {
+        let fixture = try makeFixture(mode: mode == "cancel" ? .performanceCancelled
+            : mode == "timeout" ? .performanceUnresponsive : .performanceBadAck)
+        let connection = try RenderWorkerConnection(executable: fixture.executable,
+            outputURL: fixture.workspace.appending(path: "prepared.plist"), revision: 21)
+        let pid = try await fixture.pid()
+        do {
+            _ = try await connection.ready()
+            let render = Task {
+                try await connection.renderPerformance(values: ["gain": .double(0.7)], overrides: [], generation: 1)
+            }
+            try await fixture.waitForMarker("performance.read")
+            if mode == "cancel" {
+                render.cancel()
+                do { _ = try await render.value; Issue.record("Cancelled performance render succeeded") }
+                catch is CancellationError { }
+                await connection.discardPerformance(generation: 1)
+                #expect(await connection.isAvailable)
+                try await fixture.waitForMarker("discard.read")
+            } else if mode == "timeout" {
+                do { _ = try await render.value; Issue.record("Unresponsive performance render succeeded") }
+                catch EvaluationError.timedOut { }
+                #expect(await connection.isAvailable == false)
+            } else {
+                _ = try await render.value
+                #expect(await connection.adoptPerformance(generation: 1) == false)
+                #expect(await connection.isAvailable == false)
+            }
+            await connection.shutdown()
+            try await fixture.waitUntilGone(pid)
+            try fixture.remove()
+        } catch {
+            await connection.shutdown()
+            try fixture.remove()
+            throw error
+        }
+    }
+
     private enum FixtureMode: String {
         case malformed
         case delayedLatest
         case exportCancellation
         case malformedManifest
         case malformedPerformanceMetadata
+        case performanceCancelled
+        case performanceUnresponsive
+        case performanceBadAck
         case truncated
         case unresponsive
         case shutdownAware
@@ -457,6 +499,61 @@ struct RenderWorkerConnectionTests {
             sys.stdout.buffer.write(open(root + "/malformed.frame", "rb").read())
             sys.stdout.buffer.flush()
             read_frame()
+            """
+        case .performanceCancelled, .performanceUnresponsive, .performanceBadAck:
+            let loop = PreparedLoop(sampleRate: 44_100, bpm: 120, beatsPerBar: 4, beatCount: 4,
+                samples: [Float](repeating: 0, count: 176_400), events: [])
+            let catalog = try LiveControlCatalog(descriptors: [])
+            let controls = [PerformanceControlMetadata(modelID: "model", controlID: "gain", label: "Gain",
+                domain: .double(range: 0...1, role: .scalar), value: .double(0.7))]
+            let encoder = PropertyListEncoder()
+            encoder.outputFormat = .binary
+            try encoder.encode(WorkerPreparedResult(revision: 21, generation: 0, loop: loop))
+                .write(to: workspace.appending(path: "prepared.plist"))
+            try encoder.encode(WorkerPreparedResult(revision: 21, generation: 1, loop: loop))
+                .write(to: workspace.appending(path: "candidate.plist"))
+            let responses: [(String, RenderWorkerResponse)] = [
+                ("ready", .ready(revision: 21, catalog: catalog, performanceControls: controls)),
+                ("render", .performanceRendered(revision: 21, generation: 1, operationID: 1,
+                    catalog: catalog, performanceControls: controls)),
+                ("discard", .performanceDiscarded(revision: 21, generation: 1, operationID: 2)),
+                ("badAck", .performanceAdopted(revision: 21, generation: 2, operationID: 2, accepted: true)),
+                ("shutdown", .shutdownComplete)
+            ]
+            for (name, response) in responses {
+                try RenderWorkerFraming.encode(response).write(to: workspace.appending(path: name + ".frame"))
+            }
+            script = """
+            #!/usr/bin/env python3
+            import os, sys, struct, time
+            root = \(pythonLiteral(workspace.path))
+            mode = \(pythonLiteral(mode.rawValue))
+            \(pidWrite)
+            def read_frame():
+                header = sys.stdin.buffer.read(4)
+                if len(header) != 4: sys.exit(1)
+                size = struct.unpack(">I", header)[0]
+                if len(sys.stdin.buffer.read(size)) != size: sys.exit(1)
+            def send(name):
+                sys.stdout.buffer.write(open(root + "/" + name + ".frame", "rb").read())
+                sys.stdout.buffer.flush()
+            send("ready")
+            read_frame()
+            open(root + "/performance.read", "w").close()
+            if mode == "performanceUnresponsive":
+                time.sleep(60)
+            elif mode == "performanceCancelled":
+                read_frame()
+                open(root + "/discard.read", "w").close()
+                send("discard")
+                read_frame()
+                send("shutdown")
+            else:
+                os.replace(root + "/candidate.plist", root + "/prepared.plist")
+                send("render")
+                read_frame()
+                send("badAck")
+                time.sleep(60)
             """
         case .malformedPerformanceMetadata:
             let loop = PreparedLoop(sampleRate: 44_100, bpm: 120, beatsPerBar: 4, beatCount: 4,

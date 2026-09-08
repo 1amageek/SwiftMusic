@@ -90,6 +90,7 @@ public final class PerformanceWorkerAdapter<Base: Music, Model: AnyObject & Obse
         return RenderWorkerPreparation(
             session: session,
             metadata: semanticMetadata,
+            source: source,
             performanceControls: metadata,
             performanceAdapter: self
         )

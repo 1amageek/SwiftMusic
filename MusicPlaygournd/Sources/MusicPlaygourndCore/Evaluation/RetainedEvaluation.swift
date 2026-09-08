@@ -6,16 +6,19 @@ public struct RetainedEvaluation: Sendable {
     public let catalog: LiveControlCatalog
     public let metadata: EditorSemanticMetadata
     public let performanceControls: [PerformanceControlMetadata]
+    public let performanceTransferIssue: PerformanceControlError?
 
     public init(
         loop: PreparedLoop,
         catalog: LiveControlCatalog,
         metadata: EditorSemanticMetadata? = nil,
-        performanceControls: [PerformanceControlMetadata] = []
+        performanceControls: [PerformanceControlMetadata] = [],
+        performanceTransferIssue: PerformanceControlError? = nil
     ) {
         self.loop = loop
         self.catalog = catalog
         self.performanceControls = performanceControls
+        self.performanceTransferIssue = performanceTransferIssue
         if let metadata {
             self.metadata = metadata
         } else {

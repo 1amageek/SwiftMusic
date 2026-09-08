@@ -18,6 +18,21 @@ public enum RenderWorkerResponse: Codable, Sendable, Equatable {
     case ready(revision: UInt64, catalog: LiveControlCatalog,
                performanceControls: [PerformanceControlMetadata])
     case rendered(revision: UInt64, generation: UInt64, operationID: UInt64)
+    case performanceRendered(
+        revision: UInt64,
+        generation: UInt64,
+        operationID: UInt64,
+        catalog: LiveControlCatalog,
+        performanceControls: [PerformanceControlMetadata]
+    )
+    case performanceFailed(
+        revision: UInt64,
+        generation: UInt64,
+        operationID: UInt64,
+        diagnostic: WorkerCompilerDiagnostic
+    )
+    case performanceAdopted(revision: UInt64, generation: UInt64, operationID: UInt64, accepted: Bool)
+    case performanceDiscarded(revision: UInt64, generation: UInt64, operationID: UInt64)
     case stemsExported(snapshot: StemExportSnapshot, operationID: UInt64)
     case visualized(revision: UInt64, selectionGeneration: UInt64, operationID: UInt64,
                     visualization: PreparedControlVisualization)
