@@ -94,11 +94,14 @@ extension NativeHostTests {
                         .effect(.flanger(rateHz: 0.5, delaySeconds: 0.005, depthSeconds: 0.001, feedback: 0.2, wet: 0.1))
                         .effect(.phaser(rateHz: 0.5, minimumHz: 100, maximumHz: 2_000, stages: 2, feedback: 0.1, wet: 0.1))
                         .effect(.stereoWidth(0.8))
+                        .gain(0.9)
                 }
             }
             """
             do {
-                let loop = try await evaluator.evaluate(source: source, bpm: 120, beatsPerBar: 4)
+                let evaluated = try await evaluator.evaluateRetained(source: source, bpm: 120, beatsPerBar: 4, revision: 51)
+                #expect(await evaluator.adopt(revision: 51))
+                let loop = evaluated.loop
                 #expect(loop.events.count == 16)
                 #expect(loop.beatCount == 8)
                 #expect(loop.events.map(\.startBeat) == [0, 0.25, 1.25, 1.5, 2, 2.25, 3.25, 3.5, 4, 4.25, 5.25, 5.5, 6, 6.25, 7.25, 7.5])
@@ -129,6 +132,38 @@ extension NativeHostTests {
                 #expect(engine.snapshot().isPlaying)
                 #expect(engine.outputMeter().interleavedSamples.allSatisfy { $0.isFinite })
                 #expect(engine.outputMeter().interleavedSamples.contains { abs($0) > 0.0001 })
+                let catalog = evaluated.catalog.descriptors
+                let sourceGain = try #require(catalog.first { $0.address.target == .source(0) && $0.address.parameter == .gain }?.address)
+                let cutoff = try #require(catalog.first { $0.address.target == .source(0) && $0.address.parameter == .cutoffHz }?.address)
+                let track = try #require(catalog.first { $0.address.parameter == .trackLevel }?.address)
+                let subtree = try #require(catalog.first {
+                    if case .renderNode = $0.address.target { return $0.address.parameter == .gain }
+                    return false
+                }?.address)
+                let controlled = try await evaluator.render(overrides: [
+                    .init(address: sourceGain, value: .number(0.5)),
+                    .init(address: cutoff, value: .number(2_000)),
+                    .init(address: track, value: .number(0.6)),
+                    .init(address: subtree, value: .number(0.2))
+                ], revision: 51, generation: 1)
+                var difference: Float = 0
+                for (a, b) in zip(controlled.samples, loop.samples) { difference = max(difference, abs(a - b)) }
+                #expect(difference > 0.001)
+                let controlledIsFinite = controlled.samples.allSatisfy { $0.isFinite }
+                #expect(controlledIsFinite)
+                #expect(controlled.rows.map(\.resultLine) == loop.rows.map(\.resultLine))
+                try engine.replace(loop: controlled, revision: 51, generation: 1)
+                try await Task.sleep(for: .milliseconds(80))
+                #expect(engine.snapshot().overrideGeneration == 1)
+                #expect(engine.snapshot().revision == 51)
+                #expect(engine.outputMeter().interleavedSamples.contains { abs($0) > 0.0001 })
+                let released = try await evaluator.render(overrides: [], revision: 51, generation: 2)
+                let restoresBaseline = released == loop
+                #expect(restoresBaseline)
+                try engine.replace(loop: released, revision: 51, generation: 2)
+                try await Task.sleep(for: .milliseconds(80))
+                #expect(engine.snapshot().overrideGeneration == 2)
+                #expect(engine.snapshot().isPlaying)
                 engine.beginUpdate(revision: 52)
                 do {
                     _ = try await evaluator.evaluate(source: source.replacingOccurrences(of: url.path,
