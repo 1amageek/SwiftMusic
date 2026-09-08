@@ -1,7 +1,7 @@
 # MusicPlaygourndCore
 
 ## Purpose and Scope
-Runtime module. Parent: [Package](../../DESIGN.md). Children: [Rendering](Rendering/DESIGN.md), [Playback](Playback/DESIGN.md), [Evaluation](Evaluation/DESIGN.md).
+Runtime module. Parent: [Package](../../DESIGN.md). Children: [Rendering](Rendering/DESIGN.md), [Playback](Playback/DESIGN.md), [Evaluation](Evaluation/DESIGN.md), [MIDI](MIDI/DESIGN.md), [Audio Units](AudioUnits/DESIGN.md).
 
 ## Responsibilities and Boundaries
 Owns immutable prepared PCM, resource validation, evaluation and semantic-completion process lifetimes, synchronized playback, live master processing, and bounded post-FX sample snapshots. SwiftMusic owns musical event transformation. App owns UI and documents.
@@ -13,6 +13,9 @@ Use the parent/child links above. Dependencies: SwiftMusic owns event semantics;
 ```text
 Swift source -> SourceKit-LSP semantic completion
 SwiftMusic.CompiledSound -> LoopRenderer -> PreparedLoop -> AudioLoopEngine -> master FX -> post-FX samples
+                                                  |             -> PlaybackClockAnchor
+                                                  +-> MIDI loop events/clock -> CoreMIDI
+AudioUnitComponentManager -> selected effect -> post-master Audio Unit slot -> post-FX tap
 ```
 
 ## Contracts and Invariants

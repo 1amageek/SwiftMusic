@@ -48,8 +48,11 @@ public final class AudioLoopEngine {
         reverb.loadFactoryPreset(.mediumRoom)
         reverb.wetDryMix = 0
 
-        let sourceNode = AVAudioSourceNode(format: format) { @Sendable [transport] isSilence, _, frameCount, audioBufferList in
-            let status = transport.render(frameCount: Int(frameCount), audioBufferList: audioBufferList)
+        let sourceNode = AVAudioSourceNode(format: format) { @Sendable [transport] isSilence, timestamp, frameCount, audioBufferList in
+            let hostTime = timestamp.pointee.mFlags.contains(.hostTimeValid)
+                ? timestamp.pointee.mHostTime : nil
+            let status = transport.render(frameCount: Int(frameCount), audioBufferList: audioBufferList,
+                                          hostTime: hostTime)
             isSilence.pointee = ObjCBool(status != noErr)
             return status
         }
@@ -129,6 +132,11 @@ public final class AudioLoopEngine {
         }
     }
 
+    public func restartFromBeginning() throws {
+        try transport.restartFromBeginning()
+        try play()
+    }
+
     public func stop() {
         transport.stopPlayback()
         audioEngine.stop()
@@ -166,14 +174,20 @@ public final class AudioLoopEngine {
         )
     }
 
+    public func playbackClockAnchor() throws -> PlaybackClockAnchor {
+        try transport.clockAnchor(presentationLatency: sourceNode.outputPresentationLatency)
+    }
+
     public func setPlaybackRate(_ rate: Float) throws {
         guard rate.isFinite, (1.0 / 32.0...32.0).contains(rate) else {
             throw PlaybackError.invalidPlaybackRate(rate)
         }
         let unit = timePitch
+        let transport = transport
         parameterSmoother.set(.rate, from: unit.rate, to: rate,
                               immediate: !transport.snapshot().isPlaying) { value, _ in
             unit.rate = value
+            transport.setClockRate(Double(value))
         }
     }
 
@@ -340,6 +354,11 @@ final class AudioTransport: Sendable {
         var elapsed = 0
     }
 
+    private struct ClockSample: Sendable {
+        let hostTime: UInt64
+        let beat: Double
+    }
+
     private struct State: Sendable {
         var current: PreparedLoop?
         var currentRevision: UInt64?
@@ -355,6 +374,10 @@ final class AudioTransport: Sendable {
         var framePosition = 0
         var pendingBoundary: Double?
         var isPlaying = false
+        var clockSample: ClockSample?
+        var lastHostTime: UInt64?
+        var clockDiscontinuous = false
+        var clockRate = 1.0
     }
 
     private let state = Mutex(State())
@@ -388,6 +411,7 @@ final class AudioTransport: Sendable {
             if !state.isPlaying {
                 state.current = loop
                 state.currentGeneration = generation
+                state.clockSample = nil
                 state.fade = nil
                 state.retired = nil
                 state.replacement = nil
@@ -420,6 +444,7 @@ final class AudioTransport: Sendable {
         state.fade = Fade(old: Candidate(loop: current, revision: revision, generation: state.currentGeneration))
         state.current = candidate.loop
         state.currentGeneration = candidate.generation
+        state.clockSample = nil
         state.replacement = nil
     }
 
@@ -468,6 +493,24 @@ final class AudioTransport: Sendable {
             if let pending = state.pending, !state.isPlaying {
                 adopt(pending, into: &state)
             }
+            if !state.isPlaying {
+                state.clockSample = nil
+                state.lastHostTime = nil
+                state.clockDiscontinuous = false
+            }
+            state.isPlaying = true
+        }
+    }
+
+    func restartFromBeginning() throws {
+        try state.withLock { state in
+            guard let current = state.current else { throw PlaybackError.noCurrentLoop }
+            state.framePosition = 0
+            state.beatPosition = 0
+            state.clockSample = nil
+            state.lastHostTime = nil
+            state.clockDiscontinuous = false
+            state.pendingBoundary = state.pending == nil ? nil : Double(current.beatsPerBar)
             state.isPlaying = true
         }
     }
@@ -475,6 +518,7 @@ final class AudioTransport: Sendable {
     func stopPlayback() {
         state.withLock { state in
             state.isPlaying = false
+            state.clockSample = nil
             if let replacement = state.replacement {
                 state.current = replacement.loop
                 state.currentGeneration = replacement.generation
@@ -527,7 +571,41 @@ final class AudioTransport: Sendable {
         return local >= 0 ? local : local + loopBeatCount
     }
 
-    func render(frameCount: Int, audioBufferList: UnsafeMutablePointer<AudioBufferList>) -> OSStatus {
+    func setClockRate(_ rate: Double) {
+        state.withLock { state in
+            if state.clockRate != rate {
+                state.clockRate = rate
+                state.clockSample = nil
+            }
+        }
+    }
+
+    func clockAnchor(presentationLatency: Double, now: UInt64 = mach_absolute_time()) throws -> PlaybackClockAnchor {
+        let values = state.withLock { state in
+            (state.current?.bpm, state.current?.beatCount, state.currentRevision,
+             state.currentGeneration, state.isPlaying, state.beatPosition, state.clockRate,
+             state.clockSample, state.clockDiscontinuous)
+        }
+        guard let bpm = values.0, let count = values.1, let revision = values.2 else {
+            throw PlaybackClockError.unavailable
+        }
+        if !values.4 {
+            return try PlaybackClockAnchor(presentationHostTime: now, accumulatedBeatPosition: values.5,
+                beatsPerMinute: bpm * values.6, loopBeatCount: count, revision: revision,
+                overrideGeneration: values.3, isPlaying: false)
+        }
+        guard !values.8 else { throw PlaybackClockError.discontinuous }
+        guard let sample = values.7 else { throw PlaybackClockError.unavailable }
+        let latency = try PlaybackClockAnchor.hostTicks(forSeconds: presentationLatency)
+        let (host, overflow) = sample.hostTime.addingReportingOverflow(latency)
+        guard !overflow else { throw PlaybackClockError.outOfRange }
+        return try PlaybackClockAnchor(presentationHostTime: host, accumulatedBeatPosition: sample.beat,
+            beatsPerMinute: bpm * values.6, loopBeatCount: count, revision: revision,
+            overrideGeneration: values.3, isPlaying: true)
+    }
+
+    func render(frameCount: Int, audioBufferList: UnsafeMutablePointer<AudioBufferList>,
+                hostTime: UInt64? = nil) -> OSStatus {
         guard frameCount > 0 else { return noErr }
         return state.withLock { state in
             let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
@@ -544,6 +622,14 @@ final class AudioTransport: Sendable {
                 return noErr
             }
 
+            if let hostTime, hostTime > 0 {
+                state.clockDiscontinuous = state.lastHostTime.map { hostTime <= $0 } ?? false
+                state.clockSample = state.clockDiscontinuous ? nil
+                    : ClockSample(hostTime: hostTime, beat: state.beatPosition)
+                state.lastHostTime = hostTime
+            } else {
+                state.clockSample = nil
+            }
             for offset in 0..<frameCount {
                 if let pending = state.pending,
                    let boundary = state.pendingBoundary,
@@ -584,6 +670,7 @@ final class AudioTransport: Sendable {
     private func adopt(_ candidate: Candidate, into state: inout State) {
         state.current = candidate.loop
         state.currentRevision = candidate.revision
+        state.clockSample = nil
         state.currentGeneration = 0
         state.latestGeneration = 0
         state.replacement = nil

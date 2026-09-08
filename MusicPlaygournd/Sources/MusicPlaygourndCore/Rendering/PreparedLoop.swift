@@ -143,6 +143,9 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
             if let midiNote = event.midiNote, !(0...127).contains(midiNote) {
                 throw PreparedLoopValidationError.invalidEvent(index: index, reason: "MIDI note is out of range")
             }
+            if case .note(let note) = event.midiProjection, !(0...127).contains(note) {
+                throw PreparedLoopValidationError.invalidEvent(index: index, reason: "MIDI projection is out of range")
+            }
             guard (1...127).contains(event.velocity) else {
                 throw PreparedLoopValidationError.invalidEvent(index: index, reason: "velocity is out of range")
             }

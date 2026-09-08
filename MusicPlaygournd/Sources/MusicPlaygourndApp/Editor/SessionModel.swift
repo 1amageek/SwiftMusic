@@ -59,6 +59,14 @@ final class SessionModel {
     private var lineMaps: [UInt64: SourceLineMap] = [:]
     private var analyzer: SpectrumAnalyzer?
     private var engine: AudioLoopEngine?
+    private var midiService: (any MIDIServiceProtocol)?
+    private(set) var midiRoute = MIDISessionRoute.disabled
+    private(set) var midiSnapshot: MIDIServiceSnapshot?
+    private var midiSchedulingTask: Task<Void, Never>?
+    private var midiConfigurationInProgress = false
+    private var midiClosed = false
+    private var lastMIDICommandGeneration: UInt64 = 0
+    private var lastMIDIHealth: MIDIClockHealth?
     private let evaluator: SourceEvaluator
     private let completionService: SwiftCompletionService
     private var evaluationTask: Task<Void, Never>?
@@ -96,10 +104,12 @@ final class SessionModel {
         catch { audioError = error.localizedDescription; diagnostic = audioError }
     }
 
-    init(evaluator: SourceEvaluator, completionService: SwiftCompletionService, engine: AudioLoopEngine) {
+    init(evaluator: SourceEvaluator, completionService: SwiftCompletionService, engine: AudioLoopEngine,
+         midiService: (any MIDIServiceProtocol)? = nil) {
         self.evaluator = evaluator
         self.completionService = completionService
         self.engine = engine
+        self.midiService = midiService
         do { analyzer = try SpectrumAnalyzer() }
         catch { diagnostic = "Spectrum analyzer could not initialize: \(error)" }
     }
@@ -408,7 +418,154 @@ final class SessionModel {
         }
     }
 
+    func configureMIDI(_ route: MIDISessionRoute) async throws {
+        guard !midiClosed else { throw MIDIError.serviceShutDown }
+        guard !midiConfigurationInProgress else {
+            throw MIDIError.invalidLoop("MIDI route configuration is already in progress")
+        }
+        try route.validate()
+        if route == .disabled, midiService == nil { return }
+        midiConfigurationInProgress = true
+        defer { midiConfigurationInProgress = false }
+        if midiService == nil { midiService = try CoreMIDIService() }
+        guard let service = midiService else { throw MIDIError.serviceShutDown }
+        let endpoints = try await service.enumerateEndpoints()
+        for input in route.inputIDs {
+            guard endpoints.contains(where: { $0.id == input && $0.direction == .input }) else {
+                throw MIDIError.endpointNotFound(input)
+            }
+        }
+        if let output = route.output {
+            guard endpoints.contains(where: { $0.id == output && $0.direction == .output }) else {
+                throw MIDIError.endpointNotFound(output)
+            }
+        }
+        let previous = midiRoute
+        midiSchedulingTask?.cancel()
+        await midiSchedulingTask?.value
+        midiSchedulingTask = nil
+        do {
+            try await applyMIDIRoute(route, replacing: previous, service: service)
+            try Task.checkCancellation()
+            guard !midiClosed else { throw MIDIError.serviceShutDown }
+            midiRoute = route
+            if previous.clockMode != route.clockMode { lastMIDICommandGeneration = 0 }
+            startMIDIScheduling()
+        } catch {
+            let original = error
+            if !midiClosed {
+                do { try await applyMIDIRoute(previous, replacing: route, service: service) }
+                catch {
+                    diagnostic = "MIDI route failed: \(original). Restoring the previous route also failed: \(error)"
+                }
+                startMIDIScheduling()
+            }
+            throw original
+        }
+    }
+
+    private func applyMIDIRoute(_ route: MIDISessionRoute, replacing previous: MIDISessionRoute,
+                               service: any MIDIServiceProtocol) async throws {
+        for id in previous.inputIDs.subtracting(route.inputIDs) { try await service.disconnectInput(id) }
+        for id in route.inputIDs.subtracting(previous.inputIDs) { try await service.connectInput(id) }
+        try await service.setOutput(route.output)
+        try await service.setClockMode(route.clockMode)
+    }
+
+    private func startMIDIScheduling() {
+        guard midiRoute != .disabled, !midiClosed, midiSchedulingTask == nil else { return }
+        midiSchedulingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.updateMIDI()
+                do { try await Task.sleep(for: .milliseconds(50)) }
+                catch is CancellationError { return }
+                catch { self.diagnostic = error.localizedDescription; return }
+            }
+        }
+    }
+
+    /// Runs the same bounded step for the owned task and focused session tests.
+    func updateMIDI(clockAnchor: PlaybackClockAnchor? = nil, hostTime: UInt64? = nil) async {
+        guard let service = midiService, !midiClosed else { return }
+        do {
+            let anchor: PlaybackClockAnchor?
+            do { anchor = try clockAnchor ?? engine?.playbackClockAnchor() }
+            catch PlaybackClockError.unavailable { anchor = nil }
+            await service.updateClockAnchor(anchor)
+            if let anchor, anchor.isPlaying, let loop = engine?.snapshot().loop {
+                let now = hostTime ?? mach_absolute_time()
+                // A future presentation anchor is itself a valid scheduling origin.
+                // Do not query a negative audible beat or clamp a failed conversion.
+                let start = now < anchor.presentationHostTime
+                    ? anchor.accumulatedBeatPosition : try anchor.beat(atHostTime: now)
+                let end = start + anchor.beatsPerMinute / 60 * 0.1
+                if midiRoute.sendsLoopNotes {
+                    try await service.schedule(loop: loop, from: start, through: end, channel: midiRoute.channel)
+                }
+                if case .send = midiRoute.clockMode {
+                    try await service.scheduleClock(from: start, through: end)
+                }
+            }
+            let snapshot = await service.snapshot()
+            midiSnapshot = snapshot
+            applyReceivedMIDIClock(snapshot)
+            if lastMIDIHealth != snapshot.clockHealth {
+                lastMIDIHealth = snapshot.clockHealth
+                switch snapshot.clockHealth {
+                case .disconnected: diagnostic = "The selected MIDI endpoint disconnected. Audio continues."
+                case .failed(let message): diagnostic = "MIDI: \(message)"
+                default: break
+                }
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            let health = MIDIClockHealth.failed(error.localizedDescription)
+            if lastMIDIHealth != health {
+                lastMIDIHealth = health
+                diagnostic = "MIDI: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func applyReceivedMIDIClock(_ snapshot: MIDIServiceSnapshot) {
+        guard case .receive = midiRoute.clockMode, let clock = snapshot.receivedClock else { return }
+        if let tempo = clock.estimatedBPM, tempo.isFinite, (40...240).contains(tempo), tempo != bpm {
+            bpm = tempo
+        }
+        guard clock.commandGeneration > lastMIDICommandGeneration else { return }
+        lastMIDICommandGeneration = clock.commandGeneration
+        do {
+            switch clock.lastCommand {
+            case .start:
+                wantsPlayback = true
+                if loop == nil { scheduleEvaluation(immediate: true) }
+                else { try engine?.restartFromBeginning() }
+            case .continue:
+                wantsPlayback = true
+                if loop == nil { scheduleEvaluation(immediate: true) }
+                else { try engine?.play() }
+            case .stop:
+                wantsPlayback = false
+                engine?.stop()
+            default: break
+            }
+            refresh()
+        } catch { diagnostic = error.localizedDescription }
+    }
+
     func shutdown() async throws {
+        midiClosed = true
+        midiSchedulingTask?.cancel()
+        await midiSchedulingTask?.value
+        midiSchedulingTask = nil
+        engine?.stop()
+        if let midiService {
+            do { await midiService.updateClockAnchor(try engine?.playbackClockAnchor()) }
+            catch { diagnostic = error.localizedDescription }
+            await midiService.shutdown()
+        }
         evaluationTask?.cancel()
         controlTask?.cancel()
         adoptionTask?.cancel()

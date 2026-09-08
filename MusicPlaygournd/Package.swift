@@ -15,13 +15,16 @@ let package = Package(
         .target(
             name: "MusicPlaygourndCore",
             dependencies: [.product(name: "SwiftMusic", package: "SwiftMusic")],
-            exclude: ["DESIGN.md", "Evaluation/DESIGN.md", "Rendering/DESIGN.md", "Playback/DESIGN.md"]
+            exclude: ["DESIGN.md", "Evaluation/DESIGN.md", "Rendering/DESIGN.md", "Playback/DESIGN.md", "MIDI/DESIGN.md"]
         ),
         .executableTarget(
             name: "MusicPlaygourndApp",
             dependencies: ["MusicPlaygourndCore", .product(name: "SwiftMusic", package: "SwiftMusic")],
             exclude: ["DESIGN.md", "Editor/DESIGN.md"]
         ),
-        .testTarget(name: "MusicPlaygourndCoreTests", dependencies: ["MusicPlaygourndCore", "MusicPlaygourndApp"])
+        .executableTarget(name: "MIDINativeTestHost", dependencies: ["MusicPlaygourndCore"],
+            path: "Tests/MIDINativeTestHost"),
+        .testTarget(name: "MusicPlaygourndCoreTests", dependencies: ["MusicPlaygourndCore", "MusicPlaygourndApp", "MIDINativeTestHost"],
+            path: "Tests/MusicPlaygourndCoreTests")
     ]
 )

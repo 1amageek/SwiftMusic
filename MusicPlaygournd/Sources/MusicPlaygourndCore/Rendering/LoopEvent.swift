@@ -4,6 +4,7 @@ public struct LoopEvent: Codable, Sendable, Equatable {
     public let startBeat: Double
     public let durationBeats: Double
     public let midiNote: Int?
+    public let midiProjection: MIDIEventProjection
     public let pan: Double?
     public let gain: Double
     public let velocity: Int
@@ -20,13 +21,15 @@ public struct LoopEvent: Codable, Sendable, Equatable {
         patternStepIndex: Int? = nil,
         gain: Double = 1,
         pan: Double? = nil,
-        wrapsLoopBoundary: Bool = false
+        wrapsLoopBoundary: Bool = false,
+        midiProjection: MIDIEventProjection? = nil
     ) {
         self.sourceID = sourceID
         self.label = label
         self.startBeat = startBeat
         self.durationBeats = durationBeats
         self.midiNote = midiNote
+        self.midiProjection = midiProjection ?? (midiNote == nil ? .none : .unsupported(.legacyMetadataMissing))
         self.pan = pan
         self.gain = gain
         self.velocity = velocity
@@ -41,6 +44,8 @@ public struct LoopEvent: Codable, Sendable, Equatable {
         startBeat = try values.decode(Double.self, forKey: .startBeat)
         durationBeats = try values.decode(Double.self, forKey: .durationBeats)
         midiNote = try values.decodeIfPresent(Int.self, forKey: .midiNote)
+        midiProjection = try values.decodeIfPresent(MIDIEventProjection.self, forKey: .midiProjection)
+            ?? (midiNote == nil ? .none : .unsupported(.legacyMetadataMissing))
         pan = try values.decodeIfPresent(Double.self, forKey: .pan)
         gain = try values.decode(Double.self, forKey: .gain)
         velocity = try values.decode(Int.self, forKey: .velocity)

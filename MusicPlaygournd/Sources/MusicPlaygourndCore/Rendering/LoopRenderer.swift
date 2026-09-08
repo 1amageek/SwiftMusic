@@ -185,7 +185,14 @@ public struct LoopRenderer: Sendable {
                 patternStepIndex: event.patternStepIndex,
                 gain: event.gain,
                 pan: event.pan,
-                wrapsLoopBoundary: wrapsLoopBoundary
+                wrapsLoopBoundary: wrapsLoopBoundary,
+                midiProjection: try MIDIPitchProjection.resolve(event: event, source: source,
+                    frames: sampleFrames[index] ?? min(
+                        sound.playbackMode == .seamlessLoop ? context.sourceFrameCount : context.sourceFrameCount
+                            - Int((startBeat * 60 / bpm * PreparedLoop.requiredSampleRate).rounded(.down)),
+                        Int((audibleDuration * 60 / bpm * PreparedLoop.requiredSampleRate).rounded(.up))),
+                    secondsPerBeat: 60 / bpm, automationSecondsPerBeat: automationSecondsPerBeat,
+                    override: overlay?.sourcePitch[source.id])
             )
         }
         let rows = sound.sources.enumerated().map { index, source in
