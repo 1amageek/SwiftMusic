@@ -10,17 +10,19 @@ struct SpectrumView: View {
     var performance: PlaybackPerformanceSnapshot? = nil
     var resetDiagnostics: () -> Void = {}
 
+    @State private var diagnosticsPresented = false
+
     var body: some View {
+        Button { diagnosticsPresented = true } label: {
         VStack(spacing: 5) {
-        HStack(spacing: 21) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 5) {
-                    Circle().fill(isPlaying ? Color.mint : .gray).frame(width: 5, height: 5)
-                    Text("SPECTRUM").tracking(2)
-                }.font(.system(size: 10, weight: .semibold, design: .monospaced))
-                Text("MASTER OUTPUT").font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
-                Text("20 Hz — 20 kHz").font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
-            }.frame(width: 145, alignment: .leading)
+            HStack(spacing: 5) {
+                Circle().fill(isPlaying ? Color.mint : .gray).frame(width: 4, height: 4)
+                Text("OUTPUT").tracking(1.5)
+                Spacer()
+                Text(performance?.clipped == true ? "CLIP" : "20 Hz — 20 kHz")
+                    .foregroundStyle(performance?.clipped == true ? Color.orange : .secondary)
+            }.font(.system(size: 8, weight: .medium, design: .monospaced)).foregroundStyle(.secondary)
+        HStack(spacing: 12) {
             Canvas { context, size in
                 for channel in 0..<2 {
                     let center = size.height * (channel == 0 ? 0.3 : 0.7)
@@ -38,17 +40,16 @@ struct SpectrumView: View {
                     }
                     context.stroke(wave, with: .color(channel == 0 ? .mint : .cyan.opacity(0.65)), lineWidth: 1)
                 }
-            }.frame(width: 170).accessibilityLabel("Stereo master output waveform")
+            }.frame(width: 80).accessibilityLabel("Stereo master output waveform")
             Rectangle().fill(.white.opacity(0.08)).frame(width: 1)
             Canvas { context, size in
-                let plotHeight = size.height - 18
-                for db in [-12, -36, -60, -84] {
+                let plotHeight = size.height
+                for db in [-18, -48, -78] {
                     let y = Double(-db) / 90 * plotHeight
                     var grid = Path()
                     grid.move(to: CGPoint(x: 0, y: y))
                     grid.addLine(to: CGPoint(x: size.width - 28, y: y))
                     context.stroke(grid, with: .color(.white.opacity(0.055)))
-                    context.draw(Text("\(db)").font(.system(size: 8, design: .monospaced)).foregroundColor(.secondary), at: CGPoint(x: size.width - 10, y: y))
                 }
                 let width = (size.width - 34) / Double(max(1, bands.count))
                 for (index, db) in bands.enumerated() {
@@ -57,18 +58,22 @@ struct SpectrumView: View {
                     context.fill(Path(roundedRect: rect, cornerRadius: 1), with: .linearGradient(
                         Gradient(colors: [.cyan.opacity(0.25), .mint]), startPoint: CGPoint(x: 0, y: plotHeight), endPoint: .zero))
                 }
-                for frequency in [20, 100, 1000, 10000, 20000] {
-                    let x = log(Double(frequency) / 20) / log(1000) * (size.width - 34)
-                    context.draw(Text(frequency >= 1000 ? "\(frequency / 1000)k" : "\(frequency)")
-                        .font(.system(size: 9, design: .monospaced)).foregroundColor(.secondary),
-                        at: CGPoint(x: max(8, x), y: size.height - 5))
-                }
+
             }
             .accessibilityLabel("Master output spectrum, 20 hertz to 20 kilohertz, \(isPlaying ? "playing" : "paused")")
-        }.frame(height: 104)
-        meters
-        }.padding(.horizontal, 21).padding(.vertical, 10)
-            .background(Color(red: 0.035, green: 0.045, blue: 0.055))
+        }.frame(height: 30)
+        }
+        .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Output diagnostics")
+        .accessibilityIdentifier("output-diagnostics")
+        .popover(isPresented: $diagnosticsPresented) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("OUTPUT DIAGNOSTICS").font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(1)
+                meters
+            }.padding(16).frame(width: 740)
+        }
     }
     private var meters: some View {
         HStack(spacing: 14) {

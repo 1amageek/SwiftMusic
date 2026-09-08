@@ -5,35 +5,12 @@ struct ContentView: View {
     @State private var lineRects: [Int: CGRect] = [:]
     @State private var timelineScroll: CGFloat = 0
     @State private var logsExpanded = false
+    @State private var controlsPresented = false
+    @State private var maximumTakeMinutes = 10
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 16) {
-                HStack(spacing: 8) {
-                    Image(systemName: "waveform").foregroundStyle(.mint)
-                    Text("MusicPlaygournd").font(.system(size: 15, weight: .semibold))
-                }
-                Spacer()
-                HStack(spacing: 7) {
-                    Text("BPM").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-                    TextField("BPM", value: Binding(get: { model.displayedBPM }, set: { model.bpm = $0 }), format: .number.precision(.fractionLength(0)))
-                        .frame(width: 44).textFieldStyle(.roundedBorder)
-                        .accessibilityIdentifier("tempo-field")
-                    Stepper("Tempo", value: Binding(get: { model.displayedBPM }, set: { model.bpm = $0 }), in: 40...240, step: 1).labelsHidden()
-                }
-                Picker("Meter", selection: $model.beatsPerBar) {
-                    ForEach(2...7, id: \.self) { Text("\($0)/4").tag($0) }
-                }.labelsHidden().frame(width: 64).help("Time signature")
-                    .onChange(of: model.beatsPerBar) { _, _ in model.scheduleEvaluation() }
-                Button { model.togglePlayback() } label: {
-                    Label(model.isPlaying ? "Pause" : "Play", systemImage: model.isPlaying ? "pause.fill" : "play.fill")
-                        .frame(width: 66)
-                }.buttonStyle(.borderedProminent).tint(.mint).foregroundStyle(.black)
-                    .keyboardShortcut(.return, modifiers: [.command])
-                    .accessibilityIdentifier("play-toggle")
-            }.padding(.horizontal, 22).padding(.vertical, 15)
-            Divider()
-            LiveControlsView(model: model)
+            header
             Divider()
             VSplitView {
                 HSplitView {
@@ -48,10 +25,6 @@ struct ContentView: View {
                 }
                 if !model.inlineLayout && model.bottomLayout { rhythm }
             }
-            Divider()
-            SpectrumView(bands: model.spectrum, samples: model.outputSamples, isPlaying: model.isPlaying,
-                loop: model.loop, beatPosition: model.beatPosition, performance: model.performance,
-                resetDiagnostics: model.resetPerformanceDiagnostics)
             Divider()
             logs
             Divider()
@@ -84,16 +57,68 @@ struct ContentView: View {
         }
     }
 
+    private var header: some View {
+        HStack(spacing: 20) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("SWIFTMUSIC").font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .tracking(2).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(model.fileURL?.lastPathComponent ?? "Session.swift")
+                        .font(.system(size: 12, weight: .medium)).lineLimit(1)
+                    if model.hasUnsavedChanges { Circle().fill(.orange).frame(width: 4, height: 4) }
+                }
+            }.frame(width: 140, alignment: .leading)
+            HStack(spacing: 14) {
+                Button { model.togglePlayback() } label: {
+                    Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 15, weight: .bold))
+                        .frame(width: 38, height: 38)
+                        .foregroundStyle(model.isPlaying ? Color.black : .mint)
+                        .background(model.isPlaying ? Color.mint : Color.mint.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                }.buttonStyle(.plain)
+                    .keyboardShortcut(.return, modifiers: [.command])
+                    .accessibilityLabel(model.isPlaying ? "Pause" : "Play")
+                    .accessibilityIdentifier("play-toggle")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("TEMPO").font(.system(size: 8, weight: .medium, design: .monospaced)).tracking(1)
+                        .foregroundStyle(.secondary)
+                    TextField("BPM", value: Binding(get: { model.displayedBPM }, set: { model.bpm = $0 }), format: .number.precision(.fractionLength(0)))
+                        .font(.system(size: 24, weight: .medium, design: .monospaced))
+                        .textFieldStyle(.plain).frame(width: 60)
+                        .accessibilityLabel("Tempo in BPM").accessibilityIdentifier("tempo-field")
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("METER").font(.system(size: 8, weight: .medium, design: .monospaced)).tracking(1)
+                        .foregroundStyle(.secondary)
+                    Picker("Meter", selection: $model.beatsPerBar) {
+                        ForEach(2...7, id: \.self) { Text("\($0)/4").tag($0) }
+                    }.labelsHidden().controlSize(.small).frame(width: 62)
+                        .onChange(of: model.beatsPerBar) { _, _ in model.scheduleEvaluation() }
+                }
+            }
+            Rectangle().fill(.white.opacity(0.08)).frame(width: 1, height: 32)
+            SpectrumView(bands: model.spectrum, samples: model.outputSamples, isPlaying: model.isPlaying,
+                loop: model.loop, beatPosition: model.beatPosition, performance: model.performance,
+                resetDiagnostics: model.resetPerformanceDiagnostics)
+                .frame(minWidth: 230, maxWidth: .infinity)
+            Button { controlsPresented = true } label: {
+                VStack(spacing: 5) {
+                    Image(systemName: "slider.horizontal.3").font(.system(size: 17))
+                    Text("CONTROLS").font(.system(size: 7, weight: .medium, design: .monospaced)).tracking(1)
+                }.frame(width: 66, height: 48)
+                    .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 7))
+            }.buttonStyle(.plain).accessibilityLabel("Controls")
+                .accessibilityIdentifier("editor-controls")
+                .popover(isPresented: $controlsPresented, arrowEdge: .bottom) {
+                    LiveControlsView(model: model, maximumTakeMinutes: $maximumTakeMinutes)
+                        .frame(width: 780, height: 420)
+                }
+        }.padding(.horizontal, 20).frame(height: 76)
+            .background(Color(red: 0.045, green: 0.055, blue: 0.065))
+    }
+
     private var editor: some View {
         VStack(spacing: 0) {
-            HStack {
-                Image(systemName: "swift").foregroundStyle(.orange)
-                Text(model.fileURL?.lastPathComponent ?? "Session.swift")
-                if model.hasUnsavedChanges { Circle().fill(.secondary).frame(width: 5, height: 5) }
-                Spacer()
-                Text("SWIFT MUSIC").font(.system(size: 9, weight: .medium, design: .monospaced)).foregroundStyle(.secondary)
-            }.font(.system(size: 12)).padding(.horizontal, 21).frame(height: 40)
-            Divider()
             CodeEditor(text: $model.source, inlineLoop: model.loop, inlineEnabled: model.inlineLayout, resultLines: model.resultLines,
                 beatPosition: model.beatPosition, isPlaying: model.isPlaying, selectionLine: model.selectionLine, selectionToken: model.selectionToken,
                 rhythmLines: Array(Set(model.rowLines.values)).sorted(), rowLines: model.rowLines,

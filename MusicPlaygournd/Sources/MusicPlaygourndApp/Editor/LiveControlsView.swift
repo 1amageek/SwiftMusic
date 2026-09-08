@@ -6,8 +6,8 @@ import UniformTypeIdentifiers
 
 struct LiveControlsView: View {
     @Bindable var model: SessionModel
-    @State private var expanded = true
-    @State private var maximumTakeMinutes = 10
+    @Binding var maximumTakeMinutes: Int
+    @State private var midiOptionsExpanded = false
 
     private var descriptors: [LiveControlDescriptor] { model.controlCatalog?.descriptors ?? [] }
     private var targets: [LiveControlTarget] {
@@ -16,7 +16,7 @@ struct LiveControlsView: View {
     }
 
     var body: some View {
-        DisclosureGroup("Live Controls", isExpanded: $expanded) {
+        ScrollView([.horizontal, .vertical]) {
             VStack(alignment: .leading, spacing: 10) {
                 if !model.performanceControlMetadata.isEmpty {
                     performanceControls
@@ -53,7 +53,7 @@ struct LiveControlsView: View {
                     Text(model.visualizationStatus).font(.system(size: 9)).foregroundStyle(.secondary)
                         .accessibilityIdentifier("control-visualization-status")
                     if descriptors.isEmpty { Text("Play a score to expose its controls.").foregroundStyle(.secondary) }
-                    if let address = model.selectedControl {
+                    if model.midiRoute.input != nil, let address = model.selectedControl {
                         HStack {
                             Button(model.learnAddress == address ? "Cancel Learn" : "MIDI Learn") {
                                 if model.learnAddress == address { model.clearMIDILearn(address) }
@@ -68,9 +68,11 @@ struct LiveControlsView: View {
                 xyPad.frame(width: 190)
                 hostControls.frame(width: 250).disabled(model.isRestoringHostState)
                 }
-            }.padding(.top, 10)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .frame(minWidth: 740, alignment: .leading)
         }
-        .padding(.horizontal, 20).padding(.vertical, 9)
         .font(.system(size: 11))
         .task {
             do { try await model.refreshHostDevices() }
@@ -184,7 +186,9 @@ struct LiveControlsView: View {
                     Text("Choose Y").tag(Optional<LiveControlAddress>.none)
                     ForEach(model.xyControls, id: \.address) { Text($0.label).tag(Optional($0.address)) }
                 }
-            }.labelsHidden()
+            }
+            .labelsHidden()
+            .disabled(!model.controlsAvailable)
             GeometryReader { geometry in
                 ZStack {
                     RoundedRectangle(cornerRadius: 8).fill(.mint.opacity(0.06))
@@ -209,52 +213,67 @@ struct LiveControlsView: View {
                 })
                 .accessibilityLabel("XY score control pad")
                 .accessibilityIdentifier("xy-pad")
-            }.frame(height: 105)
+            }
+            .frame(height: 105)
+            .disabled(!model.controlsAvailable || !xySelectionAvailable)
             Slider(value: Binding(get: { position(model.xyX) }, set: { x in
                 perform { try model.setXY(x: x, y: position(model.xyY)) }
-            }), in: 0...1).accessibilityLabel("X axis")
+            }), in: 0...1)
+            .accessibilityLabel("X axis")
+            .disabled(!model.controlsAvailable || !xySelectionAvailable)
             Slider(value: Binding(get: { position(model.xyY) }, set: { y in
                 perform { try model.setXY(x: position(model.xyX), y: y) }
-            }), in: 0...1).accessibilityLabel("Y axis")
-        }.disabled(!model.controlsAvailable || model.xyX == nil || model.xyY == nil || model.xyX == model.xyY)
+            }), in: 0...1)
+            .accessibilityLabel("Y axis")
+            .disabled(!model.controlsAvailable || !xySelectionAvailable)
+        }
+    }
+
+    private var xySelectionAvailable: Bool {
+        guard let x = model.xyX, let y = model.xyY else { return false }
+        return x != y
     }
 
     private var hostControls: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Picker("MIDI Input", selection: Binding(get: { model.midiRoute.input }, set: { input in
-                    var route = model.midiRoute; route.input = input
-                    if case .receive = route.clockMode { route.clockMode = input.map { .receive(input: $0) } ?? .off }
-                    perform { try await model.configureMIDI(route) }
-                })) {
-                    Text("No MIDI input").tag(Optional<MIDIEndpointID>.none)
-                    ForEach(model.midiEndpoints.filter { $0.direction == .input }, id: \.id) { Text($0.displayName).tag(Optional($0.id)) }
-                }.labelsHidden().accessibilityIdentifier("midi-input")
-                Button { perform { try await model.refreshHostDevices() } } label: { Image(systemName: "arrow.clockwise") }
-                    .help("Refresh MIDI and Audio Units")
-            }
-            Picker("MIDI Output", selection: Binding(get: { model.midiRoute.output }, set: { output in
-                var route = model.midiRoute; route.output = output
-                if output == nil { route.sendsLoopNotes = false }
-                if case .send = route.clockMode { route.clockMode = output.map { .send(output: $0) } ?? .off }
-                perform { try await model.configureMIDI(route) }
-            })) {
-                Text("No MIDI output").tag(Optional<MIDIEndpointID>.none)
-                ForEach(model.midiEndpoints.filter { $0.direction == .output }, id: \.id) { Text($0.displayName).tag(Optional($0.id)) }
-            }.labelsHidden()
-            HStack {
-                Toggle("Notes", isOn: Binding(get: { model.midiRoute.sendsLoopNotes }, set: { enabled in
-                    var route = model.midiRoute; route.sendsLoopNotes = enabled
-                    perform { try await model.configureMIDI(route) }
-                })).toggleStyle(.checkbox).disabled(model.midiRoute.output == nil)
-                Picker("Clock", selection: Binding(get: { model.midiRoute.clockMode }, set: { mode in
-                    var route = model.midiRoute; route.clockMode = mode
-                    perform { try await model.configureMIDI(route) }
-                })) {
-                    Text("Clock Off").tag(MIDIClockMode.off)
-                    if let output = model.midiRoute.output { Text("Send Clock").tag(MIDIClockMode.send(output: output)) }
-                    if let input = model.midiRoute.input { Text("Receive Clock").tag(MIDIClockMode.receive(input: input)) }
-                }.labelsHidden()
+            DisclosureGroup("MIDI Options", isExpanded: $midiOptionsExpanded) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Picker("MIDI Input", selection: Binding(get: { model.midiRoute.input }, set: { input in
+                            var route = model.midiRoute; route.input = input
+                            if case .receive = route.clockMode { route.clockMode = input.map { .receive(input: $0) } ?? .off }
+                            perform { try await model.configureMIDI(route) }
+                        })) {
+                            Text("No MIDI input").tag(Optional<MIDIEndpointID>.none)
+                            ForEach(model.midiEndpoints.filter { $0.direction == .input }, id: \.id) { Text($0.displayName).tag(Optional($0.id)) }
+                        }.labelsHidden().accessibilityIdentifier("midi-input")
+                        Button { perform { try await model.refreshHostDevices() } } label: { Image(systemName: "arrow.clockwise") }
+                            .help("Refresh MIDI and Audio Units")
+                    }
+                    Picker("MIDI Output", selection: Binding(get: { model.midiRoute.output }, set: { output in
+                        var route = model.midiRoute; route.output = output
+                        if output == nil { route.sendsLoopNotes = false }
+                        if case .send = route.clockMode { route.clockMode = output.map { .send(output: $0) } ?? .off }
+                        perform { try await model.configureMIDI(route) }
+                    })) {
+                        Text("No MIDI output").tag(Optional<MIDIEndpointID>.none)
+                        ForEach(model.midiEndpoints.filter { $0.direction == .output }, id: \.id) { Text($0.displayName).tag(Optional($0.id)) }
+                    }.labelsHidden()
+                    HStack {
+                        Toggle("Notes", isOn: Binding(get: { model.midiRoute.sendsLoopNotes }, set: { enabled in
+                            var route = model.midiRoute; route.sendsLoopNotes = enabled
+                            perform { try await model.configureMIDI(route) }
+                        })).toggleStyle(.checkbox).disabled(model.midiRoute.output == nil)
+                        Picker("Clock", selection: Binding(get: { model.midiRoute.clockMode }, set: { mode in
+                            var route = model.midiRoute; route.clockMode = mode
+                            perform { try await model.configureMIDI(route) }
+                        })) {
+                            Text("Clock Off").tag(MIDIClockMode.off)
+                            if let output = model.midiRoute.output { Text("Send Clock").tag(MIDIClockMode.send(output: output)) }
+                            if let input = model.midiRoute.input { Text("Receive Clock").tag(MIDIClockMode.receive(input: input)) }
+                        }.labelsHidden()
+                    }
+                }
             }
             Picker("Audio Unit", selection: Binding(get: {
                 if case .loaded(let descriptor, _) = model.hostedEffect { return Optional(descriptor.id) }
