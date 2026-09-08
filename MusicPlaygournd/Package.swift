@@ -15,7 +15,7 @@ let package = Package(
         .target(
             name: "MusicPlaygourndCore",
             dependencies: [.product(name: "SwiftMusic", package: "SwiftMusic")],
-            exclude: ["DESIGN.md", "Evaluation/DESIGN.md", "Rendering/DESIGN.md", "Playback/DESIGN.md", "MIDI/DESIGN.md"]
+            exclude: ["DESIGN.md", "Evaluation/DESIGN.md", "Rendering/DESIGN.md", "Playback/DESIGN.md", "MIDI/DESIGN.md", "AudioUnits/DESIGN.md"]
         ),
         .executableTarget(
             name: "MusicPlaygourndApp",

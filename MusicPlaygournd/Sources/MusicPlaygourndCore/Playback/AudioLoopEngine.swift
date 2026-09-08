@@ -3,7 +3,7 @@ import Foundation
 import Synchronization
 
 @MainActor
-public final class AudioLoopEngine {
+public final class AudioLoopEngine: AudioUnitHosting {
     private let parameterSmoother: MasterParameterSmoother
     private let audioEngine: AVAudioEngine
     private let sourceNode: AVAudioSourceNode
@@ -16,6 +16,13 @@ public final class AudioLoopEngine {
     private let audioFormat: AVAudioFormat
     private var retainedLoops: [AudioTransport.Identity: PreparedLoop] = [:]
     private var latestRequestedRevision: UInt64?
+
+    private var hostedAudioUnit: AVAudioUnit?
+    private var hostedAudioDescriptor: HostedAudioUnitDescriptor?
+    private var audioUnitSelection = UUID()
+    private var audioUnitRequest: AudioUnitInstantiation?
+    internal var audioUnitStart: AudioUnitInstantiation.Start = AudioUnitInstantiation.nativeStart
+    internal var audioUnitGraphStartCheck: (() throws -> Void)?
 
     public convenience init() throws {
         try self.init(parameterSmoother: MasterParameterSmoother())
@@ -315,15 +322,131 @@ public final class AudioLoopEngine {
         return output
     }
 
+    public func discoverAudioEffects() throws -> [HostedAudioUnitDescriptor] {
+        try AudioUnitCatalog.discover()
+    }
+
+    public func selectAudioEffect(_ id: HostedAudioUnitID, restoring state: HostedAudioUnitState? = nil) async throws {
+        if let state, state.id != id { throw HostedAudioUnitError.stateIdentityMismatch }
+        guard let descriptor = try discoverAudioEffects().first(where: { $0.id == id }) else {
+            throw HostedAudioUnitError.missingComponent
+        }
+        audioUnitRequest?.cancel()
+        let selection = UUID()
+        audioUnitSelection = selection
+        let request = AudioUnitInstantiation()
+        audioUnitRequest = request
+        defer { if audioUnitSelection == selection { audioUnitRequest = nil } }
+        let candidate = try await request.value(for: id.componentDescription, start: audioUnitStart)
+        try Task.checkCancellation()
+        guard audioUnitSelection == selection else { throw HostedAudioUnitError.superseded }
+        let nativeID = candidate.audioComponentDescription
+        guard nativeID.componentType == id.componentType,
+              nativeID.componentSubType == id.componentSubType,
+              nativeID.componentManufacturer == id.componentManufacturer else {
+            throw HostedAudioUnitError.instantiationFailed("The native component identity did not match the selection.")
+        }
+        let unit = candidate.auAudioUnit
+        if let state { unit.fullStateForDocument = try state.propertyList() }
+        guard unit.inputBusses.count > 0, unit.outputBusses.count > 0 else {
+            throw HostedAudioUnitError.incompatibleFormat("An input and an output bus are required.")
+        }
+        guard unit.latency.isFinite, unit.latency >= 0, unit.tailTime.isFinite, unit.tailTime >= 0 else {
+            throw HostedAudioUnitError.invalidLatency
+        }
+        do {
+            try unit.inputBusses[0].setFormat(audioFormat)
+            try unit.outputBusses[0].setFormat(audioFormat)
+        } catch { throw HostedAudioUnitError.incompatibleFormat(error.localizedDescription) }
+        try swapAudioEffect(candidate)
+        hostedAudioDescriptor = descriptor
+    }
+
+    public func clearAudioEffect() throws {
+        audioUnitSelection = UUID()
+        audioUnitRequest?.cancel()
+        audioUnitRequest = nil
+        guard hostedAudioUnit != nil else { return }
+        try swapAudioEffect(nil)
+        hostedAudioDescriptor = nil
+    }
+
+    public func setAudioEffectBypassed(_ bypassed: Bool) throws {
+        guard let unit = hostedAudioUnit else { throw HostedAudioUnitError.notLoaded }
+        unit.auAudioUnit.shouldBypassEffect = bypassed
+        transport.invalidateClock()
+    }
+
+    public func captureAudioEffectState() throws -> HostedAudioUnitState {
+        guard let unit = hostedAudioUnit, let descriptor = hostedAudioDescriptor else {
+            throw HostedAudioUnitError.notLoaded
+        }
+        return try HostedAudioUnitState(id: descriptor.id, documentState: unit.auAudioUnit.fullStateForDocument)
+    }
+
+    public func audioEffectSnapshot() -> HostedAudioUnitSnapshot {
+        guard let unit = hostedAudioUnit, let descriptor = hostedAudioDescriptor else { return .none }
+        return .loaded(descriptor: descriptor, bypassed: unit.auAudioUnit.shouldBypassEffect)
+    }
+
+    private func swapAudioEffect(_ candidate: AVAudioUnit?) throws {
+        let previous = hostedAudioUnit
+        let wasRunning = audioEngine.isRunning
+        audioEngine.stop()
+        transport.invalidateClock()
+        audioEngine.disconnectNodeOutput(reverb)
+        if let previous { audioEngine.disconnectNodeOutput(previous) }
+        if let candidate { audioEngine.attach(candidate) }
+        connectAudioEffect(candidate)
+        do {
+            if wasRunning {
+                try audioUnitGraphStartCheck?()
+                if !audioEngine.isInManualRenderingMode { audioEngine.prepare() }
+                try audioEngine.start()
+            }
+        } catch {
+            audioEngine.stop()
+            audioEngine.disconnectNodeOutput(reverb)
+            if let candidate { audioEngine.detach(candidate) }
+            connectAudioEffect(previous)
+            do {
+                if wasRunning {
+                    try audioUnitGraphStartCheck?()
+                    if !audioEngine.isInManualRenderingMode { audioEngine.prepare() }
+                    try audioEngine.start()
+                }
+            } catch let rollback {
+                transport.stopPlayback()
+                meterStore.clear()
+                throw HostedAudioUnitError.rollbackFailed(error.localizedDescription, rollback.localizedDescription)
+            }
+            throw HostedAudioUnitError.graphFailed(error.localizedDescription)
+        }
+        if let previous { audioEngine.detach(previous) }
+        hostedAudioUnit = candidate
+    }
+
+    private func connectAudioEffect(_ unit: AVAudioUnit?) {
+        // Bus formats and node ownership are admitted before these native precondition operations.
+        if let unit {
+            audioEngine.connect(reverb, to: unit, format: audioFormat)
+            audioEngine.connect(unit, to: audioEngine.mainMixerNode, format: audioFormat)
+        } else {
+            audioEngine.connect(reverb, to: audioEngine.mainMixerNode, format: audioFormat)
+        }
+    }
+
     private func pruneRetainedLoops() {
         let retained = Set(transport.drainRetiredAndRetainedIdentities())
         retainedLoops = retainedLoops.filter { retained.contains($0.key) }
     }
 
     isolated deinit {
+        audioUnitRequest?.cancel()
         parameterSmoother.cancelAll()
         audioEngine.mainMixerNode.removeTap(onBus: 0)
         audioEngine.stop()
+        if let hostedAudioUnit { audioEngine.detach(hostedAudioUnit) }
     }
 }
 
@@ -569,6 +692,10 @@ final class AudioTransport: Sendable {
         guard corrected > 0 else { return 0 }
         let local = corrected.truncatingRemainder(dividingBy: loopBeatCount)
         return local >= 0 ? local : local + loopBeatCount
+    }
+
+    func invalidateClock() {
+        state.withLock { $0.clockSample = nil }
     }
 
     func setClockRate(_ rate: Double) {
