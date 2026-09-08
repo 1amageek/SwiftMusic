@@ -640,6 +640,64 @@ extension NativeHostTests {
 
         @MainActor
         @Test(.timeLimit(.minutes(6)))
+        func performanceCompositionRetainsScoreOverlaysAndRestoresIndependentTempo() async throws {
+            try await Self.withHarness { harness in
+                let model = harness.model
+                model.bpm = 137
+                try await Self.adopt(harness, source: Self.performanceSource, revision: 1)
+                #expect(model.displayedBPM == 90)
+                #expect(abs(harness.engine.masterParametersForTests.rate - 1) < 0.00001)
+                try harness.engine.prepareOfflineRenderingForTests()
+                try harness.engine.play()
+                try model.setPerformanceValue("gain", value: .double(0.4))
+                try await Self.waitUntil("performance with second source") {
+                    _ = try harness.engine.renderOfflineForTests(frameCount: 4096)
+                    model.refresh()
+                    return model.performanceNumber("gain") == 0.4 && !model.isPerformanceUpdating
+                }
+                let gain = try Self.requireAddress(model, target: .source(0), parameter: .gain)
+                try model.setControl(gain, value: .number(0))
+                try await Self.waitUntil("muted source overlay") {
+                    _ = try harness.engine.renderOfflineForTests(frameCount: 4096)
+                    model.refresh()
+                    return model.overrideGeneration == 1
+                }
+                let muted = try #require(model.loop).samples
+                try model.setPerformanceValue("gain", value: .double(0.5))
+                try await Self.waitUntil("model update with score overlay") {
+                    _ = try harness.engine.renderOfflineForTests(frameCount: 4096)
+                    model.refresh()
+                    if !model.diagnostic.isEmpty { throw EvaluationError.invalidResult(model.diagnostic) }
+                    return model.performanceNumber("gain") == 0.5 && !model.isPerformanceUpdating
+                }
+                #expect(model.overrideGeneration == 1)
+                #expect(model.loop?.samples == muted)
+                try model.setControl(gain, value: nil)
+                try await Self.waitUntil("released overlay uses new model baseline") {
+                    _ = try harness.engine.renderOfflineForTests(frameCount: 4096)
+                    model.refresh()
+                    return model.overrideGeneration == 2
+                }
+                let released = try #require(model.loop).samples
+                #expect(Self.energy(released) > Self.energy(muted))
+                model.source = Self.baseSource
+                model.scheduleEvaluation(immediate: true)
+                try await Self.waitUntil("ordinary Music restores independent tempo", timeout: .seconds(260)) {
+                    _ = try harness.engine.renderOfflineForTests(frameCount: 4096)
+                    model.refresh()
+                    if !model.isPreparing, !model.diagnostic.isEmpty { throw EvaluationError.invalidResult(model.diagnostic) }
+                    return model.currentRevision == 2 && model.controlsAvailable
+                        && model.performanceControlMetadata.isEmpty
+                        && abs(harness.engine.masterParametersForTests.rate - Float(137.0 / 120)) < 0.00001
+                }
+                #expect(model.displayedBPM == 137)
+                #expect(harness.engine.snapshot().performanceGeneration == 0)
+                #expect(model.controlCatalog?.descriptors.contains { $0.address.parameter == .playbackRate } == true)
+            }
+        }
+
+        @MainActor
+        @Test(.timeLimit(.minutes(6)))
         func documentSwitchDiscardsReservedPerformanceBeforeWorkerAcknowledgement() async throws {
             try await Self.withHarness { harness in
                 let model = harness.model
