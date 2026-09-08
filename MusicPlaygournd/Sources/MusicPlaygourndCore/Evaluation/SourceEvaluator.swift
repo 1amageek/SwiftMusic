@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import SwiftMusic
@@ -7,6 +8,16 @@ public actor SourceEvaluator {
     private let packageURL: URL
     private let workspace: URL
     private let swiftExecutable: String
+    private let runtimeSDK: URL?
+    private struct CompilerEnvironment: Decodable {
+        let artifactDigests: [String: String]
+        let compilerVersion: String
+        let sdkPath: String
+        let pluginPath: String
+        let target: String
+    }
+    private var compilerEnvironment: CompilerEnvironment?
+    private var binaryDirectory: String?
     private var busy = false
     private struct Worker {
         let revision: UInt64
@@ -35,10 +46,93 @@ public actor SourceEvaluator {
     private var retiredExportWorker: Worker?
 
 
-    public init(packageURL: URL, workspace: URL, swiftExecutable: String) {
+    public init(packageURL: URL, workspace: URL, swiftExecutable: String, runtimeSDK: URL? = nil) {
         self.packageURL = packageURL
         self.workspace = workspace
         self.swiftExecutable = swiftExecutable
+        self.runtimeSDK = runtimeSDK?.resolvingSymlinksInPath()
+    }
+
+    private func resolveCompilerEnvironment() async throws -> CompilerEnvironment {
+        if let compilerEnvironment { return compilerEnvironment }
+        let environment: CompilerEnvironment
+        let manager = FileManager.default
+        if let runtimeSDK {
+            do {
+                environment = try JSONDecoder().decode(CompilerEnvironment.self,
+                    from: Data(contentsOf: runtimeSDK.appending(path: "environment.json")))
+            } catch { throw EvaluationError.invalidResult("The bundled runtime SDK is unreadable: \(error)") }
+            for name in ["SwiftMusic.o", "MusicPlaygourndCore.o", "SwiftMusic.swiftmodule", "MusicPlaygourndCore.swiftmodule"] {
+                guard manager.fileExists(atPath: runtimeSDK.appending(path: name).path) else {
+                    throw EvaluationError.invalidResult("The bundled runtime SDK is missing \(name). Rebuild the app.")
+                }
+            }
+            guard !environment.artifactDigests.isEmpty else {
+                throw EvaluationError.invalidResult("The runtime SDK artifact manifest is empty.")
+            }
+            do {
+                let files: Set<String> = try {
+                var files = Set<String>()
+                for name in ["SwiftMusic.o", "MusicPlaygourndCore.o", "SwiftMusic.swiftmodule", "MusicPlaygourndCore.swiftmodule"] {
+                    let root = runtimeSDK.appending(path: name)
+                    let values = try root.resourceValues(forKeys: [.isDirectoryKey])
+                    if values.isDirectory == true {
+                        guard let entries = manager.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey]) else {
+                            throw EvaluationError.invalidResult("Unable to enumerate runtime SDK artifacts.")
+                        }
+                        for case let file as URL in entries {
+                            if try file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
+                                files.insert(file.pathComponents.dropFirst(runtimeSDK.pathComponents.count).joined(separator: "/"))
+                            }
+                        }
+                    } else { files.insert(name) }
+                }
+                return files
+                }()
+                guard files == Set(environment.artifactDigests.keys) else {
+                    throw EvaluationError.invalidResult("The runtime SDK artifact set has changed. Rebuild the app.")
+                }
+                for (path, digest) in environment.artifactDigests {
+                    guard !path.hasPrefix("/"), !path.split(separator: "/").contains("..") else {
+                        throw EvaluationError.invalidResult("The runtime SDK artifact path is invalid.")
+                    }
+                    let data = try Data(contentsOf: runtimeSDK.appending(path: path), options: .mappedIfSafe)
+                    let actual = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                    guard actual == digest else {
+                        throw EvaluationError.invalidResult("The runtime SDK artifact has changed: \(path). Rebuild the app.")
+                    }
+                }
+            } catch {
+                throw EvaluationError.invalidResult("The runtime SDK artifact validation failed: \(error)")
+            }
+            let version = try await run(swiftExecutable, ["--version"], timeout: 10)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard version == environment.compilerVersion else {
+                throw EvaluationError.invalidResult("The runtime SDK compiler has changed. Rebuild the app.")
+            }
+            guard !environment.target.isEmpty else { throw EvaluationError.invalidResult("The runtime SDK target is missing.") }
+        } else {
+            let sdk = try await run("/usr/bin/xcrun", ["--sdk", "macosx", "--show-sdk-path"], timeout: 20)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            struct TargetInfo: Decodable {
+                struct Paths: Decodable { let runtimeResourcePath: String }
+                let paths: Paths
+            }
+            let output = try await run(swiftExecutable, ["-print-target-info"], timeout: 10)
+            let info: TargetInfo
+            do { info = try JSONDecoder().decode(TargetInfo.self, from: Data(output.utf8)) }
+            catch { throw EvaluationError.invalidResult("Unable to read compiler resource paths: \(error)") }
+            environment = CompilerEnvironment(artifactDigests: [:], compilerVersion: "", sdkPath: sdk,
+                pluginPath: URL(fileURLWithPath: info.paths.runtimeResourcePath).appending(path: "host/plugins").path, target: "")
+        }
+        for path in [environment.sdkPath, environment.pluginPath] {
+            var isDirectory: ObjCBool = false
+            guard path.hasPrefix("/"), manager.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                throw EvaluationError.invalidResult("A compiler SDK or plugin directory is unavailable: \(path)")
+            }
+        }
+        compilerEnvironment = environment
+        return environment
     }
 
     internal func workerStateForTests() async -> (pid: pid_t?, exporting: UInt64?, retired: UInt64?) {
@@ -191,16 +285,43 @@ public actor SourceEvaluator {
         }
         """
         try wrapper.write(to: sources.appending(path: "Session.swift"), atomically: true, encoding: .utf8)
-        _ = try await run(swiftExecutable, ["build", "--configuration", "release", "--build-system", "native", "-Xswiftc", "-Xfrontend", "-Xswiftc", "-disable-round-trip-debug-types", "--package-path", workspace.path, "--product", "Evaluation"], timeout: 240)
-        let binaryOutput = try await run(swiftExecutable, ["build", "--configuration", "release", "--build-system", "native", "--package-path", workspace.path, "--show-bin-path"], timeout: 20)
-        let binaryPaths = binaryOutput.split(whereSeparator: \.isNewline).filter { $0.hasPrefix("/") }
-        guard binaryPaths.count == 1, let path = binaryPaths.first else {
-            throw EvaluationError.invalidResult("SwiftPM did not report one absolute binary directory.")
-        }
-        let binaryPath = String(path)
+        let environment = try await resolveCompilerEnvironment()
+        let binaryPath: String
+        let executable: URL
         try manager.createDirectory(at: workerDirectory, withIntermediateDirectories: true)
+        do {
+        if let runtimeSDK {
+            binaryPath = runtimeSDK.path
+            executable = workerDirectory.appending(path: "Evaluation")
+            let compiler = URL(fileURLWithPath: swiftExecutable).deletingLastPathComponent().appending(path: "swiftc")
+            _ = try await run(compiler.path, ["-parse-as-library", "-O", "-target", environment.target,
+                "-sdk", environment.sdkPath, "-I", runtimeSDK.path,
+                sources.appending(path: "Session.swift").path,
+                runtimeSDK.appending(path: "SwiftMusic.o").path,
+                runtimeSDK.appending(path: "MusicPlaygourndCore.o").path,
+                "-o", executable.path], timeout: 60)
+        } else {
+            _ = try await run(swiftExecutable, ["build", "--configuration", "release", "--build-system", "native", "-Xswiftc", "-Xfrontend", "-Xswiftc", "-disable-round-trip-debug-types", "--package-path", workspace.path, "--product", "Evaluation"], timeout: 240)
+            if let binaryDirectory { binaryPath = binaryDirectory }
+            else {
+                let output = try await run(swiftExecutable, ["build", "--configuration", "release", "--build-system", "native", "--package-path", workspace.path, "--show-bin-path"], timeout: 20)
+                let paths = output.split(whereSeparator: \.isNewline).filter { $0.hasPrefix("/") }
+                guard paths.count == 1, let path = paths.first else {
+                    throw EvaluationError.invalidResult("SwiftPM did not report one absolute binary directory.")
+                }
+                binaryPath = String(path)
+                binaryDirectory = binaryPath
+            }
+            executable = URL(fileURLWithPath: binaryPath).appending(path: "Evaluation")
+        }
+        } catch {
+            let original = error
+            do { try manager.removeItem(at: workerDirectory) }
+            catch { throw EvaluationError.invalidResult("Compilation failed: \(original); worker cleanup failed: \(error)") }
+            throw original
+        }
         let connection = try RenderWorkerConnection(
-            executable: URL(fileURLWithPath: binaryPath).appending(path: "Evaluation"),
+            executable: executable,
             outputURL: output, revision: revision)
         do {
         var initial = try await connection.ready()
@@ -224,30 +345,12 @@ public actor SourceEvaluator {
         let prefix = "import Foundation\nimport SwiftMusic\nimport MusicPlaygourndCore\n"
         let displaySource = workspace.appending(path: "ResultLocations.swift")
         try (prefix + source).write(to: displaySource, atomically: true, encoding: .utf8)
-        let sdk = try await run("/usr/bin/xcrun", ["--sdk", "macosx", "--show-sdk-path"], timeout: 20)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        var isDirectory: ObjCBool = false
-        guard sdk.hasPrefix("/"), manager.fileExists(atPath: sdk, isDirectory: &isDirectory), isDirectory.boolValue else {
-            throw EvaluationError.invalidResult("The active macOS SDK is not an existing absolute directory.")
-        }
-        struct TargetInfo: Decodable {
-            struct Paths: Decodable { let runtimeResourcePath: String }
-            let paths: Paths
-        }
-        let targetOutput = try await run(swiftExecutable, ["-print-target-info"], timeout: 10)
-        let targetInfo: TargetInfo
-        do { targetInfo = try JSONDecoder().decode(TargetInfo.self, from: Data(targetOutput.utf8)) }
-        catch { throw EvaluationError.invalidResult("Unable to read compiler resource paths: \(error)") }
-        let resources = targetInfo.paths.runtimeResourcePath
-        let plugins = URL(fileURLWithPath: resources).appending(path: "host/plugins")
-        guard resources.hasPrefix("/"), manager.fileExists(atPath: plugins.path, isDirectory: &isDirectory),
-              isDirectory.boolValue else {
-            throw EvaluationError.invalidResult("The active compiler macro plugin directory is unavailable.")
-        }
-        let ast = try await run(swiftExecutable, ["-frontend", "-dump-ast", "-dump-ast-format", "json", "-suppress-warnings",
-            "-plugin-path", plugins.path, "-sdk", sdk,
-            "-I", binaryPath, "-I", URL(fileURLWithPath: binaryPath).appending(path: "Modules").path,
-            displaySource.path], timeout: 20)
+        var astArguments = ["-frontend", "-dump-ast", "-dump-ast-format", "json", "-suppress-warnings",
+            "-plugin-path", environment.pluginPath, "-sdk", environment.sdkPath,
+            "-I", binaryPath, "-I", URL(fileURLWithPath: binaryPath).appending(path: "Modules").path]
+        if !environment.target.isEmpty { astArguments += ["-target", environment.target] }
+        astArguments.append(displaySource.path)
+        let ast = try await run(swiftExecutable, astArguments, timeout: 20)
         let resultLines = try ExpressionResultLocations.lines(ast: Data(ast.utf8), source: source, prefixBytes: prefix.utf8.count, rows: loop.rows)
         let located = PreparedLoop(sampleRate: loop.sampleRate, bpm: loop.bpm, beatsPerBar: loop.beatsPerBar,
             beatCount: loop.beatCount, samples: loop.samples, events: loop.events,

@@ -14,14 +14,6 @@ struct TimelineView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "waveform.path").foregroundStyle(.mint)
-                Text("TIMELINE").tracking(2)
-                Spacer()
-                Text("PRE-MIX · AUTO SCALE").foregroundStyle(.secondary)
-            }.font(.system(size: 9, weight: .medium, design: .monospaced))
-                .padding(.horizontal, 21).frame(height: 40)
-            Divider()
             GeometryReader { geometry in
                 if let loop {
                     Canvas { context, size in

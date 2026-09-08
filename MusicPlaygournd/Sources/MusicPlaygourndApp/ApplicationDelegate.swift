@@ -10,13 +10,13 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate, NSWindowDelega
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard model?.confirmDiscard() != false else { return false }
+        guard model?.confirmAllDocuments() != false else { return false }
         discardConfirmed = true
         return true
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard discardConfirmed || model?.confirmDiscard() != false else { return .terminateCancel }
+        guard discardConfirmed || model?.confirmAllDocuments() != false else { return .terminateCancel }
         Task {
             do { try await model?.shutdown() }
             catch { NSLog("MusicPlaygournd scratch cleanup failed: %@", error.localizedDescription) }

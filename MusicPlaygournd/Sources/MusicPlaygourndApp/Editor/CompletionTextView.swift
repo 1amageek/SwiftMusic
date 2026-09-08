@@ -6,11 +6,16 @@ import MusicPlaygourndCore
 final class CompletionTextView: NSTextView, NSTableViewDataSource, NSTableViewDelegate, NSPopoverDelegate {
     var onLayout: (() -> Void)?
     var onCompletionRequest: (() -> Void)?
+    private var documentUndoManager = UndoManager()
     private var candidates: [SwiftCompletion] = []
     private var candidateSource = ""
     private var candidateSelection = NSRange(location: 0, length: 0)
     private let completionPopover = NSPopover()
     private let completionTable = NSTableView()
+
+    override var undoManager: UndoManager? { documentUndoManager }
+
+    func useUndoManager(_ manager: UndoManager) { documentUndoManager = manager }
 
     override func layout() {
         super.layout()

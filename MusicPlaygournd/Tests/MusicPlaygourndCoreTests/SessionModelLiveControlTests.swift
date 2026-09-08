@@ -453,6 +453,7 @@ extension NativeHostTests {
             do {
                 let model = harness.model
                 let engine = harness.engine
+                let untitledID = model.activeDocumentID
                 try await Self.adopt(harness, source: Self.baseSource, revision: 1)
                 let effect = try #require(engine.discoverAudioEffects().first {
                     $0.id.componentManufacturer == kAudioUnitManufacturer_Apple && $0.id.componentSubType == kAudioUnitSubType_HighPassFilter
@@ -468,6 +469,7 @@ extension NativeHostTests {
                     route: route, effect: savedEffect, effectBypassed: false, bindings: []), for: document)
                 var callback: AudioUnitInstantiation.Completion?
                 engine.audioUnitStart = { _, completion in callback = completion }
+                model.source = Self.alternateSource
                 try model.openDocument(at: document)
                 try engine.play()
                 try await Self.waitUntil("delayed document AU restore", timeout: .seconds(90)) {
@@ -476,8 +478,7 @@ extension NativeHostTests {
                 #expect(model.isRestoringHostState)
                 let lateCallback = try #require(callback)
                 engine.audioUnitStart = AudioUnitInstantiation.nativeStart
-                model.source = Self.alternateSource
-                model.scheduleEvaluation(immediate: true)
+                model.selectDocument(untitledID)
                 try await Self.waitUntil("new revision cancels old host restore", timeout: .seconds(90)) {
                     model.refresh(); return model.currentRevision == 3 && model.controlsAvailable && !model.isRestoringHostState
                 }

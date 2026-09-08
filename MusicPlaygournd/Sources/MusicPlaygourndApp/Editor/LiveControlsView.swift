@@ -18,6 +18,7 @@ struct LiveControlsView: View {
     var body: some View {
         ScrollView([.horizontal, .vertical]) {
             VStack(alignment: .leading, spacing: 10) {
+                trackMeters
                 if !model.performanceControlMetadata.isEmpty {
                     performanceControls
                     Divider()
@@ -65,7 +66,6 @@ struct LiveControlsView: View {
                         }
                     }
                 }.frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
-                xyPad.frame(width: 190)
                 hostControls.frame(width: 250).disabled(model.isRestoringHostState)
                 }
             }
@@ -79,6 +79,22 @@ struct LiveControlsView: View {
             catch is CancellationError { }
             catch { model.hostDiagnostic = error.localizedDescription }
         }
+    }
+
+    private var trackMeters: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 16) {
+                ForEach(model.loop?.meters ?? [], id: \.target) { meter in
+                    let index = min(meter.peaks.count - 1, max(0, Int(model.beatPosition / (model.loop?.beatCount ?? 1) * Double(meter.peaks.count))))
+                    let peak = model.isPlaying && index >= 0 ? meter.peaks[index] : 0
+                    HStack(spacing: 5) {
+                        Text(meter.label)
+                        ProgressView(value: Double(min(1, peak))).frame(width: 48).tint(peak >= 1 ? .red : .mint)
+                        Text(peak >= 1 ? "CLIP" : String(format: "%.2f", peak))
+                    }.accessibilityLabel("\(meter.label) rendered peak \(peak)")
+                }
+            }.font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+        }.scrollIndicators(.hidden)
     }
 
     private var performanceControls: some View {
@@ -132,29 +148,6 @@ struct LiveControlsView: View {
                 ?? SpatialPosition(x: xRange.lowerBound, depth: depthRange.lowerBound)
             VStack(alignment: .leading, spacing: 4) {
                 Text(metadata.label).font(.system(size: 9)).lineLimit(1)
-                GeometryReader { geometry in
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 7).fill(.cyan.opacity(0.08))
-                        Path { path in
-                            for fraction in [0.25, 0.5, 0.75] {
-                                path.move(to: CGPoint(x: geometry.size.width * fraction, y: 0))
-                                path.addLine(to: CGPoint(x: geometry.size.width * fraction, y: geometry.size.height))
-                                path.move(to: CGPoint(x: 0, y: geometry.size.height * fraction))
-                                path.addLine(to: CGPoint(x: geometry.size.width, y: geometry.size.height * fraction))
-                            }
-                        }.stroke(.cyan.opacity(0.18), lineWidth: 1)
-                        Circle().fill(.cyan).frame(width: 11, height: 11)
-                            .position(x: normalized(position.x, in: xRange) * geometry.size.width,
-                                      y: (1 - normalized(position.depth, in: depthRange)) * geometry.size.height)
-                    }
-                    .contentShape(Rectangle())
-                    .gesture(DragGesture(minimumDistance: 0).onChanged { event in
-                        let x = xRange.lowerBound + min(1, max(0, event.location.x / max(1, geometry.size.width))) * (xRange.upperBound - xRange.lowerBound)
-                        let depth = depthRange.lowerBound + min(1, max(0, 1 - event.location.y / max(1, geometry.size.height))) * (depthRange.upperBound - depthRange.lowerBound)
-                        perform { try model.setPerformancePosition(metadata.controlID, x: x, depth: depth) }
-                    })
-                }
-                .frame(width: 140, height: 76)
                 Slider(value: Binding(get: { position.x }, set: { x in
                     perform { try model.setPerformancePosition(metadata.controlID, x: x) }
                 }), in: xRange).accessibilityLabel("\(metadata.label) X")
@@ -168,70 +161,6 @@ struct LiveControlsView: View {
             .accessibilityLabel(metadata.label)
             .accessibilityIdentifier("performance-\(metadata.controlID)")
         }
-    }
-
-    private func normalized(_ value: Double, in range: ClosedRange<Double>) -> Double {
-        guard range.upperBound > range.lowerBound else { return 0.5 }
-        return min(1, max(0, (value - range.lowerBound) / (range.upperBound - range.lowerBound)))
-    }
-
-    private var xyPad: some View {
-        VStack(spacing: 6) {
-            HStack {
-                Picker("X", selection: $model.xyX) {
-                    Text("Choose X").tag(Optional<LiveControlAddress>.none)
-                    ForEach(model.xyControls, id: \.address) { Text($0.label).tag(Optional($0.address)) }
-                }
-                Picker("Y", selection: $model.xyY) {
-                    Text("Choose Y").tag(Optional<LiveControlAddress>.none)
-                    ForEach(model.xyControls, id: \.address) { Text($0.label).tag(Optional($0.address)) }
-                }
-            }
-            .labelsHidden()
-            .disabled(!model.controlsAvailable)
-            GeometryReader { geometry in
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8).fill(.mint.opacity(0.06))
-                    Path { path in
-                        for fraction in [0.25, 0.5, 0.75] {
-                            path.move(to: .init(x: geometry.size.width * fraction, y: 0))
-                            path.addLine(to: .init(x: geometry.size.width * fraction, y: geometry.size.height))
-                            path.move(to: .init(x: 0, y: geometry.size.height * fraction))
-                            path.addLine(to: .init(x: geometry.size.width, y: geometry.size.height * fraction))
-                        }
-                    }.stroke(.mint.opacity(0.15), lineWidth: 1)
-                    Circle().fill(.mint).frame(width: 12, height: 12)
-                        .shadow(color: .mint.opacity(0.6), radius: 6)
-                        .position(x: position(model.xyX) * geometry.size.width,
-                                  y: (1 - position(model.xyY)) * geometry.size.height)
-                }
-                .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 0).onChanged { value in
-                    let x = min(1, max(0, value.location.x / max(1, geometry.size.width)))
-                    let y = min(1, max(0, 1 - value.location.y / max(1, geometry.size.height)))
-                    perform { try model.setXY(x: x, y: y) }
-                })
-                .accessibilityLabel("XY score control pad")
-                .accessibilityIdentifier("xy-pad")
-            }
-            .frame(height: 105)
-            .disabled(!model.controlsAvailable || !xySelectionAvailable)
-            Slider(value: Binding(get: { position(model.xyX) }, set: { x in
-                perform { try model.setXY(x: x, y: position(model.xyY)) }
-            }), in: 0...1)
-            .accessibilityLabel("X axis")
-            .disabled(!model.controlsAvailable || !xySelectionAvailable)
-            Slider(value: Binding(get: { position(model.xyY) }, set: { y in
-                perform { try model.setXY(x: position(model.xyX), y: y) }
-            }), in: 0...1)
-            .accessibilityLabel("Y axis")
-            .disabled(!model.controlsAvailable || !xySelectionAvailable)
-        }
-    }
-
-    private var xySelectionAvailable: Bool {
-        guard let x = model.xyX, let y = model.xyY else { return false }
-        return x != y
     }
 
     private var hostControls: some View {
@@ -310,12 +239,6 @@ struct LiveControlsView: View {
                 }.disabled(model.fileURL == nil)
             }
         }
-    }
-
-    private func position(_ address: LiveControlAddress?) -> Double {
-        guard let address, let descriptor = model.controlCatalog?.descriptor(for: address),
-              let presentation = descriptor.presentation, let value = model.controlValue(descriptor) else { return 0.5 }
-        return ControlKnob.position(value, in: presentation)
     }
 
     private func label(_ target: LiveControlTarget) -> String {

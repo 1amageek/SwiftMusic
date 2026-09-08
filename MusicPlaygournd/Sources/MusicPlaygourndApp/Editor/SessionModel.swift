@@ -6,7 +6,18 @@ import UniformTypeIdentifiers
 
 @MainActor @Observable
 final class SessionModel {
-    var source = SessionModel.initialSource { didSet { diagnosticRange = nil } }
+    static let maximumOpenDocuments = 32
+    private(set) var documents = [SessionDocument(source: SessionModel.initialSource)]
+    private var activeDocumentIndex = 0
+    var activeDocument: SessionDocument { documents[activeDocumentIndex] }
+    var activeDocumentID: UUID { activeDocument.id }
+    private var revisionDocuments: [UInt64: UUID] = [:]
+    var audibleDocumentID: UUID? { currentRevision.flatMap { revisionDocuments[$0] } }
+    var editorLoop: PreparedLoop? { audibleDocumentID == activeDocumentID ? loop : nil }
+    var source: String {
+        get { activeDocument.source }
+        set { activeDocument.source = newValue; diagnosticRange = nil }
+    }
     private var masterBPM = 120.0
     var bpm: Double {
         get { performanceBPMControlID.flatMap { performanceNumber($0) } ?? masterBPM }
@@ -67,8 +78,14 @@ final class SessionModel {
     private var completionSource = ""
     private var candidateMetadata: [UInt64: EditorSemanticMetadata] = [:]
     var selectionToken = 0
-    var fileURL: URL?
-    var hasUnsavedChanges = false
+    var fileURL: URL? {
+        get { activeDocument.fileURL }
+        set { activeDocument.fileURL = newValue }
+    }
+    var hasUnsavedChanges: Bool {
+        get { activeDocument.isDirty }
+        set { activeDocument.isDirty = newValue }
+    }
     var inlineLayout = true
     var bottomLayout = false
     var audioError = ""
@@ -174,7 +191,8 @@ final class SessionModel {
         let cache = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appending(path: "MusicPlaygournd/Evaluation-\(ProcessInfo.processInfo.processIdentifier)")
         let swift = bundle.object(forInfoDictionaryKey: "SwiftExecutable") as? String ?? "/usr/bin/swift"
-        evaluator = SourceEvaluator(packageURL: packageURL, workspace: cache, swiftExecutable: swift)
+        evaluator = SourceEvaluator(packageURL: packageURL, workspace: cache, swiftExecutable: swift,
+            runtimeSDK: bundle.object(forInfoDictionaryKey: "SwiftExecutable") == nil ? nil : bundle.resourceURL?.appending(path: "RuntimeSDK"))
         completionService = SwiftCompletionService(packageURL: packageURL,
             workspace: cache.deletingLastPathComponent().appending(path: "Completion-\(ProcessInfo.processInfo.processIdentifier)"),
             sourceKitLSPExecutable: URL(fileURLWithPath: swift).deletingLastPathComponent().appending(path: "sourcekit-lsp").path)
@@ -233,6 +251,8 @@ final class SessionModel {
         guard revision < UInt64.max else { diagnostic = "Revision limit reached. Reopen the app."; return }
         revision += 1
         let requested = revision
+        revisionDocuments = revisionDocuments.filter { $0.key == currentRevision || $0.key == requested - 1 }
+        revisionDocuments[requested] = activeDocumentID
         lineMaps = lineMaps.filter { $0.key == currentRevision }
         engine?.beginUpdate(revision: requested)
         // Reconcile adoption after atomically clearing pending audio: a bar may have
@@ -247,7 +267,7 @@ final class SessionModel {
         status = loop == nil ? "Preparing your first loop…" : "Preparing edit · current loop continues"
         evaluationTask = Task { [weak self, evaluator] in
             do {
-                if !immediate { try await Task.sleep(for: .milliseconds(650)) }
+                if !immediate { try await Task.sleep(for: .milliseconds(150)) }
                 await self?.adoptionTask?.value
                 let evaluation = try await evaluator.evaluateRetained(source: text, bpm: tempo, beatsPerBar: meter, revision: requested)
                 let candidate = evaluation.loop
@@ -283,6 +303,11 @@ final class SessionModel {
         }
     }
 
+    func prepareInitialSource() {
+        guard revision == 0, !isPreparing, loop == nil else { return }
+        scheduleEvaluation(immediate: true)
+    }
+
     func togglePlayback() {
         guard let engine else { diagnostic = audioError; return }
         if isPlaying {
@@ -291,7 +316,7 @@ final class SessionModel {
         } else {
             wantsPlayback = true
             if loop == nil {
-                scheduleEvaluation(immediate: true)
+                if !isPreparing { scheduleEvaluation(immediate: true) }
                 return
             }
             do { try engine.play() }
@@ -820,6 +845,7 @@ final class SessionModel {
     }
 
     var activeTokens: [Int: Set<Int>] {
+        guard audibleDocumentID == activeDocumentID else { return [:] }
         guard isPlaying, let loop else { return [:] }
         var tokens: [Int: Set<Int>] = [:]
         for event in loop.events where event.gain > 0 && event.isActive(at: beatPosition, in: loop.beatCount) {
@@ -855,7 +881,7 @@ final class SessionModel {
     private func updateRowLines() {
         rowLines = [:]
         resultLines = [:]
-        guard let loop, let currentRevision, let map = lineMaps[currentRevision] else { return }
+        guard audibleDocumentID == activeDocumentID, let loop, let currentRevision, let map = lineMaps[currentRevision] else { return }
         for row in loop.rows {
             guard let anchor = row.anchor,
                   anchor.fileID == "Session.swift" || anchor.fileID.hasSuffix("/Session.swift") else { continue }
@@ -881,7 +907,6 @@ final class SessionModel {
     }
 
     func openDocument() {
-        guard confirmDiscard() else { return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.swiftSource, .plainText]
         panel.canChooseDirectories = false
@@ -890,18 +915,94 @@ final class SessionModel {
         catch { diagnostic = error.localizedDescription }
     }
 
+    enum DocumentFailure: LocalizedError {
+        case tabLimit, duplicateDestination
+        var errorDescription: String? {
+            switch self {
+            case .tabLimit: "Close a tab before opening another. The limit is 32 documents."
+            case .duplicateDestination: "This file is already open in another tab."
+            }
+        }
+    }
+
     func openDocument(at url: URL) throws {
-        let text = try String(contentsOf: url, encoding: .utf8)
+        let identity = url.standardizedFileURL.resolvingSymlinksInPath()
+        if let document = documents.first(where: { $0.fileURL == identity }) {
+            selectDocument(document.id)
+            return
+        }
+        guard documents.count < Self.maximumOpenDocuments else { throw DocumentFailure.tabLimit }
+        let text = try String(contentsOf: identity, encoding: .utf8)
         guard text.utf8.count <= 65_536 else { throw EvaluationError.invalidSource("Source exceeds 64 KiB.") }
+        let document = SessionDocument(source: text, fileURL: identity)
+        documents.append(document)
+        selectDocument(document.id)
+    }
+
+    func selectDocument(_ id: UUID) {
+        guard let index = documents.firstIndex(where: { $0.id == id }), index != activeDocumentIndex else { return }
         abortPerformanceForDocumentChange()
+        activeDocumentIndex = index
         lineMaps = [:]
         rowLines = [:]
         resultLines = [:]
-        source = text
-        fileURL = url
-        loadHostSettings(for: url)
-        hasUnsavedChanges = false
+        completionSites = []
+        completionSource = ""
+        completionStatus = ""
+        diagnostic = ""
+        selectionRange = nil
+        selectionLine = nil
+        controlVisualization = nil
+        visualizationTask?.cancel()
+        loadHostSettings(for: fileURL)
         scheduleEvaluation(immediate: true)
+    }
+
+    enum CloseDecision { case save, cancel, discard }
+
+    private func closeDecision(for document: SessionDocument) -> CloseDecision {
+        let alert = NSAlert()
+        alert.messageText = "Save changes to \(document.name)?"
+        alert.informativeText = "Your unsaved Swift code will be lost."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Discard")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return .save
+        case .alertThirdButtonReturn: return .discard
+        default: return .cancel
+        }
+    }
+
+    @discardableResult
+    func closeDocument(_ id: UUID, decision: CloseDecision? = nil) -> Bool {
+        guard let document = documents.first(where: { $0.id == id }) else { return true }
+        if document.isDirty {
+            switch decision ?? closeDecision(for: document) {
+            case .save: guard saveDocument(document) else { return false }
+            case .cancel: return false
+            case .discard: break
+            }
+        }
+        let wasActive = id == activeDocumentID
+        let retainedID = activeDocumentID
+        if documents.count == 1 { documents.append(SessionDocument(source: Self.initialSource)) }
+        if wasActive, let replacement = documents.first(where: { $0.id != id }) { selectDocument(replacement.id) }
+        let selectedID = wasActive ? activeDocumentID : retainedID
+        documents.removeAll { $0.id == id }
+        activeDocumentIndex = documents.firstIndex { $0.id == selectedID } ?? 0
+        return true
+    }
+
+    func confirmAllDocuments(decision: ((SessionDocument) -> CloseDecision)? = nil) -> Bool {
+        for document in documents where document.isDirty {
+            switch decision?(document) ?? closeDecision(for: document) {
+            case .save: guard saveDocument(document) else { return false }
+            case .cancel: return false
+            case .discard: break
+            }
+        }
+        return true
     }
 
     private func abortPerformanceForDocumentChange() {
@@ -921,8 +1022,11 @@ final class SessionModel {
         controlsAvailable = false
     }
 
-    @discardableResult func saveDocument() -> Bool {
-        var destination = fileURL
+    @discardableResult func saveDocument() -> Bool { saveDocument(activeDocument) }
+
+    @discardableResult
+    func saveDocument(_ document: SessionDocument, to url: URL? = nil) -> Bool {
+        var destination = url ?? document.fileURL
         if destination == nil {
             let panel = NSSavePanel()
             panel.nameFieldStringValue = "Session.swift"
@@ -930,28 +1034,23 @@ final class SessionModel {
             guard panel.runModal() == .OK else { return false }
             destination = panel.url
         }
-        guard let destination else { return false }
+        guard let destination = destination?.standardizedFileURL.resolvingSymlinksInPath() else { return false }
         do {
-            try source.write(to: destination, atomically: true, encoding: .utf8)
-            fileURL = destination
-            try saveHostSettings(for: destination)
-            hasUnsavedChanges = false
+            guard !documents.contains(where: { $0.id != document.id && $0.fileURL == destination }) else { throw DocumentFailure.duplicateDestination }
+            try document.source.write(to: destination, atomically: true, encoding: .utf8)
+            document.fileURL = destination
+            if document.id == activeDocumentID { try saveHostSettings(for: destination) }
+            document.isDirty = false
             return true
         } catch { diagnostic = error.localizedDescription; return false }
     }
 
     func confirmDiscard() -> Bool {
-        guard hasUnsavedChanges else { return true }
-        let alert = NSAlert()
-        alert.messageText = "Save changes to your session?"
-        alert.informativeText = "Your unsaved Swift code will be lost."
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-        alert.addButton(withTitle: "Discard")
-        switch alert.runModal() {
-        case .alertFirstButtonReturn: return saveDocument()
-        case .alertThirdButtonReturn: return true
-        default: return false
+        guard activeDocument.isDirty else { return true }
+        switch closeDecision(for: activeDocument) {
+        case .save: return saveDocument()
+        case .cancel: return false
+        case .discard: return true
         }
     }
 
@@ -1406,12 +1505,15 @@ final class SessionModel {
             effect: effect, effectBypassed: bypassed, bindings: learnedBindings), for: document)
     }
 
-    private func loadHostSettings(for document: URL) {
+    private func loadHostSettings(for document: URL?) {
         hostRestoreTask?.cancel()
         effectTask?.cancel()
         pendingHostState = nil
-        do { pendingHostState = try hostStateStore.load(for: document) ?? .init(
-            adoptedSourceDigest: nil, route: .disabled, effect: nil, effectBypassed: false, bindings: []) }
+        do {
+            let saved = try document.flatMap { try hostStateStore.load(for: $0) }
+            pendingHostState = saved ?? .init(adoptedSourceDigest: nil, route: .disabled,
+                effect: nil, effectBypassed: false, bindings: [])
+        }
         catch { hostDiagnostic = error.localizedDescription }
     }
 

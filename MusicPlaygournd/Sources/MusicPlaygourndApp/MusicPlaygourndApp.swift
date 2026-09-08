@@ -9,12 +9,13 @@ struct MusicPlaygourndApp: App {
     var body: some Scene {
         Window("MusicPlaygournd", id: "editor") {
             ContentView(model: model)
-                .onAppear { delegate.model = model; NSApplication.shared.activate(ignoringOtherApps: true) }
+                .onAppear { delegate.model = model; model.prepareInitialSource(); NSApplication.shared.activate(ignoringOtherApps: true) }
         }
         .defaultSize(width: 1160, height: 760)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Open Session…", action: model.openDocument).keyboardShortcut("o")
+                Button("Close Tab") { model.closeDocument(model.activeDocumentID) }.keyboardShortcut("w")
             }
             CommandGroup(replacing: .saveItem) {
                 Button("Save Session") { model.saveDocument() }.keyboardShortcut("s")

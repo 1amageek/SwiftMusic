@@ -2,6 +2,12 @@ import AppKit
 import MusicPlaygourndCore
 import SwiftUI
 
+struct EditorDocumentState: Equatable {
+    var selection = NSRange(location: 0, length: 0)
+    var scrollOffset: CGFloat = 0
+    var horizontalScrollOffset: CGFloat = 0
+}
+
 struct CodeEditor: NSViewRepresentable {
     @Binding var text: String
     let inlineLoop: PreparedLoop?
@@ -23,6 +29,10 @@ struct CodeEditor: NSViewRepresentable {
     let onCompletionStatus: (String) -> Void
     var selectionRange: NSRange? = nil
     var visualization: PreparedControlVisualization? = nil
+    var documentID: UUID? = nil
+    var editorState = EditorDocumentState()
+    var openDocumentIDs: Set<UUID> = []
+    var onEditorStateChange: (UUID, EditorDocumentState) -> Void = { _, _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -63,7 +73,9 @@ struct CodeEditor: NSViewRepresentable {
         editor.backgroundColor = NSColor(calibratedRed: 0.065, green: 0.075, blue: 0.09, alpha: 1)
         editor.insertionPointColor = .systemMint
         editor.selectedTextAttributes = [.backgroundColor: NSColor.systemMint.withAlphaComponent(0.25)]
+        context.coordinator.installDocument(documentID, editor: editor, state: editorState)
         editor.string = text
+        context.coordinator.restoreSelection(editorState.selection, in: editor)
         editor.delegate = context.coordinator
         context.coordinator.inlineLayout = InlineRhythmLayout(editor: editor)
         editor.setAccessibilityIdentifier("swift-source-editor")
@@ -91,10 +103,14 @@ struct CodeEditor: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.pruneUndoManagers(keeping: openDocumentIDs)
         guard let editor = scroll.documentView as? NSTextView else { return }
+        if context.coordinator.documentID != documentID {
+            context.coordinator.switchDocument(to: documentID, text: text, editor: editor, scroll: scroll, state: editorState)
+        }
         if editor.string != text {
             context.coordinator.cancelCompletion()
-            editor.string = text
+            context.coordinator.replaceText(text, in: editor)
             context.coordinator.highlight(editor)
         }
         let delta = scrollDelta - context.coordinator.lastScrollDelta
@@ -141,6 +157,9 @@ struct CodeEditor: NSViewRepresentable {
         private var completionTask: Task<Void, Never>?
         private var completionGeneration = 0
         private var previousActive: [Int: Set<Int>] = [:]
+        private(set) var documentID: UUID?
+        private var undoManagers: [UUID: UndoManager] = [:]
+        private let untitledUndoManager = UndoManager()
 
         func highlightPlayback(_ editor: NSTextView) {
             guard let layout = editor.layoutManager else { return }
@@ -170,7 +189,75 @@ struct CodeEditor: NSViewRepresentable {
                 }
             }
         }
-        @objc func scrolled() { inlineLayout?.layoutCards(); publishLayout() }
+        @objc func scrolled() {
+            inlineLayout?.layoutCards()
+            publishEditorState()
+            publishLayout()
+        }
+
+        func installDocument(_ id: UUID?, editor: CompletionTextView, state: EditorDocumentState) {
+            documentID = id
+            editor.useUndoManager(undoManager(for: id))
+        }
+
+        func switchDocument(to id: UUID?, text: String, editor: NSTextView, scroll: NSScrollView, state: EditorDocumentState) {
+            publishEditorState()
+            cancelCompletion()
+            if let editor = editor as? CompletionTextView {
+                editor.dismissCompletions()
+                editor.breakUndoCoalescing()
+                editor.useUndoManager(undoManager(for: id))
+            }
+            documentID = id
+            lastSelection = 0
+            lastScrollDelta = parent.scrollDelta
+            previousActive = [:]
+            rangeSource = ""
+            rangeLines = [:]
+            rangePatterns = [:]
+            published = [:]
+            replaceText(text, in: editor)
+            highlight(editor)
+            restoreSelection(state.selection, in: editor)
+            let clip = scroll.contentView
+            clip.scroll(to: CGPoint(x: max(0, state.horizontalScrollOffset), y: max(0, state.scrollOffset)))
+            scroll.reflectScrolledClipView(clip)
+        }
+
+        func replaceText(_ text: String, in editor: NSTextView) {
+            let undo = editor.undoManager
+            undo?.disableUndoRegistration()
+            editor.string = text
+            undo?.enableUndoRegistration()
+        }
+
+        func restoreSelection(_ selection: NSRange, in editor: NSTextView) {
+            let length = (editor.string as NSString).length
+            guard selection.location >= 0, selection.location <= length,
+                  selection.length >= 0, selection.length <= length - selection.location else {
+                editor.setSelectedRange(NSRange(location: 0, length: 0))
+                return
+            }
+            editor.setSelectedRange(selection)
+        }
+
+        private func undoManager(for id: UUID?) -> UndoManager {
+            guard let id else { return untitledUndoManager }
+            if let manager = undoManagers[id] { return manager }
+            let manager = UndoManager()
+            undoManagers[id] = manager
+            return manager
+        }
+
+        func pruneUndoManagers(keeping ids: Set<UUID>) {
+            guard !ids.isEmpty else { return }
+            undoManagers = undoManagers.filter { ids.contains($0.key) }
+        }
+
+        private func publishEditorState() {
+            guard let scroll, let editor = scroll.documentView as? NSTextView, let id = documentID else { return }
+            parent.onEditorStateChange(id, EditorDocumentState(selection: editor.selectedRange(), scrollOffset: scroll.contentView.bounds.minY, horizontalScrollOffset: scroll.contentView.bounds.minX))
+        }
         func publishLayout() {
             guard let scroll, let editor = scroll.documentView as? NSTextView,
                   let layout = editor.layoutManager, let container = editor.textContainer else { return }
@@ -191,8 +278,9 @@ struct CodeEditor: NSViewRepresentable {
             }
             guard rectangles != published else { return }
             published = rectangles
+            let identity = documentID
             Task { @MainActor [weak self] in
-                guard let self, self.published == rectangles else { return }
+                guard let self, self.documentID == identity, self.published == rectangles else { return }
                 self.parent.onLayout(rectangles)
             }
         }
@@ -200,6 +288,8 @@ struct CodeEditor: NSViewRepresentable {
             if let replacementString { parent.beforeEdit(affectedCharRange, replacementString) }
             return true
         }
+
+        func textViewDidChangeSelection(_ notification: Notification) { publishEditorState() }
         init(_ parent: CodeEditor) { self.parent = parent }
         func textDidChange(_ notification: Notification) {
             guard let editor = notification.object as? NSTextView, parent.text != editor.string else { return }
@@ -229,15 +319,16 @@ struct CodeEditor: NSViewRepresentable {
             let generation = completionGeneration
             let source = editor.string
             let selection = editor.selectedRange()
+            let identity = documentID
             guard selection.length == 0 else { return }
             completionTask = Task { @MainActor [weak self, weak editor] in
                 do {
                     if !immediate { try await Task.sleep(for: .milliseconds(250)) }
-                    guard let self, let editor else { return }
+                    guard let self, let editor, self.documentID == identity else { return }
                     self.parent.onCompletionStatus("Swift completion…")
                     let values = try await self.parent.completions(source, selection.location)
                     try Task.checkCancellation()
-                    guard generation == self.completionGeneration else { return }
+                    guard generation == self.completionGeneration, self.documentID == identity else { return }
                     guard editor.string == source, editor.selectedRange() == selection else {
                         self.parent.onCompletionStatus("")
                         return
@@ -247,7 +338,7 @@ struct CodeEditor: NSViewRepresentable {
                 } catch is CancellationError {
                     // A later source/cursor request owns completion presentation.
                 } catch {
-                    guard let self, generation == self.completionGeneration else { return }
+                    guard let self, generation == self.completionGeneration, self.documentID == identity else { return }
                     self.parent.onCompletionStatus("Completion: \(error.localizedDescription)")
                 }
             }

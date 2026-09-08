@@ -17,10 +17,33 @@ cp "$binary_directory/MusicPlaygournd" "$app_path/Contents/MacOS/MusicPlaygournd
 cp "$package_root/Package.swift" "$resources/MusicPlaygournd/Package.swift"
 cp -R "$package_root/Sources" "$resources/MusicPlaygournd/"
 cp -R "$package_root/Tests" "$resources/MusicPlaygournd/"
-/usr/bin/python3 - "$app_path" "$swift_executable" "$bundle_id" <<'PY'
-import plistlib, sys
+/usr/bin/python3 - "$app_path" "$swift_executable" "$bundle_id" "$binary_directory" <<'PY'
+import hashlib, json, plistlib, shutil, subprocess, sys
 from pathlib import Path
 app = Path(sys.argv[1])
+runtime = app / 'Contents/Resources/RuntimeSDK'
+if runtime.exists():
+    shutil.rmtree(runtime)
+runtime.mkdir(parents=True)
+products = Path(sys.argv[4])
+for name in ('SwiftMusic.o', 'MusicPlaygourndCore.o', 'SwiftMusic.swiftmodule', 'MusicPlaygourndCore.swiftmodule'):
+    source = products / name
+    if source.is_dir():
+        shutil.copytree(source, runtime / name, dirs_exist_ok=True)
+    else:
+        shutil.copy2(source, runtime / name)
+def output(*arguments):
+    return subprocess.check_output(arguments, stderr=subprocess.STDOUT, text=True).strip()
+target_info = json.loads(output(sys.argv[2], '-print-target-info'))
+architecture = target_info['target']['triple'].split('-')[0]
+(runtime / 'environment.json').write_text(json.dumps({
+    'artifactDigests': {str(p.relative_to(runtime)): hashlib.sha256(p.read_bytes()).hexdigest()
+                        for p in sorted(runtime.rglob('*')) if p.is_file()},
+    'compilerVersion': output(sys.argv[2], '--version'),
+    'sdkPath': output('/usr/bin/xcrun', '--sdk', 'macosx', '--show-sdk-path'),
+    'pluginPath': str(Path(target_info['paths']['runtimeResourcePath']) / 'host/plugins'),
+    'target': architecture + '-apple-macosx15.0',
+}))
 info = {
     'CFBundleExecutable': 'MusicPlaygournd',
     'CFBundleIdentifier': sys.argv[3],
