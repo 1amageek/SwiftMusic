@@ -13,25 +13,25 @@ final class SessionModel {
                 diagnostic = "Tempo must be between 40 and 240 BPM."
                 return
             }
-            do { try engine?.setPlaybackRate(Float(bpm / 120)) }
+            do { try engine?.setPlaybackRate(Float(bpm / 120)); masterControlValues.removeValue(forKey: .playbackRate) }
             catch { bpm = oldValue; diagnostic = error.localizedDescription }
         }
     }
     var lowPass = 20_000.0 {
         didSet {
-            do { try engine?.setLowPass(cutoff: lowPass >= 19_999 ? nil : Float(lowPass)) }
+            do { try engine?.setLowPass(cutoff: lowPass >= 19_999 ? nil : Float(lowPass)); masterControlValues.removeValue(forKey: .lowPassCutoff) }
             catch { lowPass = oldValue; diagnostic = error.localizedDescription }
         }
     }
     var delayMix = 0.0 {
         didSet {
-            do { try engine?.setDelay(mix: Float(delayMix)) }
+            do { try engine?.setDelay(mix: Float(delayMix)); masterControlValues.removeValue(forKey: .delayMix) }
             catch { delayMix = oldValue; diagnostic = error.localizedDescription }
         }
     }
     var reverbMix = 0.0 {
         didSet {
-            do { try engine?.setReverb(mix: Float(reverbMix)) }
+            do { try engine?.setReverb(mix: Float(reverbMix)); masterControlValues.removeValue(forKey: .reverbMix) }
             catch { reverbMix = oldValue; diagnostic = error.localizedDescription }
         }
     }
@@ -79,7 +79,7 @@ final class SessionModel {
     private(set) var controlCatalog: LiveControlCatalog?
     private(set) var controlsAvailable = false
     private(set) var overrideGeneration: UInt64 = 0
-    private var candidateCatalogs: [UInt64: LiveControlCatalog] = [:]
+    private(set) var candidateCatalogs: [UInt64: LiveControlCatalog] = [:]
     private var overrides: [LiveControlAddress: LiveControlValue] = [:]
     private var lastRenderedGeneration: UInt64 = 0
     private var lastRenderedOverrides: [LiveControlAddress: LiveControlValue] = [:]
@@ -88,8 +88,30 @@ final class SessionModel {
     private var adoptionTask: Task<Void, Never>?
     private var controlHealthTask: Task<Void, Never>?
     private var lastControlHealthCheck = ContinuousClock.now
+    var selectedControl: LiveControlAddress?
+    var xyX: LiveControlAddress?
+    var xyY: LiveControlAddress?
+    var hostDiagnostic = ""
+    private(set) var learnAddress: LiveControlAddress?
+    private(set) var learnedBindings: [DocumentHostStateStore.LearnBinding] = []
+    private(set) var midiEndpoints: [MIDIEndpointDescriptor] = []
+    private(set) var audioEffects: [HostedAudioUnitDescriptor] = []
+    private(set) var hostedEffect = HostedAudioUnitSnapshot.none
+    private(set) var isLoadingEffect = false
+    private(set) var performance: PlaybackPerformanceSnapshot?
+    private var masterControlValues: [LiveControlParameter: LiveControlValue] = [:]
+    private var midiEventTask: Task<Void, Never>?
+    private var effectTask: Task<Void, Error>?
+    private var effectRequestID = UUID()
+    private var hostRestoreTask: Task<Void, Never>?
+    private var pendingHostState: DocumentHostStateStore.State?
+    private var adoptedSourceDigest: String?
+    private(set) var candidateSourceDigests: [UInt64: String] = [:]
+    private let hostStateStore: DocumentHostStateStore
+    private(set) var isRestoringHostState = false
 
     init() {
+        hostStateStore = DocumentHostStateStore()
         let bundle = Bundle.main
         let package = bundle.resourceURL?.appending(path: "SwiftMusic/MusicPlaygournd")
         let sourcePackage = URL(fileURLWithPath: #filePath)
@@ -111,7 +133,8 @@ final class SessionModel {
     }
 
     init(evaluator: SourceEvaluator, completionService: SwiftCompletionService, engine: AudioLoopEngine,
-         midiService: (any MIDIServiceProtocol)? = nil) {
+         midiService: (any MIDIServiceProtocol)? = nil, hostStateStore: DocumentHostStateStore = DocumentHostStateStore()) {
+        self.hostStateStore = hostStateStore
         self.evaluator = evaluator
         self.completionService = completionService
         self.engine = engine
@@ -158,6 +181,7 @@ final class SessionModel {
                 guard let engine = self.engine else { throw EvaluationError.invalidResult(self.audioError) }
                 self.lineMaps[requested] = SourceLineMap(source: text, lines: candidate.rows.flatMap { [$0.anchor?.line, $0.resultLine].compactMap { $0 } })
                 self.candidateCatalogs = [requested: evaluation.catalog]
+                self.candidateSourceDigests = [requested: DocumentHostStateStore.sourceDigest(text)]
                 try engine.submit(loop: candidate, revision: requested)
                 if self.wantsPlayback { try engine.play() }
                 self.isPreparing = false
@@ -196,6 +220,7 @@ final class SessionModel {
         isPlaying = snapshot.isPlaying
         beatPosition = snapshot.beatPosition
         if currentRevision != snapshot.revision {
+            hostRestoreTask?.cancel()
             currentRevision = snapshot.revision
             loop = snapshot.loop
             overrideGeneration = snapshot.overrideGeneration
@@ -220,6 +245,7 @@ final class SessionModel {
                     do {
                         self.controlCatalog = try self.catalogWithMasters(catalog, revision: adoptedRevision)
                         self.controlsAvailable = true
+                        self.adoptedControlsDidChange(revision: adoptedRevision)
                     } catch { self.diagnostic = error.localizedDescription }
                 }
             }
@@ -247,6 +273,8 @@ final class SessionModel {
         }
         if let capture = engine?.outputMeter() {
             outputSamples = capture.interleavedSamples
+            performance = capture.performance
+            hostedEffect = engine?.audioEffectSnapshot() ?? .none
             if let analyzer {
                 spectrum = analyzer.analyze(interleavedSamples: outputSamples,
                     sampleRate: capture.sampleRate, isPlaying: isPlaying)
@@ -259,19 +287,30 @@ final class SessionModel {
 
     /// A nil value releases this address back to its score or persistent master target.
     func setControl(_ address: LiveControlAddress, value: LiveControlValue?) throws {
-        guard let currentRevision, address.revision == currentRevision else {
-            throw LiveControlError.staleRevision(expected: currentRevision ?? 0, actual: address.revision)
+        try setControls([address: value])
+    }
+
+    /// Applies one complete score override generation for a knob or XY gesture.
+    func setControls(_ updates: [LiveControlAddress: LiveControlValue?]) throws {
+        guard !updates.isEmpty else { return }
+        guard let currentRevision else { throw EvaluationError.invalidResult("No adopted score.") }
+        for address in updates.keys {
+            guard address.revision == currentRevision else {
+                throw LiveControlError.staleRevision(expected: currentRevision, actual: address.revision)
+            }
+            guard controlCatalog?.descriptor(for: address) != nil else { throw LiveControlError.unknownAddress(address) }
         }
-        guard controlCatalog?.descriptor(for: address) != nil else {
-            throw LiveControlError.unknownAddress(address)
-        }
-        if address.target == .master {
-            try applyMaster(address, value: value)
+        if let master = updates.first(where: { $0.key.target == .master }) {
+            guard updates.count == 1 else { throw LiveControlError.invalidCatalog("XY pairs require score controls.") }
+            try applyMaster(master.key, value: master.value)
+            masterControlValues[master.key.parameter] = master.value
             return
         }
         guard controlsAvailable else { throw EvaluationError.invalidResult("Live controls are unavailable. Audio continues.") }
         guard requestedGeneration < UInt64.max else { throw EvaluationError.invalidResult("Control generation limit reached.") }
-        overrides[address] = value
+        var next = overrides
+        for (address, value) in updates { next[address] = value }
+        overrides = next
         requestedGeneration += 1
         let generation = requestedGeneration
         let values = overrides.map { LiveControlOverride(address: $0.key, value: $0.value) }
@@ -307,7 +346,8 @@ final class SessionModel {
         ]
         return try LiveControlCatalog(descriptors: catalog.descriptors + masters.map {
             LiveControlDescriptor(address: .init(revision: revision, target: .master, parameter: $0.0),
-                                  label: $0.1, baseline: $0.2)
+                                  label: $0.1, baseline: $0.2,
+                                  presentation: try .suggested(for: $0.0))
         })
     }
 
@@ -380,17 +420,21 @@ final class SessionModel {
         panel.allowedContentTypes = [.swiftSource, .plainText]
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let text = try String(contentsOf: url, encoding: .utf8)
-            guard text.utf8.count <= 65_536 else { throw EvaluationError.invalidSource("Source exceeds 64 KiB.") }
-            lineMaps = [:]
-            rowLines = [:]
-            resultLines = [:]
-            source = text
-            fileURL = url
-            hasUnsavedChanges = false
-            scheduleEvaluation(immediate: true)
-        } catch { diagnostic = error.localizedDescription }
+        do { try openDocument(at: url) }
+        catch { diagnostic = error.localizedDescription }
+    }
+
+    func openDocument(at url: URL) throws {
+        let text = try String(contentsOf: url, encoding: .utf8)
+        guard text.utf8.count <= 65_536 else { throw EvaluationError.invalidSource("Source exceeds 64 KiB.") }
+        lineMaps = [:]
+        rowLines = [:]
+        resultLines = [:]
+        source = text
+        fileURL = url
+        loadHostSettings(for: url)
+        hasUnsavedChanges = false
+        scheduleEvaluation(immediate: true)
     }
 
     @discardableResult func saveDocument() -> Bool {
@@ -406,6 +450,7 @@ final class SessionModel {
         do {
             try source.write(to: destination, atomically: true, encoding: .utf8)
             fileURL = destination
+            try saveHostSettings(for: destination)
             hasUnsavedChanges = false
             return true
         } catch { diagnostic = error.localizedDescription; return false }
@@ -456,6 +501,7 @@ final class SessionModel {
             try await applyMIDIRoute(route, replacing: previous, service: service)
             try Task.checkCancellation()
             guard !midiClosed else { throw MIDIError.serviceShutDown }
+            if route.input != nil { try await startMIDIEvents() }
             midiRoute = route
             if previous.clockMode != route.clockMode { lastMIDICommandGeneration = 0 }
             startMIDIScheduling()
@@ -618,6 +664,15 @@ final class SessionModel {
 
     func shutdown() async throws {
         isShuttingDown = true
+        hostRestoreTask?.cancel()
+        effectTask?.cancel()
+        midiEventTask?.cancel()
+        await hostRestoreTask?.value
+        if let effectTask {
+            do { try await effectTask.value }
+            catch is CancellationError { }
+            catch { hostDiagnostic = error.localizedDescription }
+        }
         var recordingFailure: Error?
         do { try await cancelRecording() }
         catch { recordingFailure = error; diagnostic = error.localizedDescription }
@@ -636,6 +691,7 @@ final class SessionModel {
             catch { diagnostic = error.localizedDescription }
             await midiService.shutdown()
         }
+        await midiEventTask?.value
         evaluationTask?.cancel()
         controlTask?.cancel()
         adoptionTask?.cancel()
@@ -650,6 +706,249 @@ final class SessionModel {
         async let evaluationShutdown: Void = evaluator.shutdown()
         _ = try await (completionShutdown, evaluationShutdown)
         if let recordingFailure { throw recordingFailure }
+    }
+
+    var displayedBPM: Double {
+        if case .number(let rate) = masterControlValues[.playbackRate] { return rate * 120 }
+        return bpm
+    }
+
+    var xyControls: [LiveControlDescriptor] {
+        (controlCatalog?.descriptors ?? []).filter { $0.address.target != .master && $0.presentation != nil }
+    }
+
+    func controlValue(_ descriptor: LiveControlDescriptor) -> Double? {
+        let value = descriptor.address.target == .master
+            ? masterControlValues[descriptor.address.parameter] : overrides[descriptor.address]
+        if case .number(let number) = value { return number }
+        if value == .bypassed { return nil }
+        if descriptor.address.target == .master {
+            switch descriptor.address.parameter {
+            case .playbackRate: return bpm / 120
+            case .lowPassCutoff: return lowPass >= 19_999 ? nil : lowPass
+            case .delayMix: return delayMix
+            case .reverbMix: return reverbMix
+            default: return nil
+            }
+        }
+        if case .scalar(let number) = descriptor.baseline { return number }
+        return nil
+    }
+
+    func setXY(x: Double, y: Double) throws {
+        guard let xyX, let xyY, xyX != xyY,
+              let a = controlCatalog?.descriptor(for: xyX), let b = controlCatalog?.descriptor(for: xyY),
+              xyX.target != .master, xyY.target != .master,
+              let first = a.presentation, let second = b.presentation else {
+            throw LiveControlError.invalidCatalog("Choose two score controls for the XY pad.")
+        }
+        try setControls([xyX: .number(first.value(at: x)), xyY: .number(second.value(at: y))])
+    }
+
+    func refreshHostDevices() async throws {
+        guard !isShuttingDown else { throw MIDIError.serviceShutDown }
+        if let engine { audioEffects = try engine.discoverAudioEffects() }
+        if midiService == nil { midiService = try CoreMIDIService() }
+        guard let midiService else { throw MIDIError.serviceShutDown }
+        let endpoints = try await midiService.enumerateEndpoints()
+        guard !isShuttingDown else { throw MIDIError.serviceShutDown }
+        midiEndpoints = endpoints
+    }
+
+    func selectHostedEffect(_ id: HostedAudioUnitID?, restoring state: HostedAudioUnitState? = nil) async throws {
+        guard !isShuttingDown, !isRecording, let engine else {
+            throw EvaluationError.invalidResult("Stop recording before changing the hosted effect.")
+        }
+        effectTask?.cancel()
+        let task = Task { if let id { try await engine.selectAudioEffect(id, restoring: state) }
+            else { try engine.clearAudioEffect() } }
+        effectTask = task
+        let requestID = UUID()
+        effectRequestID = requestID
+        isLoadingEffect = true
+        defer {
+            if effectRequestID == requestID { isLoadingEffect = false; hostedEffect = engine.audioEffectSnapshot() }
+        }
+        try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+
+    func bypassHostedEffect(_ bypassed: Bool) throws {
+        guard let engine else { throw EvaluationError.invalidResult(audioError) }
+        try engine.setAudioEffectBypassed(bypassed)
+        hostedEffect = engine.audioEffectSnapshot()
+    }
+
+    func beginMIDILearn(_ address: LiveControlAddress) throws {
+        guard midiRoute.input != nil, midiEventTask != nil else { throw MIDIError.invalidLoop("Select an active MIDI input before learning a control.") }
+        guard address.revision == currentRevision, controlCatalog?.descriptor(for: address)?.presentation != nil else {
+            throw LiveControlError.unknownAddress(address)
+        }
+        learnAddress = address
+    }
+
+    func clearMIDILearn(_ address: LiveControlAddress) {
+        learnedBindings.removeAll { $0.address == address }
+        if learnAddress == address { learnAddress = nil }
+    }
+
+    private func startMIDIEvents() async throws {
+        guard midiEventTask == nil, let midiService else { return }
+        let events = try await midiService.eventStream()
+        midiEventTask = Task { [weak self] in
+            defer {
+                self?.midiEventTask = nil
+                if !Task.isCancelled, self?.midiClosed == false {
+                    self?.learnAddress = nil
+                    self?.hostDiagnostic = "MIDI input stream ended. Reconnect the input to resume Learn."
+                }
+            }
+            for await event in events {
+                guard !Task.isCancelled else { return }
+                self?.receiveControlChange(event)
+            }
+        }
+    }
+
+    private func receiveControlChange(_ event: TimestampedMIDIEvent) {
+        guard event.sourceID == midiRoute.input,
+              case .controlChange(let channel, let controller, let value) = event.message else { return }
+        do {
+            _ = try event.message.validated()
+            if let address = learnAddress {
+                guard address.revision == currentRevision, adoptedSourceDigest != nil else {
+                    learnAddress = nil
+                    throw LiveControlError.unknownAddress(address)
+                }
+                learnedBindings.removeAll { $0.address == address || ($0.endpoint == event.sourceID && $0.channel == channel && $0.controller == controller) }
+                guard learnedBindings.count < DocumentHostStateStore.maximumBindingCount else {
+                    throw DocumentHostStateStore.Failure.tooLarge
+                }
+                learnedBindings.append(.init(endpoint: event.sourceID, channel: channel, controller: controller, address: address))
+                learnAddress = nil
+            }
+            guard let binding = learnedBindings.first(where: { $0.endpoint == event.sourceID && $0.channel == channel && $0.controller == controller }),
+                  binding.address.revision == currentRevision,
+                  let descriptor = controlCatalog?.descriptor(for: binding.address),
+                  let presentation = descriptor.presentation else { return }
+            let range = binding.range
+            let mapping = try LiveControlPresentation(unit: presentation.unit,
+                minimum: range?.lowerBound ?? presentation.minimum, maximum: range?.upperBound ?? presentation.maximum,
+                scale: presentation.scale)
+            try setControl(binding.address, value: .number(mapping.value(at: Double(value) / 127)))
+        } catch { hostDiagnostic = error.localizedDescription }
+    }
+
+    func saveHostSettings(for document: URL) throws {
+        let effect: HostedAudioUnitState?
+        let bypassed: Bool
+        switch engine?.audioEffectSnapshot() ?? .none {
+        case .none: effect = nil; bypassed = false
+        case .loaded(_, let value): effect = try engine?.captureAudioEffectState(); bypassed = value
+        }
+        try hostStateStore.save(.init(adoptedSourceDigest: adoptedSourceDigest, route: midiRoute,
+            effect: effect, effectBypassed: bypassed, bindings: learnedBindings), for: document)
+    }
+
+    private func loadHostSettings(for document: URL) {
+        hostRestoreTask?.cancel()
+        effectTask?.cancel()
+        pendingHostState = nil
+        do { pendingHostState = try hostStateStore.load(for: document) ?? .init(
+            adoptedSourceDigest: nil, route: .disabled, effect: nil, effectBypassed: false, bindings: []) }
+        catch { hostDiagnostic = error.localizedDescription }
+    }
+
+    private func adoptedControlsDidChange(revision: UInt64) {
+        adoptedSourceDigest = candidateSourceDigests[revision]
+        candidateSourceDigests = candidateSourceDigests.filter { $0.key == revision }
+        if !learnedBindings.isEmpty { hostDiagnostic = "MIDI Learn bindings were detached after the score changed." }
+        learnedBindings.removeAll()
+        learnAddress = nil
+        selectedControl = controlCatalog?.descriptors.first?.address
+        xyX = xyControls.first(where: { $0.address.parameter == .pan })?.address ?? xyControls.first?.address
+        xyY = xyControls.first(where: { $0.address != xyX })?.address
+        let state = pendingHostState
+        pendingHostState = nil
+        let previousRestore = hostRestoreTask
+        previousRestore?.cancel()
+        hostRestoreTask = Task { [weak self] in
+            await previousRestore?.value
+            guard let self, !Task.isCancelled, self.currentRevision == revision, let state else { return }
+            do { try await self.restoreHostSettings(state, revision: revision) }
+            catch is CancellationError { }
+            catch { self.hostDiagnostic = error.localizedDescription }
+        }
+    }
+
+    func restoreHostSettings(_ state: DocumentHostStateStore.State, revision: UInt64) async throws {
+        try state.validate()
+        guard !isRestoringHostState else { throw EvaluationError.invalidResult("Host restore is already in progress.") }
+        isRestoringHostState = true
+        defer { isRestoringHostState = false }
+        guard currentRevision == revision, let catalog = controlCatalog else {
+            throw LiveControlError.staleRevision(expected: currentRevision ?? 0, actual: revision)
+        }
+        try await refreshHostDevices()
+        try Task.checkCancellation()
+        guard currentRevision == revision else { throw CancellationError() }
+        if let effect = state.effect, !audioEffects.contains(where: { $0.id == effect.id }) {
+            throw HostedAudioUnitError.missingComponent
+        }
+        for input in state.route.inputIDs {
+            guard midiEndpoints.contains(where: { $0.id == input && $0.direction == .input }) else { throw MIDIError.endpointNotFound(input) }
+        }
+        if let output = state.route.output,
+           !midiEndpoints.contains(where: { $0.id == output && $0.direction == .output }) { throw MIDIError.endpointNotFound(output) }
+        var bindings: [DocumentHostStateStore.LearnBinding] = []
+        for binding in state.bindings where state.adoptedSourceDigest == adoptedSourceDigest {
+            let address = LiveControlAddress(revision: revision, target: binding.address.target, parameter: binding.address.parameter)
+            guard binding.endpoint == state.route.input, let descriptor = catalog.descriptor(for: address),
+                  descriptor.presentation != nil else { continue }
+            if let range = binding.range {
+                do {
+                    for endpoint in [range.lowerBound, range.upperBound] {
+                        if address.target == .master { try AudioLoopEngine.validateMasterControl(address.parameter, value: Float(endpoint)) }
+                        else { try catalog.validate(value: .number(endpoint), for: address) }
+                    }
+                } catch { continue }
+            }
+            bindings.append(.init(endpoint: binding.endpoint, channel: binding.channel, controller: binding.controller,
+                                  address: address, range: binding.range))
+        }
+        guard let engine else { throw EvaluationError.invalidResult(audioError) }
+        let previous = midiRoute
+        let previousEffect = engine.audioEffectSnapshot()
+        let previousEffectState: HostedAudioUnitState?
+        if case .loaded = previousEffect { previousEffectState = try engine.captureAudioEffectState() }
+        else { previousEffectState = nil }
+        try await configureMIDI(state.route)
+        do {
+            try Task.checkCancellation()
+            guard currentRevision == revision else { throw CancellationError() }
+            try await selectHostedEffect(state.effect?.id, restoring: state.effect)
+            try Task.checkCancellation()
+            guard currentRevision == revision else { throw CancellationError() }
+            if state.effect != nil { try bypassHostedEffect(state.effectBypassed) }
+        } catch {
+            let original = error
+            // Rollback must finish even when the owning restore was cancelled; its caller awaits it.
+            let rollback = Task { @MainActor in
+                var failures: [String] = []
+                do {
+                    if let previousEffectState {
+                        try await engine.selectAudioEffect(previousEffectState.id, restoring: previousEffectState)
+                        if case .loaded(_, let bypassed) = previousEffect { try engine.setAudioEffectBypassed(bypassed) }
+                    } else { try engine.clearAudioEffect() }
+                } catch { failures.append("Audio Unit rollback: \(error)") }
+                do { try await self.configureMIDI(previous) } catch { failures.append("MIDI rollback: \(error)") }
+                return failures
+            }
+            let failures = await rollback.value
+            if !failures.isEmpty { throw EvaluationError.invalidResult("Host restore failed: \(original); " + failures.joined(separator: "; ")) }
+            throw original
+        }
+        learnedBindings = bindings
+        if bindings.count != state.bindings.count { hostDiagnostic = "Stale MIDI Learn bindings were left unattached." }
     }
 
     static let initialSource = """

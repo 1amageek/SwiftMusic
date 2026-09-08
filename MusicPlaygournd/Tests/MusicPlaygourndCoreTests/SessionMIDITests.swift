@@ -5,7 +5,7 @@ import Testing
 @testable import MusicPlaygourndApp
 @testable import MusicPlaygourndCore
 
-private actor SessionMIDIService: MIDIServiceProtocol {
+actor SessionMIDIService: MIDIServiceProtocol {
     let input = try! MIDIEndpointID(rawValue: 701)
     let output = try! MIDIEndpointID(rawValue: 702)
     var connected = Set<MIDIEndpointID>()
@@ -18,6 +18,7 @@ private actor SessionMIDIService: MIDIServiceProtocol {
     var nilAnchors = 0
     var stopped = false
     var failOutput = false
+    private let events = AsyncStream<TimestampedMIDIEvent>.makeStream(bufferingPolicy: .bufferingNewest(64))
 
     func enumerateEndpoints() throws -> [MIDIEndpointDescriptor] {
         [try MIDIEndpointDescriptor(id: input, displayName: "Input", direction: .input, isVirtual: true),
@@ -29,7 +30,8 @@ private actor SessionMIDIService: MIDIServiceProtocol {
         if failOutput { failOutput = false; throw MIDIError.coreMIDIStatus(-1) }
         selectedOutput = id
     }
-    func eventStream() -> AsyncStream<TimestampedMIDIEvent> { AsyncStream { $0.finish() } }
+    func eventStream() -> AsyncStream<TimestampedMIDIEvent> { events.stream }
+    func emit(_ event: TimestampedMIDIEvent) { events.continuation.yield(event) }
     func updateClockAnchor(_ anchor: PlaybackClockAnchor?) {
         anchors += 1
         if anchor == nil { nilAnchors += 1 }
@@ -43,7 +45,7 @@ private actor SessionMIDIService: MIDIServiceProtocol {
         MIDIServiceSnapshot(connectedInputIDs: Array(connected), outputID: selectedOutput,
             clockMode: mode, clockHealth: health, receivedClock: received, droppedEventCount: 0)
     }
-    func shutdown() { stopped = true; connected.removeAll() }
+    func shutdown() { stopped = true; connected.removeAll(); events.continuation.finish() }
     func failNextOutput() { failOutput = true }
     func setHealth(_ health: MIDIClockHealth) { self.health = health }
     func setReceived(_ value: MIDIReceivedClockState) { received = value }

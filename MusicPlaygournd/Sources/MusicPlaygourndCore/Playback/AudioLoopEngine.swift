@@ -250,10 +250,23 @@ public final class AudioLoopEngine: AudioUnitHosting, MasterRecording {
         try transport.clockAnchor(presentationLatency: sourceNode.outputPresentationLatency)
     }
 
-    public func setPlaybackRate(_ rate: Float) throws {
-        guard rate.isFinite, (1.0 / 32.0...32.0).contains(rate) else {
-            throw PlaybackError.invalidPlaybackRate(rate)
+    /// Checks native master admission without changing the audio graph or parameter targets.
+    public static func validateMasterControl(_ parameter: LiveControlParameter, value: Float) throws {
+        switch parameter {
+        case .playbackRate:
+            guard value.isFinite, (1.0 / 32.0...32.0).contains(value) else { throw PlaybackError.invalidPlaybackRate(value) }
+        case .lowPassCutoff:
+            guard value.isFinite, (20...20_000).contains(value) else { throw PlaybackError.invalidLowPassCutoff(value) }
+        case .delayMix:
+            guard value.isFinite, (0...1).contains(value) else { throw PlaybackError.invalidDelayMix(value) }
+        case .reverbMix:
+            guard value.isFinite, (0...1).contains(value) else { throw PlaybackError.invalidReverbMix(value) }
+        default: throw LiveControlError.invalidCatalog("Unsupported native master parameter")
         }
+    }
+
+    public func setPlaybackRate(_ rate: Float) throws {
+        try Self.validateMasterControl(.playbackRate, value: rate)
         let unit = timePitch
         let transport = transport
         parameterSmoother.set(.rate, from: unit.rate, to: rate,
@@ -264,9 +277,7 @@ public final class AudioLoopEngine: AudioUnitHosting, MasterRecording {
     }
 
     public func setLowPass(cutoff: Float?) throws {
-        if let cutoff, !cutoff.isFinite || !(20...20_000).contains(cutoff) {
-            throw PlaybackError.invalidLowPassCutoff(cutoff)
-        }
+        if let cutoff { try Self.validateMasterControl(.lowPassCutoff, value: cutoff) }
         let filter = equalizer.bands[0]
         let disabling = cutoff == nil
         let immediate = !transport.snapshot().isPlaying || (disabling && filter.bypass)
@@ -282,9 +293,7 @@ public final class AudioLoopEngine: AudioUnitHosting, MasterRecording {
     }
 
     public func setDelay(mix: Float) throws {
-        guard mix.isFinite, (0...1).contains(mix) else {
-            throw PlaybackError.invalidDelayMix(mix)
-        }
+        try Self.validateMasterControl(.delayMix, value: mix)
         let unit = delay
         parameterSmoother.set(.delay, from: unit.wetDryMix / 100, to: mix,
                               immediate: !transport.snapshot().isPlaying) { value, _ in
@@ -293,9 +302,7 @@ public final class AudioLoopEngine: AudioUnitHosting, MasterRecording {
     }
 
     public func setReverb(mix: Float) throws {
-        guard mix.isFinite, (0...1).contains(mix) else {
-            throw PlaybackError.invalidReverbMix(mix)
-        }
+        try Self.validateMasterControl(.reverbMix, value: mix)
         let unit = reverb
         parameterSmoother.set(.reverb, from: unit.wetDryMix / 100, to: mix,
                               immediate: !transport.snapshot().isPlaying) { value, _ in

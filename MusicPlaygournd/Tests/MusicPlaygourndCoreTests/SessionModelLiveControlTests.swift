@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 @testable import MusicPlaygourndApp
@@ -247,6 +248,166 @@ extension NativeHostTests {
         }
 
         @MainActor
+        @Test(.timeLimit(.minutes(4)))
+        func atomicXYAndLearnRestoreRetainSourceAndPCM() async throws {
+            let midi = SessionMIDIService()
+            let harness = try Harness(midiService: midi)
+            do {
+                try await Self.adopt(harness, source: Self.baseSource, revision: 1)
+                let model = harness.model
+                let source = model.source
+                let gain = try Self.requireAddress(model, target: .source(0), parameter: .gain)
+                let pan = try Self.requireAddress(model, target: .source(0), parameter: .pan)
+                model.xyX = gain; model.xyY = pan
+                try model.setXY(x: 0.1, y: 1)
+                try await Self.waitUntil("atomic XY generation") {
+                    model.refresh(); return model.overrideGeneration == 1
+                }
+                #expect(model.controlValue(try #require(model.controlCatalog?.descriptor(for: gain))) == 0.2)
+                #expect(model.controlValue(try #require(model.controlCatalog?.descriptor(for: pan))) == 1)
+                let pcm = try Self.render(harness.engine)
+                let left = stride(from: 0, to: pcm.count, by: 2).reduce(0.0) { $0 + abs(Double(pcm[$1])) }
+                let right = stride(from: 1, to: pcm.count, by: 2).reduce(0.0) { $0 + abs(Double(pcm[$1])) }
+                #expect(right > 0 && left < right * 0.01)
+                let route = MIDISessionRoute(input: midi.input, output: nil, sendsLoopNotes: false, channel: 1, clockMode: .off)
+                try await model.configureMIDI(route)
+                try model.beginMIDILearn(gain)
+                await midi.emit(.init(sourceID: midi.input, hostTime: 1, message: .controlChange(channel: 1, controller: 74, value: 64)))
+                try await Self.waitUntil("learned CC render") {
+                    model.refresh(); return model.overrideGeneration == 2
+                }
+                #expect(model.learnAddress == nil)
+                #expect(model.learnedBindings.first?.address == gain)
+                #expect(model.controlValue(try #require(model.controlCatalog?.descriptor(for: gain))) == 128.0 / 127)
+                let old = LiveControlAddress(revision: 0, target: .source(0), parameter: .gain)
+                let binding = DocumentHostStateStore.LearnBinding(endpoint: midi.input, channel: 1, controller: 74, address: old, range: 0...4)
+                let state = DocumentHostStateStore.State(adoptedSourceDigest: DocumentHostStateStore.sourceDigest(source),
+                    route: route, effect: nil, effectBypassed: false, bindings: [binding])
+                try await model.restoreHostSettings(state, revision: 1)
+                #expect(model.learnedBindings.first?.address == gain)
+                #expect(model.learnedBindings.first?.range == 0...4)
+                let invalid = DocumentHostStateStore.State(adoptedSourceDigest: DocumentHostStateStore.sourceDigest(source),
+                    route: route, effect: nil, effectBypassed: false, bindings: [
+                        .init(endpoint: midi.input, channel: 1, controller: 74, address: old, range: -1...4)])
+                try await model.restoreHostSettings(invalid, revision: 1)
+                #expect(model.learnedBindings.isEmpty)
+                let stale = DocumentHostStateStore.State(adoptedSourceDigest: DocumentHostStateStore.sourceDigest("different"),
+                    route: route, effect: nil, effectBypassed: false, bindings: [binding])
+                try await model.restoreHostSettings(stale, revision: 1)
+                #expect(model.learnedBindings.isEmpty)
+                #expect(model.hostDiagnostic.contains("Stale"))
+                let rate = try Self.requireAddress(model, target: .master, parameter: .playbackRate)
+                model.bpm = 137
+                try model.beginMIDILearn(rate)
+                await midi.emit(.init(sourceID: midi.input, hostTime: 2, message: .controlChange(channel: 1, controller: 71, value: 127)))
+                try await Self.waitUntil("master CC") { model.displayedBPM == 240 }
+                #expect(harness.engine.masterParametersForTests.rate == 2)
+                #expect(model.overrideGeneration == 2)
+                try model.setControl(rate, value: nil)
+                #expect(model.displayedBPM == 137)
+                #expect(model.source == source && model.revision == 1)
+                try harness.engine.play()
+                for gainValue in ["0.7", "0.6"] {
+                    model.source = source.replacingOccurrences(of: "0.8", with: gainValue)
+                    model.scheduleEvaluation(immediate: true)
+                    try await Self.waitUntil("latest candidate prepared", timeout: .seconds(90)) { !model.isPreparing }
+                    #expect(model.diagnostic.isEmpty)
+                    #expect(model.candidateCatalogs.count == 1)
+                    #expect(model.candidateSourceDigests.count == 1)
+                    #expect(model.candidateCatalogs.keys.sorted() == model.candidateSourceDigests.keys.sorted())
+                    #expect(model.candidateSourceDigests[model.revision] == DocumentHostStateStore.sourceDigest(model.source))
+                    #expect(model.currentRevision == 1)
+                }
+                try await harness.shutdown()
+                #expect(await midi.counters().stopped)
+            } catch {
+                try await harness.shutdown()
+                throw error
+            }
+        }
+
+        @MainActor
+        @Test(.timeLimit(.minutes(4)))
+        func cancelledDocumentRestoreAndMissingSidecarPreserveHostTransactions() async throws {
+            let midi = SessionMIDIService()
+            let harness = try Harness(midiService: midi)
+            do {
+                let model = harness.model
+                let engine = harness.engine
+                try await Self.adopt(harness, source: Self.baseSource, revision: 1)
+                let effect = try #require(engine.discoverAudioEffects().first {
+                    $0.id.componentManufacturer == kAudioUnitManufacturer_Apple && $0.id.componentSubType == kAudioUnitSubType_HighPassFilter
+                }).id
+                try await engine.selectAudioEffect(effect)
+                let savedEffect = try engine.captureAudioEffectState()
+                try engine.clearAudioEffect()
+                let route = MIDISessionRoute(input: midi.input, output: nil, sendsLoopNotes: false, channel: 1, clockMode: .off)
+                let document = harness.completionWorkspace.appending(path: "A.swift")
+                try Self.baseSource.write(to: document, atomically: true, encoding: .utf8)
+                let store = DocumentHostStateStore(directory: harness.completionWorkspace.appending(path: "HostState"))
+                try store.save(.init(adoptedSourceDigest: DocumentHostStateStore.sourceDigest(Self.baseSource),
+                    route: route, effect: savedEffect, effectBypassed: false, bindings: []), for: document)
+                var callback: AudioUnitInstantiation.Completion?
+                engine.audioUnitStart = { _, completion in callback = completion }
+                try model.openDocument(at: document)
+                try engine.play()
+                try await Self.waitUntil("delayed document AU restore", timeout: .seconds(90)) {
+                    model.refresh(); return callback != nil
+                }
+                #expect(model.isRestoringHostState)
+                let lateCallback = try #require(callback)
+                engine.audioUnitStart = AudioUnitInstantiation.nativeStart
+                model.source = Self.alternateSource
+                model.scheduleEvaluation(immediate: true)
+                try await Self.waitUntil("new revision cancels old host restore", timeout: .seconds(90)) {
+                    model.refresh(); return model.currentRevision == 3 && model.controlsAvailable && !model.isRestoringHostState
+                }
+                #expect(model.hostDiagnostic.isEmpty, "Adoption must cancel the restore before its AU deadline.")
+                await withCheckedContinuation { continuation in
+                    AudioUnitInstantiation.nativeStart(effect.componentDescription) { unit, error in
+                        lateCallback(unit, error)
+                        continuation.resume()
+                    }
+                }
+                for _ in 0..<100 { await Task.yield() }
+                #expect(engine.audioEffectSnapshot() == .none)
+                #expect(model.midiRoute == .disabled)
+                #expect(model.source == Self.alternateSource)
+                #expect(engine.snapshot().revision == 3)
+                try await model.configureMIDI(route)
+                try await model.selectHostedEffect(effect)
+                try engine.play()
+                var rejectOnce = true
+                engine.audioUnitGraphStartCheck = {
+                    if rejectOnce { rejectOnce = false; throw HostedAudioUnitError.graphFailed("Reset failure") }
+                }
+                let empty = DocumentHostStateStore.State(adoptedSourceDigest: nil, route: .disabled,
+                    effect: nil, effectBypassed: false, bindings: [])
+                await #expect(throws: (any Error).self) { try await model.restoreHostSettings(empty, revision: 3) }
+                #expect(model.midiRoute == route)
+                guard case .loaded(let retained, _) = engine.audioEffectSnapshot() else {
+                    throw EvaluationError.invalidResult("Failed reset discarded the previous Audio Unit")
+                }
+                #expect(retained.id == effect)
+                engine.audioUnitGraphStartCheck = nil
+                engine.stop()
+                let other = harness.completionWorkspace.appending(path: "B.swift")
+                try Self.alternateSource.write(to: other, atomically: true, encoding: .utf8)
+                try model.openDocument(at: other)
+                try engine.play()
+                try await Self.waitUntil("missing sidecar resets document host", timeout: .seconds(90)) {
+                    model.refresh(); return model.currentRevision == 4 && model.controlsAvailable
+                        && !model.isRestoringHostState && model.midiRoute == .disabled && engine.audioEffectSnapshot() == .none
+                }
+                #expect(model.source == Self.alternateSource)
+                try await harness.shutdown()
+            } catch {
+                try await harness.shutdown()
+                throw error
+            }
+        }
+
+        @MainActor
         private static func adopt(_ harness: Harness, source: String, revision: UInt64) async throws {
             harness.model.source = source
             harness.model.scheduleEvaluation(immediate: true)
@@ -353,7 +514,7 @@ extension NativeHostTests {
             let evaluatorWorkspace: URL
             let completionWorkspace: URL
 
-            init() throws {
+            init(midiService: (any MIDIServiceProtocol)? = nil) throws {
                 let package = URL(fileURLWithPath: #filePath)
                     .deletingLastPathComponent()
                     .deletingLastPathComponent()
@@ -368,7 +529,8 @@ extension NativeHostTests {
                 completionService = SwiftCompletionService(packageURL: package,
                     workspace: completionWorkspace, sourceKitLSPExecutable: "/usr/bin/sourcekit-lsp")
                 engine = try AudioLoopEngine()
-                model = SessionModel(evaluator: evaluator, completionService: completionService, engine: engine)
+                model = SessionModel(evaluator: evaluator, completionService: completionService, engine: engine, midiService: midiService,
+                    hostStateStore: DocumentHostStateStore(directory: completionWorkspace.appending(path: "HostState")))
             }
 
             func shutdown() async throws {

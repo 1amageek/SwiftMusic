@@ -16,10 +16,10 @@ struct ContentView: View {
                 Spacer()
                 HStack(spacing: 7) {
                     Text("BPM").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-                    TextField("BPM", value: $model.bpm, format: .number.precision(.fractionLength(0)))
+                    TextField("BPM", value: Binding(get: { model.displayedBPM }, set: { model.bpm = $0 }), format: .number.precision(.fractionLength(0)))
                         .frame(width: 44).textFieldStyle(.roundedBorder)
                         .accessibilityIdentifier("tempo-field")
-                    Stepper("Tempo", value: $model.bpm, in: 40...240, step: 1).labelsHidden()
+                    Stepper("Tempo", value: Binding(get: { model.displayedBPM }, set: { model.bpm = $0 }), in: 40...240, step: 1).labelsHidden()
                 }
                 Picker("Meter", selection: $model.beatsPerBar) {
                     ForEach(2...7, id: \.self) { Text("\($0)/4").tag($0) }
@@ -33,7 +33,7 @@ struct ContentView: View {
                     .accessibilityIdentifier("play-toggle")
             }.padding(.horizontal, 22).padding(.vertical, 15)
             Divider()
-            liveControls
+            LiveControlsView(model: model)
             Divider()
             VSplitView {
                 HSplitView {
@@ -52,7 +52,7 @@ struct ContentView: View {
             Divider()
             HStack(spacing: 10) {
                 if model.isPreparing { ProgressView().controlSize(.mini) }
-                else { Circle().fill(model.diagnostic.isEmpty ? Color.mint : .orange).frame(width: 6, height: 6) }
+                else { Circle().fill(diagnosticCount == 0 ? Color.mint : .orange).frame(width: 6, height: 6) }
                 Text(model.status).font(.system(size: 11))
                 Spacer()
                 if let revision = model.currentRevision {
@@ -76,35 +76,6 @@ struct ContentView: View {
                 do { try await Task.sleep(for: .milliseconds(33)) }
                 catch { break }
             }
-        }
-    }
-
-    private var liveControls: some View {
-        HStack(spacing: 21) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("LIVE MASTER").font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(1)
-                Text("\(Int(model.bpm.rounded())) BPM").font(.system(size: 10, design: .monospaced)).foregroundStyle(.mint)
-            }.frame(width: 100, alignment: .leading)
-            control("TEMPO", value: $model.bpm, in: 40...240, label: "\(Int(model.bpm.rounded())) BPM")
-            control("FILTER", value: Binding(
-                get: { log10(model.lowPass) }, set: { model.lowPass = pow(10, $0) }),
-                in: log10(20)...log10(20_000),
-                label: model.lowPass >= 19_999 ? "OPEN" : "\(Int(model.lowPass)) Hz")
-            control("DELAY", value: $model.delayMix, in: 0...1, label: "\(Int(model.delayMix * 100))%")
-            control("REVERB", value: $model.reverbMix, in: 0...1, label: "\(Int(model.reverbMix * 100))%")
-        }.padding(.horizontal, 21).padding(.vertical, 10)
-            .background(.white.opacity(0.025))
-    }
-
-    private func control(_ title: String, value: Binding<Double>, in range: ClosedRange<Double>, label: String) -> some View {
-        VStack(spacing: 4) {
-            HStack {
-                Text(title).foregroundStyle(.secondary)
-                Spacer()
-                Text(label).foregroundStyle(.mint)
-            }.font(.system(size: 9, weight: .medium, design: .monospaced))
-            Slider(value: value, in: range).tint(.mint)
-                .accessibilityLabel(title).accessibilityValue(label)
         }
     }
 
@@ -149,7 +120,12 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(maxHeight: 130)
-                } else {
+                }
+                if !model.hostDiagnostic.isEmpty {
+                    Text(model.hostDiagnostic).font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.orange).textSelection(.enabled)
+                }
+                if diagnosticCount == 0 {
                     Text("No diagnostics")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -167,22 +143,24 @@ struct ContentView: View {
             .padding(.top, 8)
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: model.diagnostic.isEmpty ? "doc.text" : "exclamationmark.circle.fill")
-                    .foregroundStyle(model.diagnostic.isEmpty ? Color.secondary : Color.orange)
+                Image(systemName: diagnosticCount == 0 ? "doc.text" : "exclamationmark.circle.fill")
+                    .foregroundStyle(diagnosticCount == 0 ? Color.secondary : Color.orange)
                 Text("Logs")
                 Spacer()
                 Text(diagnosticCountLabel)
                     .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(model.diagnostic.isEmpty ? Color.secondary : Color.orange)
+                    .foregroundStyle(diagnosticCount == 0 ? Color.secondary : Color.orange)
             }
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 8)
-        .background(model.diagnostic.isEmpty ? Color.white.opacity(0.025) : Color.orange.opacity(0.07))
+        .background(diagnosticCount == 0 ? Color.white.opacity(0.025) : Color.orange.opacity(0.07))
     }
 
+    private var diagnosticCount: Int { (model.diagnostic.isEmpty ? 0 : 1) + (model.hostDiagnostic.isEmpty ? 0 : 1) }
+
     private var diagnosticCountLabel: String {
-        let count = model.diagnostic.isEmpty ? 0 : 1
+        let count = diagnosticCount
         return "\(count) error\(count == 1 ? "" : "s")"
     }
 

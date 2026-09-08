@@ -31,6 +31,12 @@ public struct LiveControlCatalog: Codable, Sendable, Equatable, Hashable {
         self.descriptors = descriptors
     }
 
+    /// Validates a score override through the same admission path used by rendering.
+    public func validate(value: LiveControlValue, for address: LiveControlAddress) throws {
+        _ = try RenderControlOverlay.make(overrides: [.init(address: address, value: value)],
+            catalog: self, revision: address.revision)
+    }
+
     public func descriptor(for address: LiveControlAddress) -> LiveControlDescriptor? {
         descriptors.first { $0.address == address }
     }
