@@ -39,7 +39,7 @@ final class InlineRhythmLayout: NSObject, @MainActor NSLayoutManagerDelegate {
                 let count = mapped.values.filter { $0 == line }.count
                 if count > 0 {
                     let end = NSMaxRange(range) - 1
-                    endings[end] = CGFloat(count) * 104
+                    endings[end] = CGFloat(count) * (InlineRhythmView.height + InlineRhythmView.spacing)
                     lineEnds[line] = end
                 }
                 offset = NSMaxRange(range)
@@ -81,8 +81,8 @@ final class InlineRhythmLayout: NSObject, @MainActor NSLayoutManagerDelegate {
             let glyph = manager.glyphIndexForCharacter(at: end)
             let rect = manager.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)
             for (index, id) in anchors.keys.filter({ anchors[$0] == line }).sorted().enumerated() {
-                let frame = CGRect(x: origin.x, y: origin.y + rect.maxY + 4 + CGFloat(index) * 104,
-                                   width: width, height: 96)
+                let frame = CGRect(x: origin.x, y: origin.y + rect.maxY + InlineRhythmView.spacing + CGFloat(index) * (InlineRhythmView.height + InlineRhythmView.spacing),
+                                   width: width, height: InlineRhythmView.height)
                 cards[id]?.frame = frame
                 cardFrames[id] = frame
             }

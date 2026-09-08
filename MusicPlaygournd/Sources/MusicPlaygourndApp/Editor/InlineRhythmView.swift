@@ -4,6 +4,9 @@ import MusicPlaygourndCore
 /// A read-only result attached to a compiler-mapped source line.
 @MainActor
 final class InlineRhythmView: NSView {
+    static let height: CGFloat = 48
+    static let spacing: CGFloat = 4
+
     private let titleLabel = NSTextField(labelWithString: "")
     private let lowLabel = NSTextField(labelWithString: "")
     private let highLabel = NSTextField(labelWithString: "")
@@ -21,6 +24,8 @@ final class InlineRhythmView: NSView {
             label.textColor = .secondaryLabelColor
             addSubview(label)
         }
+        lowLabel.font = .monospacedSystemFont(ofSize: 8, weight: .medium)
+        highLabel.font = lowLabel.font
         configureMuteButton()
     }
 
@@ -74,7 +79,7 @@ final class InlineRhythmView: NSView {
         self.playing = playing
         titleLabel.stringValue = row.label
         if let visualization, visualization.address.target == .source(row.sourceID) {
-            titleLabel.stringValue += " · \(visualization.address.parameter) · individual curve scales"
+            titleLabel.stringValue += " · \(visualization.address.parameter)"
         }
         let limitations = Set(events.filter { if case .unsupported = $0.midiProjection { return true }; return false }.map(\.pitchDescription))
         if !limitations.isEmpty { titleLabel.stringValue += " · " + limitations.sorted().joined(separator: ", ") }
@@ -132,18 +137,18 @@ final class InlineRhythmView: NSView {
         let notes = events.compactMap(\.displayedMIDINote)
         let low = notes.min() ?? 0
         let high = notes.max() ?? low
-        lowLabel.frame = CGRect(x: 12, y: 28 + CGFloat(high - low) * 55 / CGFloat(max(1, high - low + 1)), width: 32, height: 14)
-        highLabel.frame = CGRect(x: 12, y: 28, width: 32, height: 14)
+        lowLabel.frame = CGRect(x: 12, y: 24 + CGFloat(high - low) * 18 / CGFloat(max(1, high - low + 1)) - 4, width: 32, height: 9)
+        highLabel.frame = CGRect(x: 12, y: 20, width: 32, height: 9)
     }
 
     override func draw(_ dirtyRect: NSRect) {
         guard row != nil else { return }
-        NSColor(calibratedWhite: 0.12, alpha: 1).setFill()
+        NSColor(calibratedWhite: 0.09, alpha: 1).setFill()
         NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 5, yRadius: 5).fill()
-        NSColor.white.withAlphaComponent(0.13).setStroke()
+        NSColor.white.withAlphaComponent(0.07).setStroke()
         NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 5, yRadius: 5).stroke()
         let plot = bounds.insetBy(dx: 12, dy: 0)
-        let area = CGRect(x: plot.minX + 32, y: 28, width: max(1, plot.width - 32), height: 55)
+        let area = CGRect(x: plot.minX + 32, y: 24, width: max(1, plot.width - 32), height: 18)
         let scale = area.width / max(1, beats)
         let notes = events.compactMap(\.displayedMIDINote)
         let low = notes.min() ?? 0
