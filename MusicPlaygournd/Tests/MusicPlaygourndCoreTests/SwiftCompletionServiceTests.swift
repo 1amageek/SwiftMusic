@@ -21,7 +21,7 @@ struct SwiftCompletionServiceTests {
         let package = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         let workspace = FileManager.default.temporaryDirectory.appending(path: "SwiftCompletionService-\(UUID().uuidString)")
-        let executable = try #require(try SwiftCompletionConnectionTests.resolveSourceKitLSP())
+        let executable = try #require(try NativeHostTests.SwiftCompletionConnectionTests.resolveSourceKitLSP())
         let service = SwiftCompletionService(packageURL: package, workspace: workspace, sourceKitLSPExecutable: executable)
         do {
             let source = "// 🎵\nstruct Session: Music {\n var body: some Sound {\n Sample(\"kick\").ga\n }\n}"

@@ -8,6 +8,8 @@ public enum PlaybackError: Error, Sendable, Equatable, CustomStringConvertible, 
     case noCurrentLoop
     case staleRevision(UInt64)
     case duplicateRevision(UInt64)
+    case staleOverrideGeneration(UInt64)
+    case incompatibleReplacement
     case updateNotStarted(UInt64)
     case invalidLoop(PreparedLoopValidationError)
     case invalidPlaybackRate(Float)
@@ -23,6 +25,8 @@ public enum PlaybackError: Error, Sendable, Equatable, CustomStringConvertible, 
         case .noCurrentLoop: "No prepared loop is available"
         case .staleRevision(let revision): "Revision \(revision) is stale"
         case .duplicateRevision(let revision): "Revision \(revision) was already submitted"
+        case .staleOverrideGeneration(let generation): "Override generation \(generation) is stale"
+        case .incompatibleReplacement: "Replacement changes the adopted loop timing or identity"
         case .updateNotStarted(let revision): "Revision \(revision) was not started"
         case .invalidLoop(let error): "Invalid prepared loop: \(error)"
         case .invalidPlaybackRate(let rate): "Playback rate \(rate) is outside 1/32...32"

@@ -1,15 +1,18 @@
 import Foundation
 import SwiftMusic
 
-internal struct PreparedSampleVoice {
+internal struct PreparedSampleVoice: Sendable {
     let sample: LoadedSample
     let rootPitch: Pitch
 
     func increment(event: CompiledSoundEvent, source: CompiledSource, time: Double,
-                   secondsPerBeat: Double, automationSecondsPerBeat: Double? = nil) throws -> Double {
+                   secondsPerBeat: Double, automationSecondsPerBeat: Double? = nil,
+                   pitchAutomationOverride: Double? = nil) throws -> Double {
         let rootFrequency = 440 * pow(2, (Double(rootPitch.midiNote) - 69) / 12)
         var midi = try PitchGlide.midi(event: event, source: source, time: time, secondsPerBeat: secondsPerBeat)
-        if let automation = source.pitchAutomation {
+        if let pitchAutomationOverride {
+            midi += pitchAutomationOverride
+        } else if let automation = source.pitchAutomation {
             let start = Double(event.start.numerator) / Double(event.start.denominator) * secondsPerBeat
             let frame = Int((start * sample.sampleRate).rounded(.down)) + Int((time * sample.sampleRate).rounded())
             midi += try AutomationEvaluator.mapped(automation.signal,
@@ -32,14 +35,17 @@ internal struct PreparedSampleVoice {
     }
 
     func frames(event: CompiledSoundEvent, source: CompiledSource, secondsPerBeat: Double,
-                limit: Int, automationSecondsPerBeat: Double? = nil) throws -> Int {
+                limit: Int, automationSecondsPerBeat: Double? = nil,
+                pitchAutomationOverride: Double? = nil) throws -> Int {
         let noteDuration = Double(event.duration.numerator) / Double(event.duration.denominator) * secondsPerBeat
         let horizon = VoiceEnvelope.amplitude(event: event, source: source, secondsPerBeat: secondsPerBeat)?.duration
             ?? noteDuration * event.gate
         guard horizon > 0, limit > 0 else { throw LoopRenderingError.invalidSound("invalid sample horizon") }
         let firstIncrement = try increment(event: event, source: source, time: 0,
-            secondsPerBeat: secondsPerBeat, automationSecondsPerBeat: automationSecondsPerBeat)
-        if source.pitchEnvelope == nil && source.pitchAutomation == nil && source.portamento == nil {
+            secondsPerBeat: secondsPerBeat, automationSecondsPerBeat: automationSecondsPerBeat,
+            pitchAutomationOverride: pitchAutomationOverride)
+        if source.pitchEnvelope == nil && source.pitchAutomation == nil && source.portamento == nil
+            && pitchAutomationOverride == nil {
             let count = min((Double(sample.frameCount) / firstIncrement).rounded(.up),
                             (horizon * sample.sampleRate).rounded(.up))
             guard count.isFinite, count > 0, count <= Double(limit) else {
@@ -53,7 +59,8 @@ internal struct PreparedSampleVoice {
             guard count < limit else { throw LoopRenderingError.invalidSound("sample voice exceeds render horizon") }
             position += try increment(event: event, source: source,
                                       time: Double(count) / sample.sampleRate, secondsPerBeat: secondsPerBeat,
-                                      automationSecondsPerBeat: automationSecondsPerBeat)
+                                      automationSecondsPerBeat: automationSecondsPerBeat,
+                                      pitchAutomationOverride: pitchAutomationOverride)
             count += 1
         }
         return count

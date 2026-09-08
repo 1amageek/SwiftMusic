@@ -2,7 +2,7 @@ import Foundation
 import SwiftMusic
 
 /// Owns selected decoded assets for one render; event values share immutable PCM storage.
-internal struct SamplePreparation {
+internal struct SamplePreparation: Sendable {
     static let maximumChannelFrames = Int(PreparedLoop.requiredSampleRate * PreparedLoop.maximumDurationSeconds)
         * PreparedLoop.maximumRows
     let voices: [Int: PreparedSampleVoice]

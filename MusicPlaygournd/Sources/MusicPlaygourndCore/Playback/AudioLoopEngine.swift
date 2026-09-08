@@ -14,7 +14,7 @@ public final class AudioLoopEngine {
     private let transport: AudioTransport
     private let meterStore: OutputMeterStore
     private let audioFormat: AVAudioFormat
-    private var retainedLoops: [UInt64: PreparedLoop] = [:]
+    private var retainedLoops: [AudioTransport.Identity: PreparedLoop] = [:]
     private var latestRequestedRevision: UInt64?
 
     public convenience init() throws {
@@ -97,7 +97,17 @@ public final class AudioLoopEngine {
             throw PlaybackError.invalidLoop(error)
         }
         try transport.submit(loop: loop, revision: revision)
-        retainedLoops[revision] = loop
+        retainedLoops[.init(revision: revision, generation: 0)] = loop
+        pruneRetainedLoops()
+    }
+
+    /// Replaces adopted PCM without evaluating Swift or changing the musical clock.
+    public func replace(loop: PreparedLoop, revision: UInt64, generation: UInt64) throws {
+        do { try loop.validate() }
+        catch let error as PreparedLoopValidationError { throw PlaybackError.invalidLoop(error) }
+        pruneRetainedLoops()
+        try transport.replace(loop: loop, revision: revision, generation: generation)
+        retainedLoops[.init(revision: revision, generation: generation)] = loop
         pruneRetainedLoops()
     }
 
@@ -130,7 +140,7 @@ public final class AudioLoopEngine {
     public func snapshot() -> PlaybackSnapshot {
         let position = transport.positionSnapshot()
         let rawSnapshot = position.playback
-        pruneRetainedLoops(currentRevision: rawSnapshot.revision)
+        pruneRetainedLoops()
         guard rawSnapshot.isPlaying,
               let loop = rawSnapshot.loop else {
             return rawSnapshot
@@ -151,7 +161,8 @@ public final class AudioLoopEngine {
                 loopBeatCount: loop.beatCount,
                 correction: correction
             ),
-            isPlaying: rawSnapshot.isPlaying
+            isPlaying: rawSnapshot.isPlaying,
+            overrideGeneration: rawSnapshot.overrideGeneration
         )
     }
 
@@ -290,9 +301,8 @@ public final class AudioLoopEngine {
         return output
     }
 
-    private func pruneRetainedLoops(currentRevision: UInt64? = nil) {
-        let activeRevision = currentRevision ?? transport.snapshot().revision
-        let retained = Set([activeRevision, latestRequestedRevision].compactMap { $0 })
+    private func pruneRetainedLoops() {
+        let retained = Set(transport.drainRetiredAndRetainedIdentities())
         retainedLoops = retainedLoops.filter { retained.contains($0.key) }
     }
 
@@ -306,6 +316,13 @@ public final class AudioLoopEngine {
 // The callback crosses AVFAudio's render thread. Its only mutable field is Mutex-protected,
 // and callback-local buffer borrows never escape this method.
 final class AudioTransport: Sendable {
+    struct Identity: Sendable, Hashable {
+        let revision: UInt64
+        let generation: UInt64
+    }
+
+    static let crossfadeFrames = 1_323
+
     struct PositionSnapshot {
         let playback: PlaybackSnapshot
         let accumulatedBeatPosition: Double
@@ -314,11 +331,23 @@ final class AudioTransport: Sendable {
     private struct Candidate: Sendable {
         let loop: PreparedLoop
         let revision: UInt64
+        var generation: UInt64 = 0
+        var identity: Identity { Identity(revision: revision, generation: generation) }
+    }
+
+    private struct Fade: Sendable {
+        let old: Candidate
+        var elapsed = 0
     }
 
     private struct State: Sendable {
         var current: PreparedLoop?
         var currentRevision: UInt64?
+        var currentGeneration: UInt64 = 0
+        var latestGeneration: UInt64 = 0
+        var replacement: Candidate?
+        var fade: Fade?
+        var retired: Candidate?
         var pending: Candidate?
         var latestRevision: UInt64?
         var submittedRevision: UInt64?
@@ -329,6 +358,70 @@ final class AudioTransport: Sendable {
     }
 
     private let state = Mutex(State())
+
+    /// Called only off callback. The engine keeps every returned immutable buffer alive.
+    func drainRetiredAndRetainedIdentities() -> [Identity] {
+        state.withLock { state in
+            state.retired = nil
+            var identities: [Identity] = []
+            if let revision = state.currentRevision {
+                identities.append(Identity(revision: revision, generation: state.currentGeneration))
+            }
+            if let pending = state.pending { identities.append(pending.identity) }
+            if let replacement = state.replacement { identities.append(replacement.identity) }
+            if let fade = state.fade { identities.append(fade.old.identity) }
+            return identities
+        }
+    }
+
+    func replace(loop: PreparedLoop, revision: UInt64, generation: UInt64) throws {
+        try state.withLock { state in
+            guard state.currentRevision == revision, let current = state.current else {
+                throw PlaybackError.staleRevision(revision)
+            }
+            guard generation > state.latestGeneration else {
+                throw PlaybackError.staleOverrideGeneration(generation)
+            }
+            guard Self.sameShape(current, loop) else { throw PlaybackError.incompatibleReplacement }
+            state.latestGeneration = generation
+            let candidate = Candidate(loop: loop, revision: revision, generation: generation)
+            if !state.isPlaying {
+                state.current = loop
+                state.currentGeneration = generation
+                state.fade = nil
+                state.retired = nil
+                state.replacement = nil
+            } else if state.fade == nil, state.retired == nil {
+                beginFade(candidate, into: &state)
+            } else {
+                state.replacement = candidate
+            }
+        }
+    }
+
+    private static func sameShape(_ lhs: PreparedLoop, _ rhs: PreparedLoop) -> Bool {
+        guard lhs.sampleRate == rhs.sampleRate, lhs.bpm == rhs.bpm,
+              lhs.beatsPerBar == rhs.beatsPerBar, lhs.beatCount == rhs.beatCount,
+              lhs.samples.count == rhs.samples.count,
+              lhs.events.count == rhs.events.count, lhs.rows.count == rhs.rows.count else { return false }
+        for (a, b) in zip(lhs.events, rhs.events) {
+            guard a.sourceID == b.sourceID, a.label == b.label, a.startBeat == b.startBeat,
+                  a.velocity == b.velocity, a.patternStepIndex == b.patternStepIndex else { return false }
+        }
+        for (a, b) in zip(lhs.rows, rhs.rows) {
+            guard a.sourceID == b.sourceID, a.label == b.label, a.anchor == b.anchor,
+                  a.patternText == b.patternText, a.resultLine == b.resultLine else { return false }
+        }
+        return true
+    }
+
+    private func beginFade(_ candidate: Candidate, into state: inout State) {
+        guard let current = state.current, let revision = state.currentRevision else { return }
+        state.fade = Fade(old: Candidate(loop: current, revision: revision, generation: state.currentGeneration))
+        state.current = candidate.loop
+        state.currentGeneration = candidate.generation
+        state.replacement = nil
+    }
 
     func beginUpdate(revision: UInt64) {
         state.withLock { state in
@@ -380,7 +473,16 @@ final class AudioTransport: Sendable {
     }
 
     func stopPlayback() {
-        state.withLock { $0.isPlaying = false }
+        state.withLock { state in
+            state.isPlaying = false
+            if let replacement = state.replacement {
+                state.current = replacement.loop
+                state.currentGeneration = replacement.generation
+            }
+            state.replacement = nil
+            state.fade = nil
+            state.retired = nil
+        }
     }
 
     func snapshot() -> PlaybackSnapshot {
@@ -401,7 +503,8 @@ final class AudioTransport: Sendable {
                     loop: state.current,
                     revision: state.currentRevision,
                     beatPosition: beatPosition,
-                    isPlaying: state.isPlaying
+                    isPlaying: state.isPlaying,
+                    overrideGeneration: state.currentGeneration
                 ),
                 accumulatedBeatPosition: state.beatPosition
             )
@@ -448,13 +551,28 @@ final class AudioTransport: Sendable {
                     adopt(pending, into: &state)
                 }
 
+                if state.fade == nil, state.retired == nil, let replacement = state.replacement {
+                    beginFade(replacement, into: &state)
+                }
+
                 guard let active = state.current else {
                     write(buffers: buffers, frame: offset, left: 0, right: 0)
                     continue
                 }
                 let frame = state.framePosition % max(1, active.samples.count / 2)
-                let left = active.samples[frame * 2]
-                let right = active.samples[frame * 2 + 1]
+                var left = active.samples[frame * 2]
+                var right = active.samples[frame * 2 + 1]
+                if let fade = state.fade {
+                    let mix = Float(fade.elapsed) / Float(Self.crossfadeFrames - 1)
+                    left = fade.old.loop.samples[frame * 2] * (1 - mix) + left * mix
+                    right = fade.old.loop.samples[frame * 2 + 1] * (1 - mix) + right * mix
+                    if fade.elapsed + 1 == Self.crossfadeFrames {
+                        state.retired = fade.old
+                        state.fade = nil
+                    } else {
+                        state.fade?.elapsed += 1
+                    }
+                }
                 write(buffers: buffers, frame: offset, left: left, right: right)
                 state.framePosition = (frame + 1) % loopFrameCountFor(active)
                 state.beatPosition += deltaBeatFor(active)
@@ -466,6 +584,11 @@ final class AudioTransport: Sendable {
     private func adopt(_ candidate: Candidate, into state: inout State) {
         state.current = candidate.loop
         state.currentRevision = candidate.revision
+        state.currentGeneration = 0
+        state.latestGeneration = 0
+        state.replacement = nil
+        if let fade = state.fade { state.retired = fade.old }
+        state.fade = nil
         state.pending = nil
         state.pendingBoundary = nil
         state.framePosition = frame(for: state.beatPosition, in: candidate.loop)

@@ -8,11 +8,11 @@ public struct LoopRenderer: Sendable {
         self.sampleLoader = sampleLoader
     }
 
-    public func render(
+    internal func validateBasicInputs(
         _ sound: CompiledSound,
         bpm: Double,
         beatsPerBar: Int
-    ) throws -> PreparedLoop {
+    ) throws {
         guard bpm.isFinite, (40...240).contains(bpm) else {
             throw LoopRenderingError.invalidBPM(bpm)
         }
@@ -28,21 +28,36 @@ public struct LoopRenderer: Sendable {
         guard sound.renderNodes.count <= 256 else {
             throw LoopRenderingError.tooManyRenderNodes(limit: 256)
         }
-
-        var extent = try beatValue(sound.extent)
-        guard extent.isFinite, extent >= 0 else {
-            throw LoopRenderingError.invalidSound("non-finite extent")
-        }
-        guard extent <= PreparedLoop.maximumBeatCount else {
-            throw LoopRenderingError.extentTooLong(extent)
-        }
-
+        let extent = try beatValue(sound.extent)
+        guard extent.isFinite, extent >= 0 else { throw LoopRenderingError.invalidSound("non-finite extent") }
+        guard extent <= PreparedLoop.maximumBeatCount else { throw LoopRenderingError.extentTooLong(extent) }
         try AutomationEvaluator.validate(sound, bpm: bpm, windowBeats: max(extent, Double(beatsPerBar)))
+    }
+
+    public func render(
+        _ sound: CompiledSound,
+        bpm: Double,
+        beatsPerBar: Int
+    ) throws -> PreparedLoop {
+        try validateBasicInputs(sound, bpm: bpm, beatsPerBar: beatsPerBar)
+        let preparedSamples = try SamplePreparation(sound: sound, loader: sampleLoader)
+        return try renderPrepared(sound, bpm: bpm, beatsPerBar: beatsPerBar,
+                                  preparedSamples: preparedSamples)
+    }
+
+    internal func renderPrepared(
+        _ sound: CompiledSound,
+        bpm: Double,
+        beatsPerBar: Int,
+        preparedSamples: SamplePreparation,
+        overlay: RenderControlOverlay? = nil
+    ) throws -> PreparedLoop {
+        try validateBasicInputs(sound, bpm: bpm, beatsPerBar: beatsPerBar)
+        var extent = try beatValue(sound.extent)
         let automationSecondsPerBeat = sound.playbackMode == .seamlessLoop
             ? ceil(extent * 60 / bpm * PreparedLoop.requiredSampleRate) / PreparedLoop.requiredSampleRate / extent
             : 60 / bpm
 
-        let preparedSamples = try SamplePreparation(sound: sound, loader: sampleLoader)
         var sampleFrames: [Int: Int] = [:]
         let maximumSeconds = min(PreparedLoop.maximumDurationSeconds, PreparedLoop.maximumBeatCount * 60 / bpm)
         for (index, voice) in preparedSamples.voices {
@@ -52,7 +67,8 @@ public struct LoopRenderer: Sendable {
                 : max(0, maximumSeconds - (try beatValue(event.start)) * 60 / bpm)
             let frames = try voice.frames(event: event, source: source, secondsPerBeat: 60 / bpm,
                                           limit: Int((available * PreparedLoop.requiredSampleRate).rounded(.down)),
-                                          automationSecondsPerBeat: automationSecondsPerBeat)
+                                          automationSecondsPerBeat: automationSecondsPerBeat,
+                                          pitchAutomationOverride: overlay?.sourcePitch[source.id])
             sampleFrames[index] = frames
             if sound.playbackMode == .finite {
                 extent = max(extent, try beatValue(event.start) + Double(frames) / PreparedLoop.requiredSampleRate * bpm / 60)
@@ -100,7 +116,8 @@ public struct LoopRenderer: Sendable {
             beatCount: beatCount,
             frameCount: frameCount,
             preparedSamples: preparedSamples,
-            sampleFrames: sampleFrames
+            sampleFrames: sampleFrames,
+            overlay: overlay
         )
         let sourceBeatCount = beatCount
         try context.prepareEffects(beatsPerBar: beatsPerBar)
@@ -317,12 +334,15 @@ private struct RenderContext {
     var sourcePeakEnvelopes: [[Float]]
     let preparedSamples: SamplePreparation
     let sampleFrames: [Int: Int]
+    let overlay: RenderControlOverlay?
     var scheduledSources: [StereoBuffer]?
 
     init(sound: CompiledSound, bpm: Double, beatCount: Double, frameCount: Int,
-         preparedSamples: SamplePreparation, sampleFrames: [Int: Int]) throws {
+         preparedSamples: SamplePreparation, sampleFrames: [Int: Int],
+         overlay: RenderControlOverlay? = nil) throws {
         self.preparedSamples = preparedSamples
         self.sampleFrames = sampleFrames
+        self.overlay = overlay
         self.sound = sound
         self.bpm = bpm
         self.sourceBeatCount = beatCount
@@ -386,8 +406,10 @@ private struct RenderContext {
         audibleTracks = [Bool](repeating: !hasSolo, count: sound.tracks.count)
         admittedSources = [Bool](repeating: true, count: sound.sources.count)
         for (index, track) in sound.tracks.enumerated() {
-            guard track.id == index, track.level.isFinite, track.level >= 0,
-                  track.pan.map({ $0.isFinite && (-1...1).contains($0) }) ?? true else {
+            let level = overlay?.trackLevel[index] ?? track.level
+            let pan = overlay.map { $0.effectiveTrackPan(index, baseline: track.pan) } ?? track.pan
+            guard track.id == index, level.isFinite, level >= 0,
+                  pan.map({ $0.isFinite && (-1...1).contains($0) }) ?? true else {
                 throw LoopRenderingError.invalidSound("invalid track metadata")
             }
             if let parent = track.parentID, parent < 0 || parent >= index {
@@ -560,6 +582,7 @@ private struct RenderContext {
             pending.append(contentsOf: inputs(of: sound.renderNodes[node]))
         }
         for index in sound.renderNodes.indices where neededNodes[index] {
+            try Task.checkCancellation()
             for input in inputs(of: sound.renderNodes[index]) { nodeConsumers[input] += 1 }
         }
         for root in sound.rootNodeIDs { nodeConsumers[root] += 1 }
@@ -707,21 +730,31 @@ private struct RenderContext {
             for input in inputs.dropFirst() { try add(try takeNode(input), to: &output) }
             return output
         case .gain(let input, let value):
-            guard value.isFinite, value >= 0 else {
+            let effectiveValue = overlay?.nodeGain[nodeID] ?? value
+            guard effectiveValue.isFinite, effectiveValue >= 0 else {
                 throw LoopRenderingError.invalidSound("gain is invalid")
             }
             var output = try takeNode(input)
-            output.multiply(by: Float(value))
+            if overlay?.nodeGain[nodeID] != nil { try scale(&output, by: effectiveValue) }
+            else { output.multiply(by: Float(value)) }
             return output
         case .pan(let input, let value):
-            guard value.isFinite, (-1...1).contains(value) else {
+            let effectiveValue = overlay?.nodePan[nodeID] ?? value
+            guard effectiveValue.isFinite, (-1...1).contains(effectiveValue) else {
                 throw LoopRenderingError.invalidSound("pan is invalid")
             }
             var output = try takeNode(input)
-            output.applyPan(value)
+            output.applyPan(effectiveValue)
             return output
         case .gainAutomation(let input, let automation):
             var output = try takeNode(input)
+            if let value = overlay?.nodeGain[nodeID] {
+                guard value.isFinite, value >= 0 else {
+                    throw LoopRenderingError.invalidSound("gain is invalid")
+                }
+                try scale(&output, by: value)
+                return output
+            }
             for frame in output.left.indices {
                 let gain = try AutomationEvaluator.mapped(automation.signal,
                     from: automation.from, to: automation.to, frame: frame, secondsPerBeat: automationSecondsPerBeat)
@@ -738,6 +771,13 @@ private struct RenderContext {
             return output
         case .panAutomation(let input, let automation):
             var output = try takeNode(input)
+            if let value = overlay?.nodePan[nodeID] {
+                guard value.isFinite, (-1...1).contains(value) else {
+                    throw LoopRenderingError.invalidSound("pan is invalid")
+                }
+                output.applyPan(value)
+                return output
+            }
             for frame in output.left.indices {
                 let pan = try AutomationEvaluator.mapped(automation.signal,
                     from: automation.from, to: automation.to, frame: frame, secondsPerBeat: automationSecondsPerBeat)
@@ -760,10 +800,16 @@ private struct RenderContext {
         case .track(let input, let id):
             var output = try takeNode(input)
             let track = sound.tracks[id]
-            if track.level != 1 {
+            let level = overlay?.trackLevel[id] ?? track.level
+            let pan = overlay.map { $0.effectiveTrackPan(id, baseline: track.pan) } ?? track.pan
+            guard level.isFinite, level >= 0,
+                  pan.map({ $0.isFinite && (-1...1).contains($0) }) ?? true else {
+                throw LoopRenderingError.invalidSound("invalid track metadata")
+            }
+            if level != 1 {
                 for index in output.left.indices {
-                    let left = Double(output.left[index]) * track.level
-                    let right = Double(output.right[index]) * track.level
+                    let left = Double(output.left[index]) * level
+                    let right = Double(output.right[index]) * level
                     guard left.isFinite, right.isFinite,
                           abs(left) <= Double(Float.greatestFiniteMagnitude),
                           abs(right) <= Double(Float.greatestFiniteMagnitude) else {
@@ -773,7 +819,7 @@ private struct RenderContext {
                     output.right[index] = Float(right)
                 }
             }
-            if let pan = track.pan { output.applyPan(pan) }
+            if let pan { output.applyPan(pan) }
             if track.isMuted || !audibleTracks[id] { output.mute() }
             return output
         case .effect(let input, let effect):
@@ -849,10 +895,11 @@ private struct RenderContext {
 
     private mutating func renderSource(_ sourceID: Int) throws -> StereoBuffer {
         if scheduledSources != nil {
-            let output = scheduledSources![sourceID]
+            var output = scheduledSources![sourceID]
             // Transfer the scheduler's ownership so a final consumer can reuse
             // this buffer without a hidden retained copy outside the graph plan.
             scheduledSources![sourceID] = StereoBuffer(frameCount: 0)
+            try applySourceOverlay(to: &output, sourceID: sourceID)
             sourcePeakEnvelopes[sourceID] = peakEnvelope(for: output)
             return output
         }
@@ -868,8 +915,24 @@ private struct RenderContext {
                 output.right[frame] += value.right
             }
         }
+        try applySourceOverlay(to: &output, sourceID: sourceID)
         sourcePeakEnvelopes[sourceID] = peakEnvelope(for: output)
         return output
+    }
+
+    private func applySourceOverlay(to output: inout StereoBuffer, sourceID: Int) throws {
+        if let gain = overlay?.sourceGain[sourceID] {
+            guard gain.isFinite, gain >= 0 else {
+                throw LoopRenderingError.invalidSound("source gain is invalid")
+            }
+            try scale(&output, by: gain)
+        }
+        if let pan = overlay?.sourcePan[sourceID] {
+            guard pan.isFinite, (-1...1).contains(pan) else {
+                throw LoopRenderingError.invalidSound("source pan is invalid")
+            }
+            output.applyPan(pan)
+        }
     }
 
     private func peakEnvelope(for buffer: StereoBuffer) -> [Float] {
@@ -965,7 +1028,9 @@ private struct RenderContext {
             startFrame: startFrame, eventFrames: eventFrames, secondsPerBeat: secondsPerBeat,
             sampleVoice: sampleVoice, amplitudeEnvelope: amplitudeEnvelope,
             amplitude: amplitude, leftGain: leftGain, rightGain: rightGain, edgeFrames: edgeFrames,
-            automationSecondsPerBeat: automationSecondsPerBeat)
+            automationSecondsPerBeat: automationSecondsPerBeat,
+            pitchOverride: overlay?.sourcePitch[source.id],
+            cutoffOverride: overlay?.sourceCutoff[source.id])
     }
 
     private func beatValue(_ time: MusicalTime) throws -> Double {

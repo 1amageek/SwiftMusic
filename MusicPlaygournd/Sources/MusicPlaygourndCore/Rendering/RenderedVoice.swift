@@ -28,6 +28,8 @@ internal struct RenderedVoice {
     let legacy: Bool
     let pitchContour: VoiceEnvelope?
     let filterContour: VoiceEnvelope?
+    let pitchOverride: Double?
+    let cutoffOverride: Double?
     let frequency: Double
     let fixedIncrement: Double?
     var state: State
@@ -36,16 +38,20 @@ internal struct RenderedVoice {
          startFrame: Int, eventFrames: Int, secondsPerBeat: Double,
          sampleVoice: PreparedSampleVoice?, amplitudeEnvelope: VoiceEnvelope?,
          amplitude: Float, leftGain: Float, rightGain: Float, edgeFrames: Int,
-         automationSecondsPerBeat: Double? = nil) throws {
+         automationSecondsPerBeat: Double? = nil,
+         pitchOverride: Double? = nil, cutoffOverride: Double? = nil) throws {
         self.event = event; self.source = source; self.eventIndex = eventIndex
         self.startFrame = startFrame; self.eventFrames = eventFrames; self.secondsPerBeat = secondsPerBeat
         self.automationSecondsPerBeat = automationSecondsPerBeat ?? secondsPerBeat
         self.sampleVoice = sampleVoice; self.amplitudeEnvelope = amplitudeEnvelope
         self.amplitude = amplitude; self.leftGain = leftGain; self.rightGain = rightGain
         self.edgeFrames = edgeFrames
+        self.pitchOverride = pitchOverride
+        self.cutoffOverride = cutoffOverride
         legacy = source.portamento == nil && amplitudeEnvelope == nil && source.tuning == nil && source.pitchEnvelope == nil
             && source.pitchAutomation == nil && source.cutoffAutomation == nil
-            && source.filter == nil && source.filterEnvelope == nil && event.pitchOffsetSemitones == 0 && sampleVoice == nil
+            && source.filter == nil && source.filterEnvelope == nil && event.pitchOffsetSemitones == 0
+            && sampleVoice == nil && pitchOverride == nil && cutoffOverride == nil
         let naturalDuration = Double(event.duration.numerator) / Double(event.duration.denominator) * secondsPerBeat
         pitchContour = source.pitchEnvelope.map { VoiceEnvelope($0.envelope, noteDuration: naturalDuration, gate: event.gate) }
         filterContour = source.filterEnvelope.map { VoiceEnvelope($0.envelope, noteDuration: naturalDuration, gate: event.gate) }
@@ -53,10 +59,14 @@ internal struct RenderedVoice {
         frequency = (source.tuning?.frequencyHz ?? 440)
             * pow(2, (midi - Double(source.tuning?.referencePitch.midiNote ?? 69)) / 12)
         fixedIncrement = try sampleVoice?.increment(event: event, source: source, time: 0,
-            secondsPerBeat: secondsPerBeat, automationSecondsPerBeat: self.automationSecondsPerBeat)
+            secondsPerBeat: secondsPerBeat, automationSecondsPerBeat: self.automationSecondsPerBeat,
+            pitchAutomationOverride: pitchOverride)
         state = State(filter: source.filter.map(VoiceFilter.init), rightFilter: source.filter.map(VoiceFilter.init))
         if !legacy, case .synthesizer = source.kind {
-            if let automation = source.pitchAutomation {
+            if let pitchOverride {
+                try validateFrequency(frequency * pow(2, pitchOverride / 12),
+                    depth: source.pitchEnvelope?.depth.value ?? 0, eventIndex: eventIndex)
+            } else if let automation = source.pitchAutomation {
                 for endpoint in [automation.from.value, automation.to.value] {
                     try validateFrequency(frequency * pow(2, endpoint / 12),
                         depth: source.pitchEnvelope?.depth.value ?? 0, eventIndex: eventIndex)
@@ -71,7 +81,8 @@ internal struct RenderedVoice {
             }
             let start = try PitchGlide.midi(event: event, source: source, time: 0, secondsPerBeat: secondsPerBeat)
             for base in [start, midi] {
-                for offset in [source.pitchAutomation?.from.value ?? 0, source.pitchAutomation?.to.value ?? 0] {
+                for offset in [pitchOverride ?? source.pitchAutomation?.from.value ?? 0,
+                               pitchOverride ?? source.pitchAutomation?.to.value ?? 0] {
                     let effective = base + offset
                     let depth = source.pitchEnvelope?.depth.value ?? 0
                     guard effective.isFinite, (0...127).contains(effective), (0...127).contains(effective + depth) else {
@@ -87,7 +98,8 @@ internal struct RenderedVoice {
             guard let cutoff = event.cutoffHz else {
                 throw LoopRenderingError.invalidEvent(index: eventIndex, reason: "source filter requires event cutoff")
             }
-            try validateFrequency(cutoff, depth: source.filterEnvelope?.depth.value ?? 0, eventIndex: eventIndex)
+            try validateFrequency(cutoffOverride ?? cutoff, depth: source.filterEnvelope?.depth.value ?? 0,
+                                  eventIndex: eventIndex)
         }
     }
 
@@ -109,16 +121,23 @@ internal struct RenderedVoice {
             var right: Double?
             switch source.kind {
             case .synthesizer(let waveform):
-                let automatedPitch = try source.pitchAutomation.map {
-                    try AutomationEvaluator.mapped($0.signal, from: $0.from.value, to: $0.to.value,
+                let automatedPitch: Double
+                if let pitchOverride {
+                    automatedPitch = pitchOverride
+                } else if let automation = source.pitchAutomation {
+                    automatedPitch = try AutomationEvaluator.mapped(automation.signal,
+                        from: automation.from.value, to: automation.to.value,
                         frame: transportFrame, secondsPerBeat: automationSecondsPerBeat)
-                } ?? 0
+                } else {
+                    automatedPitch = 0
+                }
                 let glideOffset = try source.portamento.map { _ in
                     try PitchGlide.midi(event: event, source: source, time: time, secondsPerBeat: secondsPerBeat)
                         - (Double(event.pitch?.midiNote ?? 60) + event.pitchOffsetSemitones)
                 } ?? 0
                 let currentFrequency = frequency * pow(2, (glideOffset + automatedPitch + pitchDepth * (pitchContour?.value(at: time) ?? 0)) / 12)
-                let currentPhase = pitchContour == nil && source.pitchAutomation == nil && source.portamento == nil
+                let currentPhase = pitchContour == nil && pitchOverride == nil
+                    && source.pitchAutomation == nil && source.portamento == nil
                     ? (time * frequency).truncatingRemainder(dividingBy: 1) : state.phase
                 raw = Double(oscillator(waveform, phase: currentPhase, time: time))
                 state.phase = (state.phase + currentFrequency / PreparedLoop.requiredSampleRate).truncatingRemainder(dividingBy: 1)
@@ -132,13 +151,20 @@ internal struct RenderedVoice {
                 right = sampleVoice.value(at: state.samplePosition, reversed: source.sampleReversed, channel: 1)
                 state.samplePosition += source.pitchEnvelope == nil && source.pitchAutomation == nil && source.portamento == nil ? fixedIncrement
                     : try sampleVoice.increment(event: event, source: source, time: time,
-                        secondsPerBeat: secondsPerBeat, automationSecondsPerBeat: automationSecondsPerBeat)
+                        secondsPerBeat: secondsPerBeat, automationSecondsPerBeat: automationSecondsPerBeat,
+                        pitchAutomationOverride: pitchOverride)
             }
             if state.filter != nil, let cutoff = event.cutoffHz {
-                let automatedCutoff = try source.cutoffAutomation.map {
-                    try AutomationEvaluator.mapped($0.signal, from: $0.from.hertz, to: $0.to.hertz,
+                let automatedCutoff: Double
+                if let cutoffOverride {
+                    automatedCutoff = cutoffOverride
+                } else if let automation = source.cutoffAutomation {
+                    automatedCutoff = try AutomationEvaluator.mapped(automation.signal,
+                        from: automation.from.hertz, to: automation.to.hertz,
                         frame: transportFrame, secondsPerBeat: automationSecondsPerBeat)
-                } ?? cutoff
+                } else {
+                    automatedCutoff = cutoff
+                }
                 let frequency = automatedCutoff * pow(2, filterDepth * (filterContour?.value(at: time) ?? 0) / 12)
                 if let filtered = try state.filter?.process(raw, cutoff: frequency, eventIndex: index) { raw = filtered }
                 if let value = right, let filtered = try state.rightFilter?.process(value, cutoff: frequency, eventIndex: index) { right = filtered }

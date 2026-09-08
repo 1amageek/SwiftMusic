@@ -63,6 +63,17 @@ final class SessionModel {
     private let completionService: SwiftCompletionService
     private var evaluationTask: Task<Void, Never>?
     private var wantsPlayback = false
+    private(set) var controlCatalog: LiveControlCatalog?
+    private(set) var controlsAvailable = false
+    private(set) var overrideGeneration: UInt64 = 0
+    private var candidateCatalogs: [UInt64: LiveControlCatalog] = [:]
+    private var overrides: [LiveControlAddress: LiveControlValue] = [:]
+    private var lastRenderedOverrides: [LiveControlAddress: LiveControlValue] = [:]
+    private var requestedGeneration: UInt64 = 0
+    private var controlTask: Task<Void, Never>?
+    private var adoptionTask: Task<Void, Never>?
+    private var controlHealthTask: Task<Void, Never>?
+    private var lastControlHealthCheck = ContinuousClock.now
 
     init() {
         let bundle = Bundle.main
@@ -85,6 +96,14 @@ final class SessionModel {
         catch { audioError = error.localizedDescription; diagnostic = audioError }
     }
 
+    init(evaluator: SourceEvaluator, completionService: SwiftCompletionService, engine: AudioLoopEngine) {
+        self.evaluator = evaluator
+        self.completionService = completionService
+        self.engine = engine
+        do { analyzer = try SpectrumAnalyzer() }
+        catch { diagnostic = "Spectrum analyzer could not initialize: \(error)" }
+    }
+
     func completions(source: String, utf16Offset: Int) async throws -> [SwiftCompletion] {
         try await completionService.completions(source: source, utf16Offset: utf16Offset)
     }
@@ -96,12 +115,16 @@ final class SessionModel {
     }
 
     func scheduleEvaluation(immediate: Bool = false) {
+        refresh()
         evaluationTask?.cancel()
         guard revision < UInt64.max else { diagnostic = "Revision limit reached. Reopen the app."; return }
         revision += 1
         let requested = revision
         lineMaps = lineMaps.filter { $0.key == currentRevision }
         engine?.beginUpdate(revision: requested)
+        // Reconcile adoption after atomically clearing pending audio: a bar may have
+        // adopted the previous candidate between the earlier snapshot and beginUpdate.
+        refresh()
         let text = source
         let tempo = 120.0
         let meter = beatsPerBar
@@ -111,11 +134,14 @@ final class SessionModel {
         evaluationTask = Task { [weak self, evaluator] in
             do {
                 if !immediate { try await Task.sleep(for: .milliseconds(650)) }
-                let candidate = try await evaluator.evaluate(source: text, bpm: tempo, beatsPerBar: meter)
+                await self?.adoptionTask?.value
+                let evaluation = try await evaluator.evaluateRetained(source: text, bpm: tempo, beatsPerBar: meter, revision: requested)
+                let candidate = evaluation.loop
                 try Task.checkCancellation()
                 guard let self, requested == self.revision else { return }
                 guard let engine = self.engine else { throw EvaluationError.invalidResult(self.audioError) }
                 self.lineMaps[requested] = SourceLineMap(source: text, lines: candidate.rows.flatMap { [$0.anchor?.line, $0.resultLine].compactMap { $0 } })
+                self.candidateCatalogs = [requested: evaluation.catalog]
                 try engine.submit(loop: candidate, revision: requested)
                 if self.wantsPlayback { try engine.play() }
                 self.isPreparing = false
@@ -156,8 +182,51 @@ final class SessionModel {
         if currentRevision != snapshot.revision {
             currentRevision = snapshot.revision
             loop = snapshot.loop
+            overrideGeneration = snapshot.overrideGeneration
+            requestedGeneration = 0
+            overrides.removeAll()
+            lastRenderedOverrides.removeAll()
+            controlTask?.cancel()
+            controlsAvailable = false
+            controlCatalog = nil
+            adoptionTask?.cancel()
+            if let adoptedRevision = snapshot.revision,
+               let catalog = candidateCatalogs[adoptedRevision] {
+                adoptionTask = Task { [weak self, evaluator] in
+                    let adopted = await evaluator.adopt(revision: adoptedRevision)
+                    let available = await evaluator.controlsAvailable(revision: adoptedRevision)
+                    guard let self, self.currentRevision == adoptedRevision, !Task.isCancelled else { return }
+                    guard adopted, available else {
+                        self.diagnostic = "The adopted loop has no live render worker. Audio continues."
+                        return
+                    }
+                    do {
+                        self.controlCatalog = try self.catalogWithMasters(catalog, revision: adoptedRevision)
+                        self.controlsAvailable = true
+                    } catch { self.diagnostic = error.localizedDescription }
+                }
+            }
             lineMaps = lineMaps.filter { $0.key == currentRevision || $0.key == revision }
             updateRowLines()
+        }
+        if overrideGeneration != snapshot.overrideGeneration {
+            overrideGeneration = snapshot.overrideGeneration
+            loop = snapshot.loop
+            updateRowLines()
+        }
+        if controlsAvailable, controlHealthTask == nil, let currentRevision,
+           lastControlHealthCheck.duration(to: .now) >= .seconds(1) {
+            lastControlHealthCheck = .now
+            controlHealthTask = Task { [weak self, evaluator] in
+                let available = await evaluator.controlsAvailable(revision: currentRevision)
+                guard let self else { return }
+                defer { self.controlHealthTask = nil }
+                guard !Task.isCancelled, self.currentRevision == currentRevision else { return }
+                if !available {
+                    self.controlsAvailable = false
+                    self.diagnostic = "The live render worker stopped. Audio continues; evaluate a new edit to restore controls."
+                }
+            }
         }
         if let capture = engine?.outputMeter() {
             outputSamples = capture.interleavedSamples
@@ -168,6 +237,82 @@ final class SessionModel {
         }
         if !isPreparing, diagnostic.isEmpty, snapshot.revision == revision {
             status = isPlaying ? "Live · edit freely" : "Paused"
+        }
+    }
+
+    /// A nil value releases this address back to its score or persistent master target.
+    func setControl(_ address: LiveControlAddress, value: LiveControlValue?) throws {
+        guard let currentRevision, address.revision == currentRevision else {
+            throw LiveControlError.staleRevision(expected: currentRevision ?? 0, actual: address.revision)
+        }
+        guard controlCatalog?.descriptor(for: address) != nil else {
+            throw LiveControlError.unknownAddress(address)
+        }
+        if address.target == .master {
+            try applyMaster(address, value: value)
+            return
+        }
+        guard controlsAvailable else { throw EvaluationError.invalidResult("Live controls are unavailable. Audio continues.") }
+        guard requestedGeneration < UInt64.max else { throw EvaluationError.invalidResult("Control generation limit reached.") }
+        overrides[address] = value
+        requestedGeneration += 1
+        let generation = requestedGeneration
+        let values = overrides.map { LiveControlOverride(address: $0.key, value: $0.value) }
+        controlTask?.cancel()
+        controlTask = Task { [weak self, evaluator] in
+            do {
+                let rendered = try await evaluator.render(overrides: values, revision: currentRevision, generation: generation)
+                try Task.checkCancellation()
+                guard let self, self.currentRevision == currentRevision,
+                      self.requestedGeneration == generation, let engine = self.engine else { return }
+                try engine.replace(loop: rendered, revision: currentRevision, generation: generation)
+                self.lastRenderedOverrides = Dictionary(uniqueKeysWithValues: values.map { ($0.address, $0.value) })
+                self.refresh()
+            } catch is CancellationError { }
+            catch {
+                let available = await evaluator.controlsAvailable(revision: currentRevision)
+                guard let self, self.currentRevision == currentRevision,
+                      self.requestedGeneration == generation else { return }
+                self.controlsAvailable = available
+                self.overrides = self.lastRenderedOverrides
+                self.diagnostic = error.localizedDescription
+            }
+        }
+    }
+
+    private func catalogWithMasters(_ catalog: LiveControlCatalog, revision: UInt64) throws -> LiveControlCatalog {
+        let masters: [(LiveControlParameter, String, LiveControlBaseline)] = [
+            (.playbackRate, "Master Tempo", .scalar(bpm / 120)),
+            (.lowPassCutoff, "Master Filter", lowPass >= 19_999 ? .bypassed : .scalar(lowPass)),
+            (.delayMix, "Master Delay", .scalar(delayMix)),
+            (.reverbMix, "Master Reverb", .scalar(reverbMix))
+        ]
+        return try LiveControlCatalog(descriptors: catalog.descriptors + masters.map {
+            LiveControlDescriptor(address: .init(revision: revision, target: .master, parameter: $0.0),
+                                  label: $0.1, baseline: $0.2)
+        })
+    }
+
+    private func applyMaster(_ address: LiveControlAddress, value: LiveControlValue?) throws {
+        guard let engine else { throw EvaluationError.invalidResult(audioError) }
+        let number: Double?
+        switch value {
+        case .number(let scalar):
+            guard scalar.isFinite else { throw LiveControlError.invalidValue(address) }
+            number = scalar
+        case .bypassed:
+            guard address.parameter == .lowPassCutoff else { throw LiveControlError.invalidValue(address) }
+            number = nil
+        case nil: number = nil
+        }
+        switch address.parameter {
+        case .playbackRate: try engine.setPlaybackRate(Float(number ?? bpm / 120))
+        case .lowPassCutoff:
+            let cutoff = value == .bypassed ? nil : (number ?? (lowPass >= 19_999 ? nil : lowPass))
+            try engine.setLowPass(cutoff: cutoff.map(Float.init))
+        case .delayMix: try engine.setDelay(mix: Float(number ?? delayMix))
+        case .reverbMix: try engine.setReverb(mix: Float(number ?? reverbMix))
+        default: throw LiveControlError.unsupportedAddress(address)
         }
     }
 
@@ -265,8 +410,15 @@ final class SessionModel {
 
     func shutdown() async throws {
         evaluationTask?.cancel()
+        controlTask?.cancel()
+        adoptionTask?.cancel()
+        controlHealthTask?.cancel()
+        controlsAvailable = false
         engine?.stop()
         await evaluationTask?.value
+        await controlTask?.value
+        await adoptionTask?.value
+        await controlHealthTask?.value
         async let completionShutdown: Void = completionService.shutdown()
         async let evaluationShutdown: Void = evaluator.shutdown()
         _ = try await (completionShutdown, evaluationShutdown)

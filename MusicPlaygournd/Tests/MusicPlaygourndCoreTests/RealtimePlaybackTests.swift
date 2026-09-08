@@ -48,6 +48,31 @@ extension NativeHostTests {
         }
 
         @Test(.timeLimit(.minutes(3)))
+        func testSameRevisionReplacementReachesNativeOutput() throws {
+            let engine = try AudioLoopEngine()
+            let first = sineLoop()
+            engine.beginUpdate(revision: 21)
+            try engine.submit(loop: first, revision: 21)
+            try engine.prepareOfflineRenderingForTests()
+            try engine.play()
+            for _ in 0..<2 { _ = try engine.renderOfflineForTests(frameCount: 4_096) }
+            let before = try engine.renderOfflineForTests(frameCount: 4_096)
+            let replacement = PreparedLoop(sampleRate: first.sampleRate, bpm: first.bpm,
+                beatsPerBar: first.beatsPerBar, beatCount: first.beatCount,
+                samples: first.samples.map { $0 * 0.2 }, events: first.events, rows: first.rows)
+            try engine.replace(loop: replacement, revision: 21, generation: 1)
+            for _ in 0..<4 { _ = try engine.renderOfflineForTests(frameCount: 4_096) }
+            let after = try engine.renderOfflineForTests(frameCount: 4_096)
+            let beforePower = before.reduce(0.0) { $0 + Double($1 * $1) }
+            let afterPower = after.reduce(0.0) { $0 + Double($1 * $1) }
+            #expect(beforePower > 1)
+            #expect(abs(afterPower / beforePower - 0.04) < 0.005)
+            #expect(engine.snapshot().revision == 21)
+            #expect(engine.snapshot().overrideGeneration == 1)
+            engine.stop()
+        }
+
+        @Test(.timeLimit(.minutes(3)))
         func testControlsRejectNonFiniteAndOutOfRangeValues() throws {
             let engine = try AudioLoopEngine()
             #expect(throws: (any Error).self) { try engine.setPlaybackRate(.nan) }

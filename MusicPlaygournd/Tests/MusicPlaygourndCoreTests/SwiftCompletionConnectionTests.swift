@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import MusicPlaygourndCore
 
+extension NativeHostTests {
 struct SwiftCompletionConnectionTests {
     @Test(.timeLimit(.minutes(3)))
     func testFrameParserHandlesSplitHeaderAndBody() throws {
@@ -321,4 +322,6 @@ send({"jsonrpc": "2.0", "id": request.get("id"), "result": {}})
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         return (workspace, executable)
     }
+}
+
 }
