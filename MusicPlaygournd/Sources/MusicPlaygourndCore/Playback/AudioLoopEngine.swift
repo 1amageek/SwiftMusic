@@ -182,8 +182,34 @@ public final class AudioLoopEngine: AudioUnitHosting, MasterRecording {
         catch let error as PreparedLoopValidationError { throw PlaybackError.invalidLoop(error) }
         pruneRetainedLoops()
         try transport.replace(loop: loop, revision: revision, generation: generation)
-        retainedLoops[.init(revision: revision, generation: generation)] = loop
+        retainedLoops[.init(revision: revision, generation: generation,
+            performanceGeneration: transport.snapshot().performanceGeneration)] = loop
         pruneRetainedLoops()
+    }
+
+    /// Reserves validated PCM without changing audible state.
+    public func preparePerformanceReplacement(loop: PreparedLoop, revision: UInt64,
+                                               generation: UInt64) throws -> PerformanceReplacementToken {
+        pruneRetainedLoops()
+        let token = try transport.preparePerformanceReplacement(loop: loop, revision: revision, generation: generation)
+        retainedLoops[.init(revision: revision, generation: transport.snapshot().overrideGeneration,
+            performanceGeneration: generation)] = loop
+        return token
+    }
+
+    /// A live reservation commits without a fallible operation or suspension.
+    @discardableResult
+    public func commitPerformanceReplacement(_ token: PerformanceReplacementToken) -> Bool {
+        let committed = transport.commitPerformanceReplacement(token)
+        pruneRetainedLoops()
+        return committed
+    }
+
+    @discardableResult
+    public func discardPerformanceReplacement(_ token: PerformanceReplacementToken) -> Bool {
+        let discarded = transport.discardPerformanceReplacement(token)
+        pruneRetainedLoops()
+        return discarded
     }
 
     public func play() throws {
@@ -242,7 +268,8 @@ public final class AudioLoopEngine: AudioUnitHosting, MasterRecording {
                 correction: correction
             ),
             isPlaying: rawSnapshot.isPlaying,
-            overrideGeneration: rawSnapshot.overrideGeneration
+            overrideGeneration: rawSnapshot.overrideGeneration,
+            performanceGeneration: rawSnapshot.performanceGeneration
         )
     }
 
@@ -532,6 +559,7 @@ final class AudioTransport: Sendable {
     struct Identity: Sendable, Hashable {
         let revision: UInt64
         let generation: UInt64
+        var performanceGeneration: UInt64 = 0
     }
 
     static let crossfadeFrames = 1_323
@@ -545,7 +573,8 @@ final class AudioTransport: Sendable {
         let loop: PreparedLoop
         let revision: UInt64
         var generation: UInt64 = 0
-        var identity: Identity { Identity(revision: revision, generation: generation) }
+        var performanceGeneration: UInt64 = 0
+        var identity: Identity { Identity(revision: revision, generation: generation, performanceGeneration: performanceGeneration) }
     }
 
     private struct Fade: Sendable {
@@ -561,6 +590,10 @@ final class AudioTransport: Sendable {
     private struct State: Sendable {
         var current: PreparedLoop?
         var currentRevision: UInt64?
+        var currentPerformanceGeneration: UInt64 = 0
+        var publishedPerformanceGeneration: UInt64 = 0
+        var latestPerformanceGeneration: UInt64 = 0
+        var reservation: (token: PerformanceReplacementToken, candidate: Candidate)?
         var currentGeneration: UInt64 = 0
         var latestGeneration: UInt64 = 0
         var replacement: Candidate?
@@ -587,12 +620,62 @@ final class AudioTransport: Sendable {
             state.retired = nil
             var identities: [Identity] = []
             if let revision = state.currentRevision {
-                identities.append(Identity(revision: revision, generation: state.currentGeneration))
+                identities.append(Identity(revision: revision, generation: state.currentGeneration, performanceGeneration: state.currentPerformanceGeneration))
             }
+            if let reservation = state.reservation { identities.append(reservation.candidate.identity) }
             if let pending = state.pending { identities.append(pending.identity) }
             if let replacement = state.replacement { identities.append(replacement.identity) }
             if let fade = state.fade { identities.append(fade.old.identity) }
             return identities
+        }
+    }
+
+    func preparePerformanceReplacement(loop: PreparedLoop, revision: UInt64,
+                                       generation: UInt64) throws -> PerformanceReplacementToken {
+        do { try loop.validate() }
+        catch let error as PreparedLoopValidationError { throw PlaybackError.invalidLoop(error) }
+        return try state.withLock { state in
+            guard state.currentRevision == revision else { throw PlaybackError.staleRevision(revision) }
+            guard generation > state.latestPerformanceGeneration else {
+                throw PlaybackError.staleOverrideGeneration(generation)
+            }
+            guard state.reservation == nil, state.fade == nil, state.pending == nil,
+                  state.replacement == nil, state.retired == nil else {
+                throw PlaybackError.replacementInProgress
+            }
+            let token = PerformanceReplacementToken()
+            let candidate = Candidate(loop: loop, revision: revision,
+                generation: state.currentGeneration, performanceGeneration: generation)
+            state.reservation = (token, candidate)
+            state.latestPerformanceGeneration = generation
+            return token
+        }
+    }
+
+    @discardableResult
+    func commitPerformanceReplacement(_ token: PerformanceReplacementToken) -> Bool {
+        state.withLock { state in
+            guard let reservation = state.reservation, reservation.token == token else { return false }
+            state.reservation = nil
+            if state.isPlaying {
+                beginFade(reservation.candidate, into: &state)
+            } else {
+                state.current = reservation.candidate.loop
+                state.currentPerformanceGeneration = reservation.candidate.performanceGeneration
+                state.publishedPerformanceGeneration = state.currentPerformanceGeneration
+                state.framePosition = frame(for: state.beatPosition, in: reservation.candidate.loop)
+                state.clockSample = nil
+            }
+            return true
+        }
+    }
+
+    @discardableResult
+    func discardPerformanceReplacement(_ token: PerformanceReplacementToken) -> Bool {
+        state.withLock { state in
+            guard state.reservation?.token == token else { return false }
+            state.reservation = nil
+            return true
         }
     }
 
@@ -604,9 +687,14 @@ final class AudioTransport: Sendable {
             guard generation > state.latestGeneration else {
                 throw PlaybackError.staleOverrideGeneration(generation)
             }
+            guard state.reservation == nil,
+                  state.currentPerformanceGeneration == state.publishedPerformanceGeneration else {
+                throw PlaybackError.replacementInProgress
+            }
             guard Self.sameShape(current, loop) else { throw PlaybackError.incompatibleReplacement }
             state.latestGeneration = generation
-            let candidate = Candidate(loop: loop, revision: revision, generation: generation)
+            let candidate = Candidate(loop: loop, revision: revision, generation: generation,
+                performanceGeneration: state.currentPerformanceGeneration)
             if !state.isPlaying {
                 state.current = loop
                 state.currentGeneration = generation
@@ -640,9 +728,11 @@ final class AudioTransport: Sendable {
 
     private func beginFade(_ candidate: Candidate, into state: inout State) {
         guard let current = state.current, let revision = state.currentRevision else { return }
-        state.fade = Fade(old: Candidate(loop: current, revision: revision, generation: state.currentGeneration))
+        state.fade = Fade(old: Candidate(loop: current, revision: revision, generation: state.currentGeneration,
+            performanceGeneration: state.currentPerformanceGeneration))
         state.current = candidate.loop
         state.currentGeneration = candidate.generation
+        state.currentPerformanceGeneration = candidate.performanceGeneration
         state.clockSample = nil
         state.replacement = nil
     }
@@ -667,6 +757,10 @@ final class AudioTransport: Sendable {
                 throw PlaybackError.duplicateRevision(revision)
             }
 
+            guard state.reservation == nil,
+                  state.currentPerformanceGeneration == state.publishedPerformanceGeneration else {
+                throw PlaybackError.replacementInProgress
+            }
             state.submittedRevision = revision
             let candidate = Candidate(loop: loop, revision: revision)
             if state.current == nil {
@@ -689,7 +783,7 @@ final class AudioTransport: Sendable {
             guard state.current != nil || state.pending != nil else {
                 throw PlaybackError.noCurrentLoop
             }
-            if let pending = state.pending, !state.isPlaying {
+            if let pending = state.pending, !state.isPlaying, state.reservation == nil {
                 adopt(pending, into: &state)
             }
             if !state.isPlaying {
@@ -722,6 +816,10 @@ final class AudioTransport: Sendable {
                 state.current = replacement.loop
                 state.currentGeneration = replacement.generation
             }
+            state.publishedPerformanceGeneration = state.currentPerformanceGeneration
+            if state.currentPerformanceGeneration > 0, let current = state.current {
+                state.framePosition = frame(for: state.beatPosition, in: current)
+            }
             state.replacement = nil
             state.fade = nil
             state.retired = nil
@@ -734,8 +832,12 @@ final class AudioTransport: Sendable {
 
     func positionSnapshot() -> PositionSnapshot {
         state.withLock { state in
+            let visibleLoop = state.currentPerformanceGeneration != state.publishedPerformanceGeneration
+                ? state.fade?.old.loop : state.current
             let beatPosition: Double
-            if let current = state.current {
+            if state.currentPerformanceGeneration != state.publishedPerformanceGeneration, let visibleLoop {
+                beatPosition = state.beatPosition.truncatingRemainder(dividingBy: visibleLoop.beatCount)
+            } else if let current = state.current {
                 let frames = max(1, current.samples.count / 2)
                 beatPosition = Double(state.framePosition) / Double(frames) * current.beatCount
             } else {
@@ -743,11 +845,12 @@ final class AudioTransport: Sendable {
             }
             return PositionSnapshot(
                 playback: PlaybackSnapshot(
-                    loop: state.current,
+                    loop: visibleLoop,
                     revision: state.currentRevision,
                     beatPosition: beatPosition,
                     isPlaying: state.isPlaying,
-                    overrideGeneration: state.currentGeneration
+                    overrideGeneration: state.currentGeneration,
+                    performanceGeneration: state.publishedPerformanceGeneration
                 ),
                 accumulatedBeatPosition: state.beatPosition
             )
@@ -836,7 +939,8 @@ final class AudioTransport: Sendable {
             for offset in 0..<frameCount {
                 if let pending = state.pending,
                    let boundary = state.pendingBoundary,
-                   state.beatPosition >= boundary {
+                   state.beatPosition >= boundary, state.reservation == nil,
+                   state.currentPerformanceGeneration == state.publishedPerformanceGeneration {
                     adopt(pending, into: &state)
                 }
 
@@ -849,22 +953,32 @@ final class AudioTransport: Sendable {
                     continue
                 }
                 let frame = state.framePosition % max(1, active.samples.count / 2)
-                var left = active.samples[frame * 2]
-                var right = active.samples[frame * 2 + 1]
+                let performanceFade = state.currentPerformanceGeneration != state.publishedPerformanceGeneration
+                let phase = state.currentPerformanceGeneration > 0
+                    ? sample(at: state.beatPosition, in: active)
+                    : (active.samples[frame * 2], active.samples[frame * 2 + 1])
+                var left = phase.0
+                var right = phase.1
                 if let fade = state.fade {
                     let mix = Float(fade.elapsed) / Float(Self.crossfadeFrames - 1)
-                    left = fade.old.loop.samples[frame * 2] * (1 - mix) + left * mix
-                    right = fade.old.loop.samples[frame * 2 + 1] * (1 - mix) + right * mix
+                    let old = performanceFade || state.currentPerformanceGeneration > 0
+                        ? sample(at: state.beatPosition, in: fade.old.loop)
+                        : (fade.old.loop.samples[frame * 2], fade.old.loop.samples[frame * 2 + 1])
+                    left = old.0 * (1 - mix) + left * mix
+                    right = old.1 * (1 - mix) + right * mix
                     if fade.elapsed + 1 == Self.crossfadeFrames {
                         state.retired = fade.old
+                        state.publishedPerformanceGeneration = state.currentPerformanceGeneration
                         state.fade = nil
                     } else {
                         state.fade?.elapsed += 1
                     }
                 }
                 write(buffers: buffers, frame: offset, left: left, right: right)
-                state.framePosition = (frame + 1) % loopFrameCountFor(active)
                 state.beatPosition += deltaBeatFor(active)
+                state.framePosition = state.currentPerformanceGeneration > 0
+                    ? self.frame(for: state.beatPosition, in: active)
+                    : (frame + 1) % loopFrameCountFor(active)
             }
             return noErr
         }
@@ -875,6 +989,9 @@ final class AudioTransport: Sendable {
         state.currentRevision = candidate.revision
         state.clockSample = nil
         state.currentGeneration = 0
+        state.currentPerformanceGeneration = 0
+        state.publishedPerformanceGeneration = 0
+        state.latestPerformanceGeneration = 0
         state.latestGeneration = 0
         state.replacement = nil
         if let fade = state.fade { state.retired = fade.old }
@@ -882,6 +999,17 @@ final class AudioTransport: Sendable {
         state.pending = nil
         state.pendingBoundary = nil
         state.framePosition = frame(for: state.beatPosition, in: candidate.loop)
+    }
+
+    private func sample(at beat: Double, in loop: PreparedLoop) -> (Float, Float) {
+        let count = loop.samples.count / 2
+        let localBeat = beat.truncatingRemainder(dividingBy: loop.beatCount)
+        let position = max(0, localBeat / loop.beatCount * Double(count))
+        let first = Int(position) % count
+        let second = (first + 1) % count
+        let fraction = Float(position - floor(position))
+        return (loop.samples[first * 2] * (1 - fraction) + loop.samples[second * 2] * fraction,
+                loop.samples[first * 2 + 1] * (1 - fraction) + loop.samples[second * 2 + 1] * fraction)
     }
 
     private func frame(for beat: Double, in loop: PreparedLoop) -> Int {
