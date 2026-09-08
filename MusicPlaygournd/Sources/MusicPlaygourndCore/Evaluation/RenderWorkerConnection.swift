@@ -6,12 +6,15 @@ internal actor RenderWorkerConnection {
     private enum WorkerOperationResult: Sendable {
         case loop(WorkerPreparedResult)
         case stems(StemExportSnapshot)
+        case visualization(PreparedControlVisualization)
     }
 
     private enum CommandKind: Equatable {
         case render
         case export
         case cancelExport
+        case visualize
+        case cancelVisualization
         case shutdown
     }
 
@@ -36,20 +39,25 @@ internal actor RenderWorkerConnection {
     private var pendingWrites = [PendingCommand]()
     private var renderWaiter: CheckedContinuation<WorkerOperationResult, any Error>?
     private var exportWaiter: CheckedContinuation<WorkerOperationResult, any Error>?
+    private var visualizationWaiter: CheckedContinuation<WorkerOperationResult, any Error>?
     private var readyWaiter: CheckedContinuation<RetainedEvaluation, any Error>?
     private var readyResult: RetainedEvaluation?
     private var failure: EvaluationError?
     private var latestRenderGeneration: UInt64 = 0
     private var lastRenderedGeneration: UInt64 = 0
     private var latestExportGeneration: UInt64 = 0
+    private var latestVisualizationSelectionGeneration: UInt64 = 0
     private var nextOperationID: UInt64 = 0
     private var latestOperationID: UInt64 = 0
     private var latestRenderOperationID: UInt64 = 0
     private var latestExportOperationID: UInt64 = 0
+    private var latestVisualizationOperationID: UInt64 = 0
+    private var latestVisualizationAddress: LiveControlAddress?
     private var exportCancellationRequested = false
     private var readyDeadline: ContinuousClock.Instant?
     private var renderDeadline: ContinuousClock.Instant?
     private var exportDeadline: ContinuousClock.Instant?
+    private var visualizationDeadline: ContinuousClock.Instant?
     private var pumpTask: Task<Void, Never>?
     private var shutdownTask: Task<Void, Never>?
     private var stopping = false
@@ -178,10 +186,81 @@ internal actor RenderWorkerConnection {
         return snapshot
     }
 
+    func visualization(
+        address: LiveControlAddress,
+        overrides: [LiveControlOverride],
+        selectionGeneration: UInt64
+    ) async throws -> PreparedControlVisualization {
+        try Task.checkCancellation()
+        guard address.revision == revision else {
+            throw LiveControlError.staleRevision(expected: revision, actual: address.revision)
+        }
+        if let failure { throw failure }
+        guard readyResult != nil, !stopping, !closing else {
+            throw EvaluationError.invalidResult("Worker is unavailable.")
+        }
+        guard selectionGeneration > latestVisualizationSelectionGeneration else {
+            throw EvaluationError.invalidResult("Visualization selection generation is stale.")
+        }
+        guard overrides.count <= (readyResult?.catalog.descriptors.count ?? 0) else {
+            throw EvaluationError.invalidResult("Override count exceeds the worker control catalog.")
+        }
+        let operationID = try allocateOperationID()
+        if let waiter = visualizationWaiter {
+            visualizationWaiter = nil
+            visualizationDeadline = nil
+            waiter.resume(throwing: CancellationError())
+            try enqueueVisualizationCancellation(operationID: latestVisualizationOperationID)
+        }
+        latestVisualizationOperationID = operationID
+        latestVisualizationSelectionGeneration = selectionGeneration
+        latestVisualizationAddress = address
+        let frame = try RenderWorkerFraming.encode(RenderWorkerCommand.visualize(
+            revision: revision,
+            selectionGeneration: selectionGeneration,
+            operationID: operationID,
+            address: address,
+            overrides: overrides
+        ))
+        visualizationDeadline = .now.advanced(by: .seconds(10))
+        let result = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<WorkerOperationResult, any Error>) in
+                visualizationWaiter = continuation
+                enqueue(.visualize, frame)
+            }
+        } onCancel: {
+            Task { await self.cancelVisualizationWaiter(operationID) }
+        } as WorkerOperationResult
+        try Task.checkCancellation()
+        guard case .visualization(let value) = result else {
+            throw EvaluationError.invalidResult("Worker returned a non-visualization result.")
+        }
+        return value
+    }
+
     private func cancelRenderWaiter(_ operationID: UInt64) {
         guard operationID == latestRenderOperationID else { return }
         renderWaiter?.resume(throwing: CancellationError())
         renderWaiter = nil
+    }
+
+    private func cancelVisualizationWaiter(_ operationID: UInt64) {
+        guard operationID == latestVisualizationOperationID else { return }
+        visualizationDeadline = nil
+        visualizationWaiter?.resume(throwing: CancellationError())
+        visualizationWaiter = nil
+        do {
+            try enqueueVisualizationCancellation(operationID: operationID)
+        } catch {
+            failure = .processFailed("Unable to cancel visualization: \(error.localizedDescription)")
+        }
+    }
+
+    private func enqueueVisualizationCancellation(operationID: UInt64) throws {
+        guard operationID > 0 else { return }
+        let frame = try RenderWorkerFraming.encode(RenderWorkerCommand.cancelVisualization(operationID: operationID))
+        enqueue(.cancelVisualization, frame)
     }
 
     private func cancelExportWaiter(_ operationID: UInt64) {
@@ -208,10 +287,9 @@ internal actor RenderWorkerConnection {
             written = 0
             return
         }
-        if let index = pendingWrites.firstIndex(where: { $0.kind == kind }) {
-            pendingWrites[index] = PendingCommand(kind: kind, data: data)
-            return
-        }
+        // Coalescing replaces the old request at the tail so unrelated commands
+        // retain their chronological wire order.
+        pendingWrites.removeAll { $0.kind == kind }
         pendingWrites.append(PendingCommand(kind: kind, data: data))
     }
 
@@ -234,6 +312,7 @@ internal actor RenderWorkerConnection {
     private func closeWorker() async {
         closing = true
         renderWaiter?.resume(throwing: CancellationError()); renderWaiter = nil
+        visualizationWaiter?.resume(throwing: CancellationError()); visualizationWaiter = nil
         readyWaiter?.resume(throwing: CancellationError()); readyWaiter = nil
         if failure == nil, completion.result == nil {
             do {
@@ -243,6 +322,9 @@ internal actor RenderWorkerConnection {
                         RenderWorkerCommand.cancelExport(operationID: latestExportOperationID)
                     )
                     enqueue(.cancelExport, cancel)
+                }
+                if latestVisualizationOperationID > 0 {
+                    try enqueueVisualizationCancellation(operationID: latestVisualizationOperationID)
                 }
                 let command = try RenderWorkerFraming.encode(RenderWorkerCommand.shutdown)
                 enqueue(.shutdown, command)
@@ -274,6 +356,7 @@ internal actor RenderWorkerConnection {
         failure = error
         renderWaiter?.resume(throwing: error); renderWaiter = nil
         exportWaiter?.resume(throwing: error); exportWaiter = nil
+        visualizationWaiter?.resume(throwing: error); visualizationWaiter = nil
         readyWaiter?.resume(throwing: error); readyWaiter = nil
         await shutdown()
     }
@@ -305,7 +388,7 @@ internal actor RenderWorkerConnection {
                 } else if errno != EAGAIN && errno != EINTR {
                     throw EvaluationError.processFailed("Worker protocol read failed.")
                 }
-                let deadlines = [readyDeadline, renderDeadline, exportDeadline].compactMap { $0 }
+                let deadlines = [readyDeadline, renderDeadline, exportDeadline, visualizationDeadline].compactMap { $0 }
                 if let deadline = deadlines.min(), ContinuousClock.now >= deadline {
                     throw EvaluationError.timedOut("Worker exceeded 10 seconds; the previous loop continues.")
                 }
@@ -401,6 +484,31 @@ internal actor RenderWorkerConnection {
             exportWaiter = nil
             exportCancellationRequested = false
             waiter?.resume(returning: .stems(snapshot))
+        case .visualized(let responseRevision, let selectionGeneration, let operationID, let visualization):
+            guard responseRevision == revision, operationID <= latestOperationID else {
+                throw EvaluationError.invalidResult("Invalid worker visualization identity.")
+            }
+            guard operationID == latestVisualizationOperationID else { return }
+            guard selectionGeneration == latestVisualizationSelectionGeneration,
+                  visualization.address == latestVisualizationAddress else {
+                throw EvaluationError.invalidResult("Invalid worker visualization selection.")
+            }
+            guard let waiter = visualizationWaiter else { return }
+            visualizationDeadline = nil
+            visualizationWaiter = nil
+            waiter.resume(returning: .visualization(visualization))
+        case .visualizationFailed(let responseRevision, let selectionGeneration, let operationID, let failure):
+            guard responseRevision == revision, operationID <= latestOperationID else {
+                throw EvaluationError.invalidResult("Invalid worker visualization failure identity.")
+            }
+            guard operationID == latestVisualizationOperationID else { return }
+            guard selectionGeneration == latestVisualizationSelectionGeneration else {
+                throw EvaluationError.invalidResult("Invalid worker visualization failure selection.")
+            }
+            guard let waiter = visualizationWaiter else { return }
+            visualizationDeadline = nil
+            visualizationWaiter = nil
+            waiter.resume(throwing: Self.visualizationError(failure))
         case .failed(let responseRevision, _, let operationID, let message):
             guard responseRevision == revision, operationID <= latestOperationID else {
                 throw EvaluationError.invalidResult("Invalid worker failure identity.")
@@ -427,6 +535,27 @@ internal actor RenderWorkerConnection {
             readyDeadline = nil
             renderDeadline = nil
             exportDeadline = nil
+        }
+    }
+
+    private static func visualizationError(_ failure: RenderWorkerVisualizationFailure) -> any Error {
+        switch failure {
+        case .staleRevision(let expected, let actual):
+            LiveControlError.staleRevision(expected: expected, actual: actual)
+        case .unknownAddress(let address):
+            LiveControlError.unknownAddress(address)
+        case .unsupported(let address):
+            ControlVisualizationError.unsupported(address)
+        case .invalidValue(let address):
+            LiveControlError.invalidValue(address)
+        case .invalidData:
+            ControlVisualizationError.invalidData
+        case .pointLimit:
+            ControlVisualizationError.pointLimit
+        case .cancelled:
+            CancellationError()
+        case .failed(let message):
+            EvaluationError.processFailed(message)
         }
     }
 

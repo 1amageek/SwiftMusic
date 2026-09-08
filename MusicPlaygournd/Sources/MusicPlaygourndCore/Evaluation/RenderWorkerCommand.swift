@@ -4,7 +4,10 @@ import Foundation
 public enum RenderWorkerCommand: Codable, Sendable, Equatable {
     case render(revision: UInt64, generation: UInt64, operationID: UInt64, overrides: [LiveControlOverride])
     case exportStems(revision: UInt64, generation: UInt64, operationID: UInt64, overrides: [LiveControlOverride], destination: URL)
+    case visualize(revision: UInt64, selectionGeneration: UInt64, operationID: UInt64,
+                   address: LiveControlAddress, overrides: [LiveControlOverride])
     case cancelExport(operationID: UInt64)
+    case cancelVisualization(operationID: UInt64)
     case shutdown
 }
 

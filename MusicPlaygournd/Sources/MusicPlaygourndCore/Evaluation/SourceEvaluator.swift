@@ -238,6 +238,28 @@ public actor SourceEvaluator {
         return located
     }
 
+    /// Samples one selected control through the retained worker without changing PCM or render generation.
+    public func visualization(
+        address: LiveControlAddress,
+        overrides: [LiveControlOverride] = [],
+        revision: UInt64,
+        selectionGeneration: UInt64
+    ) async throws -> PreparedControlVisualization {
+        guard address.revision == revision else {
+            throw LiveControlError.staleRevision(expected: revision, actual: address.revision)
+        }
+        guard let worker = adopted, worker.revision == revision else {
+            throw EvaluationError.invalidResult("Control revision is not adopted.")
+        }
+        let result = try await worker.connection.visualization(
+            address: address,
+            overrides: overrides,
+            selectionGeneration: selectionGeneration
+        )
+        guard adopted?.revision == revision else { throw CancellationError() }
+        return result
+    }
+
     /// Exports the adopted retained session's Track stems without replacing its loop result.
     public func exportStems(
         revision: UInt64,

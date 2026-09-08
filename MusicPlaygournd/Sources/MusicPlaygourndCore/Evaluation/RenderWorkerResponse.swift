@@ -1,10 +1,26 @@
 import Foundation
 
+/// Typed failures that leave the retained worker and adopted PCM available.
+public enum RenderWorkerVisualizationFailure: Codable, Sendable, Equatable {
+    case staleRevision(expected: UInt64, actual: UInt64)
+    case unknownAddress(LiveControlAddress)
+    case unsupported(LiveControlAddress)
+    case invalidValue(LiveControlAddress)
+    case invalidData
+    case pointLimit
+    case cancelled
+    case failed(String)
+}
+
 /// Responses emitted by a retained evaluation worker.
 public enum RenderWorkerResponse: Codable, Sendable, Equatable {
     case ready(revision: UInt64, catalog: LiveControlCatalog)
     case rendered(revision: UInt64, generation: UInt64, operationID: UInt64)
     case stemsExported(snapshot: StemExportSnapshot, operationID: UInt64)
+    case visualized(revision: UInt64, selectionGeneration: UInt64, operationID: UInt64,
+                    visualization: PreparedControlVisualization)
+    case visualizationFailed(revision: UInt64, selectionGeneration: UInt64, operationID: UInt64,
+                             failure: RenderWorkerVisualizationFailure)
     case failed(revision: UInt64, generation: UInt64, operationID: UInt64, message: String)
     case shutdownComplete
 }

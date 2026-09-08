@@ -52,8 +52,18 @@ public enum RenderWorker {
             case .exportStems(let commandRevision, let generation, let operationID, let overrides, let destination):
                 try await state.submitExport(revision: commandRevision, generation: generation,
                                              operationID: operationID, overrides: overrides, destination: destination)
+            case .visualize(let commandRevision, let selectionGeneration, let operationID, let address, let overrides):
+                try await state.submitVisualization(
+                    revision: commandRevision,
+                    selectionGeneration: selectionGeneration,
+                    operationID: operationID,
+                    address: address,
+                    overrides: overrides
+                )
             case .cancelExport(let operationID):
                 await state.cancelExport(operationID: operationID)
+            case .cancelVisualization(let operationID):
+                await state.cancelVisualization(operationID: operationID)
             case .shutdown:
                 await state.shutdown()
                 try await writer.send(.shutdownComplete)
@@ -171,6 +181,13 @@ private actor RenderWorkerState {
         let destination: URL?
     }
 
+    private struct VisualizationRequest: Sendable {
+        let selectionGeneration: UInt64
+        let operationID: UInt64
+        let address: LiveControlAddress
+        let overrides: [LiveControlOverride]
+    }
+
     private let session: LoopRenderSession
     private let revision: UInt64
     private let outputURL: URL
@@ -180,6 +197,8 @@ private actor RenderWorkerState {
     private var pendingRender: Request?
     private var activeExport: (operationID: UInt64, generation: UInt64, task: Task<Void, Never>)?
     private var pendingExport: Request?
+    private var activeVisualization: (operationID: UInt64, selectionGeneration: UInt64, task: Task<Void, Never>)?
+    private var pendingVisualization: VisualizationRequest?
     private var latestOperationID: UInt64 = 0
     private var stopping = false
 
@@ -222,6 +241,43 @@ private actor RenderWorkerState {
         )
     }
 
+    func submitVisualization(
+        revision commandRevision: UInt64,
+        selectionGeneration: UInt64,
+        operationID: UInt64,
+        address: LiveControlAddress,
+        overrides: [LiveControlOverride]
+    ) async throws {
+        guard !stopping else { throw CancellationError() }
+        guard commandRevision == revision else {
+            await reportVisualizationFailure(
+                VisualizationRequest(selectionGeneration: selectionGeneration, operationID: operationID,
+                                     address: address, overrides: overrides),
+                failure: .staleRevision(expected: revision, actual: commandRevision)
+            )
+            return
+        }
+        let request = VisualizationRequest(selectionGeneration: selectionGeneration,
+                                            operationID: operationID,
+                                            address: address,
+                                            overrides: overrides)
+        guard operationID > latestOperationID else {
+            await reportVisualizationFailure(request, failure: .failed("Worker operation is stale."))
+            return
+        }
+        latestOperationID = operationID
+        if let pendingVisualization {
+            self.pendingVisualization = nil
+            await reportVisualizationFailure(pendingVisualization, failure: .cancelled)
+        }
+        if let activeVisualization {
+            activeVisualization.task.cancel()
+            pendingVisualization = request
+        } else {
+            startVisualization(request)
+        }
+    }
+
     func cancelExport(operationID: UInt64) async {
         if let pendingExport, pendingExport.operationID == operationID {
             self.pendingExport = nil
@@ -230,6 +286,16 @@ private actor RenderWorkerState {
         }
         guard let activeExport, activeExport.operationID == operationID else { return }
         activeExport.task.cancel()
+    }
+
+    func cancelVisualization(operationID: UInt64) async {
+        if let pendingVisualization, pendingVisualization.operationID == operationID {
+            self.pendingVisualization = nil
+            await reportVisualizationFailure(pendingVisualization, failure: .cancelled)
+            return
+        }
+        guard let activeVisualization, activeVisualization.operationID == operationID else { return }
+        activeVisualization.task.cancel()
     }
 
     private func submit(_ request: Request, revision commandRevision: UInt64) async throws {
@@ -272,6 +338,7 @@ private actor RenderWorkerState {
         stopping = true
         pendingRender = nil
         pendingExport = nil
+        pendingVisualization = nil
         if let activeRender {
             activeRender.task.cancel()
             await activeRender.task.value
@@ -281,6 +348,11 @@ private actor RenderWorkerState {
             activeExport.task.cancel()
             await activeExport.task.value
             self.activeExport = nil
+        }
+        if let activeVisualization {
+            activeVisualization.task.cancel()
+            await activeVisualization.task.value
+            self.activeVisualization = nil
         }
     }
 
@@ -342,6 +414,59 @@ private actor RenderWorkerState {
         }
     }
 
+    private func startVisualization(_ request: VisualizationRequest) {
+        let session = session
+        let writer = writer
+        let revision = revision
+        let task = Task.detached(priority: .userInitiated) { [weak self] in
+            do {
+                try Task.checkCancellation()
+                let visualization = try session.visualization(for: request.address, overrides: request.overrides)
+                try Task.checkCancellation()
+                try await writer.send(.visualized(
+                    revision: revision,
+                    selectionGeneration: request.selectionGeneration,
+                    operationID: request.operationID,
+                    visualization: visualization
+                ))
+                await self?.finishedVisualization(request)
+            } catch is CancellationError {
+                await self?.cancelledVisualization(request)
+            } catch let error as ControlVisualizationError {
+                await self?.reportVisualizationFailure(request, failure: Self.visualizationFailure(error))
+                await self?.finishedVisualization(request)
+            } catch let error as LiveControlError {
+                await self?.reportVisualizationFailure(request, failure: Self.visualizationFailure(error))
+                await self?.finishedVisualization(request)
+            } catch {
+                await self?.reportVisualizationFailure(request, failure: .failed(String(describing: error)))
+                await self?.finishedVisualization(request)
+            }
+        }
+        activeVisualization = (request.operationID, request.selectionGeneration, task)
+    }
+
+    private static func visualizationFailure(_ error: ControlVisualizationError) -> RenderWorkerVisualizationFailure {
+        switch error {
+        case .unsupported(let address): .unsupported(address)
+        case .invalidData: .invalidData
+        case .pointLimit: .pointLimit
+        }
+    }
+
+    private static func visualizationFailure(_ error: LiveControlError) -> RenderWorkerVisualizationFailure {
+        switch error {
+        case .staleRevision(let expected, let actual): .staleRevision(expected: expected, actual: actual)
+        case .unknownAddress(let address): .unknownAddress(address)
+        case .unsupportedAddress(let address): .unsupported(address)
+        case .invalidValue(let address): .invalidValue(address)
+        case .invalidCatalog(let message):
+            .failed("Invalid control catalog: \(message)")
+        case .duplicateAddress(let address):
+            .failed("Duplicate control address: \(address)")
+        }
+    }
+
     private func cancelled(_ request: Request) async {
         if request.destination == nil {
             guard let activeRender, activeRender.operationID == request.operationID else { return }
@@ -356,6 +481,14 @@ private actor RenderWorkerState {
         }
     }
 
+    private func cancelledVisualization(_ request: VisualizationRequest) async {
+        guard let activeVisualization,
+              activeVisualization.operationID == request.operationID else { return }
+        self.activeVisualization = nil
+        await reportVisualizationFailure(request, failure: .cancelled)
+        startPendingVisualizationIfAvailable()
+    }
+
     private func finished(_ request: Request) async {
         if request.destination == nil {
             guard activeRender?.operationID == request.operationID else { return }
@@ -366,6 +499,12 @@ private actor RenderWorkerState {
             activeExport = nil
             startPendingExportIfAvailable()
         }
+    }
+
+    private func finishedVisualization(_ request: VisualizationRequest) async {
+        guard activeVisualization?.operationID == request.operationID else { return }
+        activeVisualization = nil
+        startPendingVisualizationIfAvailable()
     }
 
     private func startPendingRenderIfAvailable() {
@@ -380,6 +519,12 @@ private actor RenderWorkerState {
         start(pendingExport)
     }
 
+    private func startPendingVisualizationIfAvailable() {
+        guard let pendingVisualization else { return }
+        self.pendingVisualization = nil
+        startVisualization(pendingVisualization)
+    }
+
     private func reportFailure(_ request: Request, error: Error) async {
         await reportFailure(request, message: String(describing: error))
     }
@@ -388,6 +533,22 @@ private actor RenderWorkerState {
         do {
             try await writer.send(.failed(revision: revision, generation: request.generation,
                                           operationID: request.operationID, message: message))
+        } catch {
+            stopping = true
+        }
+    }
+
+    private func reportVisualizationFailure(
+        _ request: VisualizationRequest,
+        failure: RenderWorkerVisualizationFailure
+    ) async {
+        do {
+            try await writer.send(.visualizationFailed(
+                revision: revision,
+                selectionGeneration: request.selectionGeneration,
+                operationID: request.operationID,
+                failure: failure
+            ))
         } catch {
             stopping = true
         }
