@@ -240,6 +240,7 @@ public actor CoreMIDIService: MIDIServiceProtocol {
 
     @MainActor public init(clientName: String = "MusicPlaygournd MIDI") throws {
         guard !clientName.isEmpty else { throw MIDIError.invalidEndpointName }
+        try MIDIProcessClient.ensureAvailable()
         let box = MIDIClientNotificationBox()
         var client = MIDIClientRef()
         // Initialize on the app's serviced main run loop. CoreMIDI chooses the callback thread;

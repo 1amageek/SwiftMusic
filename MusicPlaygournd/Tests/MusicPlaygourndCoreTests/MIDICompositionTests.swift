@@ -3,6 +3,7 @@ import SwiftMusic
 import Testing
 @testable import MusicPlaygourndCore
 
+extension NativeHostTests {
 @MainActor
 struct MIDIClockCompositionTests {
     @Test(.timeLimit(.minutes(1)))
@@ -92,6 +93,8 @@ struct MIDIClockCompositionTests {
             throw error
         }
     }
+}
+
 }
 
 extension NativeHostTests {

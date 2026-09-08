@@ -6,7 +6,7 @@ import Testing
 extension NativeHostTests {
     @Suite struct AdvancedSynthesisEvaluationTests {
         @MainActor
-        @Test(.timeLimit(.minutes(4)))
+        @Test(.timeLimit(.minutes(6)))
         func evaluatedSynthesisFamiliesReachNativePlaybackAndInvalidFMRetainsPCM() async throws {
             let package = URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()

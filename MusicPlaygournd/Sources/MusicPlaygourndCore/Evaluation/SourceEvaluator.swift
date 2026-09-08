@@ -116,8 +116,8 @@ public actor SourceEvaluator {
         }
         """
         try wrapper.write(to: sources.appending(path: "Session.swift"), atomically: true, encoding: .utf8)
-        _ = try await run(swiftExecutable, ["build", "--build-system", "native", "-Xswiftc", "-Xfrontend", "-Xswiftc", "-disable-round-trip-debug-types", "--package-path", workspace.path, "--product", "Evaluation"], timeout: 120)
-        let binaryOutput = try await run(swiftExecutable, ["build", "--build-system", "native", "--package-path", workspace.path, "--show-bin-path"], timeout: 20)
+        _ = try await run(swiftExecutable, ["build", "--configuration", "release", "--build-system", "native", "-Xswiftc", "-Xfrontend", "-Xswiftc", "-disable-round-trip-debug-types", "--package-path", workspace.path, "--product", "Evaluation"], timeout: 240)
+        let binaryOutput = try await run(swiftExecutable, ["build", "--configuration", "release", "--build-system", "native", "--package-path", workspace.path, "--show-bin-path"], timeout: 20)
         let binaryPaths = binaryOutput.split(whereSeparator: \.isNewline).filter { $0.hasPrefix("/") }
         guard binaryPaths.count == 1, let path = binaryPaths.first else {
             throw EvaluationError.invalidResult("SwiftPM did not report one absolute binary directory.")
@@ -281,7 +281,7 @@ public actor SourceEvaluator {
         }
     }
 
-    private func run(_ executable: String, _ arguments: [String], timeout: Double) async throws -> String {
+    internal func run(_ executable: String, _ arguments: [String], timeout: Double) async throws -> String {
         try Task.checkCancellation()
         let log = workspace.appending(path: "process.log")
         try Data().write(to: log)
@@ -313,14 +313,18 @@ public actor SourceEvaluator {
             }
         } catch {
             let pid = process.processIdentifier
-            kill(-pid, SIGKILL)
-            if process.isRunning { kill(pid, SIGKILL) }
+            // Let the launcher stop and reap compiler descendants in their own groups.
+            if process.isRunning { kill(pid, SIGTERM) }
             // Cleanup must finish even when the evaluating Task is cancelled. Foundation's
             // termination handler reaps the child; waitUntilExit can deadlock across actor hops.
             let cleanup = Task.detached {
                 while completion.result == nil { try await Task.sleep(for: .milliseconds(20)) }
             }
             try await cleanup.value
+            if completion.result?.status == 70 {
+                let detail = String(decoding: try Data(contentsOf: log), as: UTF8.self)
+                throw EvaluationError.processFailed("\(error.localizedDescription)\n\(detail)")
+            }
             throw error
         }
         // A session may start descendants; none should outlive evaluation.
@@ -338,7 +342,72 @@ public actor SourceEvaluator {
     // The pipe collector holds one 64 KiB chunk and writes at most 1 MiB to the log.
     // The group contains this launcher and its ordinary compiler/session descendants.
     private static let processRunner = """
-    import os, signal, subprocess, sys
+    import ctypes, errno, os, signal, subprocess, sys, time
+    native = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    native.proc_listchildpids.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    native.proc_listchildpids.restype = ctypes.c_int
+    class BSDInfo(ctypes.Structure):
+        # Matches macOS sys/proc_info.h proc_bsdinfo; all borrows remain in this launcher.
+        _fields_ = [("ids", ctypes.c_uint32 * 12), ("command", ctypes.c_char * 16),
+                    ("name", ctypes.c_char * 32), ("values", ctypes.c_uint32 * 6),
+                    ("seconds", ctypes.c_uint64), ("microseconds", ctypes.c_uint64)]
+    native.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+    native.proc_pidinfo.restype = ctypes.c_int
+    def identity(pid):
+        value = BSDInfo()
+        ctypes.set_errno(0)
+        size = native.proc_pidinfo(pid, 3, 0, ctypes.byref(value), ctypes.sizeof(value))
+        if size == 0 and ctypes.get_errno() == errno.ESRCH:
+            return None
+        if size != ctypes.sizeof(value):
+            raise RuntimeError("Unable to identify compiler descendant")
+        return (value.seconds, value.microseconds)
+    def children(pid):
+        capacity = max(1, native.proc_listchildpids(pid, None, 0))
+        storage = (ctypes.c_int * capacity)()
+        count = native.proc_listchildpids(pid, storage, ctypes.sizeof(storage))
+        if count < 0 or count > capacity:
+            raise RuntimeError("Unable to enumerate compiler descendants")
+        return [storage[index] for index in range(count)]
+    def terminate_tree(pid, owned):
+        try:
+            os.kill(pid, signal.SIGSTOP)
+        except ProcessLookupError:
+            return
+        stamp = identity(pid)
+        if stamp is not None:
+            owned.append((pid, stamp))
+        # A stopped parent cannot spawn or reap children, keeping their identities stable.
+        for descendant in children(pid):
+            terminate_tree(descendant, owned)
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    def cleanup():
+        owned = []
+        for pid in children(os.getpid()):
+            terminate_tree(pid, owned)
+        while True:
+            try:
+                os.waitpid(-1, 0)
+            except ChildProcessError:
+                break
+        deadline = time.monotonic() + 2
+        while any(identity(pid) == stamp for pid, stamp in owned):
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Compiler descendants did not exit within cleanup deadline")
+            time.sleep(0.01)
+    def terminate(signum, frame):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        try:
+            cleanup()
+        except Exception as error:
+            sys.stderr.write("Compiler cleanup failed: " + str(error))
+            sys.stderr.flush()
+            os._exit(70)
+        os._exit(143)
+    signal.signal(signal.SIGTERM, terminate)
     if os.getpgrp() != os.getpid():
         os.setpgid(0, 0)
     child = subprocess.Popen(sys.argv[1:], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -353,7 +422,8 @@ public actor SourceEvaluator {
         if len(chunk) > room:
             sys.stdout.buffer.write(chunk[:max(0, room)] + marker)
             sys.stdout.buffer.flush()
-            os.killpg(os.getpid(), signal.SIGKILL)
+            cleanup()
+            sys.exit(1)
         sys.stdout.buffer.write(chunk)
         sys.stdout.buffer.flush()
         accepted += len(chunk)

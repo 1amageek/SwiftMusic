@@ -6,9 +6,35 @@ import Synchronization
 import Testing
 @testable import MusicPlaygourndCore
 
+extension NativeHostTests {
 @MainActor
-@Suite(.serialized)
 struct MIDIServiceTests {
+    @Test(.timeLimit(.minutes(1)))
+    func serviceCanRestartAfterSessionClientsAreDisposed() async throws {
+        for index in 0..<3 {
+            let service = try CoreMIDIService(clientName: "Restart \(index)")
+            do {
+                let endpoints = try VirtualMIDIEndpoints(label: "restart \(index)")
+                let destination = try endpoints.destinationID
+                let host = mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.03)
+                await service.updateClockAnchor(try PlaybackClockAnchor(
+                    presentationHostTime: host, accumulatedBeatPosition: 0,
+                    beatsPerMinute: 120, loopBeatCount: 4, revision: 1,
+                    overrideGeneration: 0, isPlaying: true))
+                try await service.send([MIDIScheduledMessage(
+                    hostTime: host,
+                    message: .controlChange(channel: 1, controller: 7, value: index))], to: destination)
+                let messages = try await endpoints.waitForMessages(atLeast: 1)
+                #expect(messages.last?.message == .controlChange(channel: 1, controller: 7, value: index))
+                await service.shutdown()
+                await service.shutdown()
+            } catch {
+                await service.shutdown()
+                throw error
+            }
+        }
+    }
+
     @Test(.timeLimit(.minutes(2)))
     func virtualUMPInputMapsAnchorAndNormalizesZeroVelocity() async throws {
         let endpoints = try VirtualMIDIEndpoints(label: "input")
@@ -266,6 +292,8 @@ struct MIDIServiceTests {
             #expect(error == .serviceShutDown)
         }
     }
+}
+
 }
 
 private final class MIDITestBundle: NSObject {}
