@@ -7,6 +7,7 @@ internal struct RenderedVoice {
         var offset = 0
         var phase = 0.0
         var samplePosition = 0.0
+        var granular: GranularSampleVoice?
         var filter: VoiceFilter?
         var rightFilter: VoiceFilter?
         var lastLeft: Float = 0
@@ -62,6 +63,13 @@ internal struct RenderedVoice {
             secondsPerBeat: secondsPerBeat, automationSecondsPerBeat: self.automationSecondsPerBeat,
             pitchAutomationOverride: pitchOverride)
         state = State(filter: source.filter.map(VoiceFilter.init), rightFilter: source.filter.map(VoiceFilter.init))
+        if let configuration = source.granularPlayback {
+            guard sampleVoice != nil else {
+                throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "granular requires decoded sample")
+            }
+            state.granular = try GranularSampleVoice(configuration, eventFrames: eventFrames,
+                sourceID: source.id, eventIndex: eventIndex)
+        }
         if !legacy, case .synthesizer = source.kind {
             if let pitchOverride {
                 try validateFrequency(frequency * pow(2, pitchOverride / 12),
@@ -147,12 +155,21 @@ internal struct RenderedVoice {
                 guard let sampleVoice, let fixedIncrement else {
                     throw LoopRenderingError.invalidSound("file event has no decoded sample")
                 }
-                raw = sampleVoice.value(at: state.samplePosition, reversed: source.sampleReversed, channel: 0)
-                right = sampleVoice.value(at: state.samplePosition, reversed: source.sampleReversed, channel: 1)
-                state.samplePosition += source.pitchEnvelope == nil && source.pitchAutomation == nil && source.portamento == nil ? fixedIncrement
+                let increment = source.pitchEnvelope == nil && source.pitchAutomation == nil && source.portamento == nil ? fixedIncrement
                     : try sampleVoice.increment(event: event, source: source, time: time,
                         secondsPerBeat: secondsPerBeat, automationSecondsPerBeat: automationSecondsPerBeat,
                         pitchAutomationOverride: pitchOverride)
+                let scan = state.samplePosition
+                let reversed = source.sampleReversed
+                if let value = try state.granular?.next(sample: sampleVoice, offset: offset,
+                    scan: scan, increment: increment, reversed: reversed) {
+                    raw = value.0
+                    right = value.1
+                } else {
+                    raw = sampleVoice.value(at: state.samplePosition, reversed: source.sampleReversed, channel: 0)
+                    right = sampleVoice.value(at: state.samplePosition, reversed: source.sampleReversed, channel: 1)
+                }
+                state.samplePosition += increment
             }
             if state.filter != nil, let cutoff = event.cutoffHz {
                 let automatedCutoff: Double

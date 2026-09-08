@@ -208,6 +208,37 @@ internal struct _SoundCompilationContext {
             fragment.extent = result.extent
         case .oneShot:
             break
+        case .chopped:
+            let affectedSources = sourceIDs ?? Set(sourceRange)
+            guard !affectedSources.isEmpty else {
+                throw SoundCompilationError.unsupportedSourceSetting(
+                    "Chopping requires a file or sample bank source"
+                )
+            }
+            for sourceID in affectedSources {
+                guard sources.indices.contains(sourceID) else {
+                    throw invalid("Chopping source is missing")
+                }
+                switch sources[sourceID].kind {
+                case .fileSample, .sampleBank:
+                    break
+                default:
+                    throw SoundCompilationError.unsupportedSourceSetting(
+                        "Chopping requires a file or sample bank source"
+                    )
+                }
+            }
+            let result = try _RhythmEventProcessing.apply(
+                modifier,
+                events: fragment.events,
+                extent: fragment.extent,
+                limits: limits,
+                livePeriod: eventTransformPeriod ?? (capturesLiveProgram ? fragment.liveProgram?.period : nil),
+                maximumOutputEvents: limits.maximumEvents - eventCount + fragment.events.count
+            )
+            try replaceEventCount(fragment.events.count, with: result.events.count)
+            fragment.events = result.events
+            fragment.extent = result.extent
         case .rhythm(let pattern, let cycle, let anchor):
             guard cycle > .zero else { throw invalid("Rhythm cycle must be positive") }
             do {
@@ -441,6 +472,83 @@ internal struct _SoundCompilationContext {
                     throw invalid("Sample selection phase did not resolve to a leaf")
                 }
                 fragment.events[index].sampleKey = keys[leafPosition]
+            }
+        case .sampleSlice(let slice):
+            let affectedSources = sourceIDs ?? Set(sourceRange)
+            guard !affectedSources.isEmpty else {
+                throw SoundCompilationError.unsupportedSourceSetting(
+                    "Sample slicing requires a file or sample bank source"
+                )
+            }
+            for sourceID in affectedSources {
+                guard sources.indices.contains(sourceID) else {
+                    throw invalid("Sample slice source is missing")
+                }
+                switch sources[sourceID].kind {
+                case .fileSample, .sampleBank:
+                    let current: SampleRegion
+                    if let existing = sources[sourceID].sampleRegion {
+                        current = existing
+                    } else {
+                        current = try SampleRegion(startFraction: 0, endFraction: 1)
+                    }
+                    let width = (current.endFraction - current.startFraction) / Double(slice.count)
+                    let start = current.startFraction + width * Double(slice.index)
+                    let end = slice.index == slice.count - 1
+                        ? current.endFraction
+                        : current.startFraction + width * Double(slice.index + 1)
+                    sources[sourceID].sampleRegion = try SampleRegion(
+                        startFraction: start,
+                        endFraction: end
+                    )
+                default:
+                    throw SoundCompilationError.unsupportedSourceSetting(
+                        "Sample slicing requires a file or sample bank source"
+                    )
+                }
+            }
+        case .granular(let playback):
+            let affectedSources = sourceIDs ?? Set(sourceRange)
+            guard !affectedSources.isEmpty else {
+                throw SoundCompilationError.unsupportedSourceSetting(
+                    "Granular playback requires a file or sample bank source"
+                )
+            }
+            for sourceID in affectedSources {
+                guard sources.indices.contains(sourceID) else {
+                    throw invalid("Granular playback source is missing")
+                }
+                switch sources[sourceID].kind {
+                case .fileSample, .sampleBank:
+                    sources[sourceID].granularPlayback = playback
+                default:
+                    throw SoundCompilationError.unsupportedSourceSetting(
+                        "Granular playback requires a file or sample bank source"
+                    )
+                }
+            }
+        case .sampleStretch(let duration):
+            guard duration > .zero else {
+                throw SampleDescriptorError.invalidStretchDuration(duration)
+            }
+            let affectedSources = sourceIDs ?? Set(sourceRange)
+            guard !affectedSources.isEmpty else {
+                throw SoundCompilationError.unsupportedSourceSetting(
+                    "Sample stretch requires a file or sample bank source"
+                )
+            }
+            for sourceID in affectedSources {
+                guard sources.indices.contains(sourceID) else {
+                    throw invalid("Sample stretch source is missing")
+                }
+                switch sources[sourceID].kind {
+                case .fileSample, .sampleBank:
+                    sources[sourceID].sampleStretchDuration = duration
+                default:
+                    throw SoundCompilationError.unsupportedSourceSetting(
+                        "Sample stretch requires a file or sample bank source"
+                    )
+                }
             }
         case .scaleNotes, .voicing, .inversion, .arpeggio:
             if case .scaleNotes(_, _, let anchor) = modifier {

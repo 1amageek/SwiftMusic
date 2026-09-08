@@ -34,6 +34,10 @@ internal enum _SoundModifier: Sendable {
     case cutoffPattern(FilterKind, CutoffPattern, MusicalTime, Double, FilterSlope)
     case envelopePattern(EnvelopePattern, MusicalTime)
     case sampleSelection(SampleSelectionPattern, MusicalTime)
+    case sampleSlice(SampleSlice)
+    case chopped(Int)
+    case granular(GranularPlayback)
+    case sampleStretch(MusicalTime)
     case sampleRegion(SampleRegion)
     case sampleReversed
     case samplePlaybackRate(Double)

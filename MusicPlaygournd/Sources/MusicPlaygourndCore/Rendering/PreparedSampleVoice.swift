@@ -4,6 +4,14 @@ import SwiftMusic
 internal struct PreparedSampleVoice: Sendable {
     let sample: LoadedSample
     let rootPitch: Pitch
+    let frameRange: Range<Int>
+    var frameCount: Int { frameRange.count }
+
+    init(sample: LoadedSample, rootPitch: Pitch, frameRange: Range<Int>? = nil) {
+        self.sample = sample
+        self.rootPitch = rootPitch
+        self.frameRange = frameRange ?? 0..<sample.frameCount
+    }
 
     func increment(event: CompiledSoundEvent, source: CompiledSource, time: Double,
                    secondsPerBeat: Double, automationSecondsPerBeat: Double? = nil,
@@ -46,7 +54,7 @@ internal struct PreparedSampleVoice: Sendable {
             pitchAutomationOverride: pitchAutomationOverride)
         if source.pitchEnvelope == nil && source.pitchAutomation == nil && source.portamento == nil
             && pitchAutomationOverride == nil {
-            let count = min((Double(sample.frameCount) / firstIncrement).rounded(.up),
+            let count = min((Double(frameCount) / firstIncrement).rounded(.up),
                             (horizon * sample.sampleRate).rounded(.up))
             guard count.isFinite, count > 0, count <= Double(limit) else {
                 throw LoopRenderingError.invalidSound("sample voice exceeds render horizon")
@@ -55,7 +63,7 @@ internal struct PreparedSampleVoice: Sendable {
         }
         var position = 0.0
         var count = 0
-        while position < Double(sample.frameCount), Double(count) / sample.sampleRate < horizon {
+        while position < Double(frameCount), Double(count) / sample.sampleRate < horizon {
             guard count < limit else { throw LoopRenderingError.invalidSound("sample voice exceeds render horizon") }
             position += try increment(event: event, source: source,
                                       time: Double(count) / sample.sampleRate, secondsPerBeat: secondsPerBeat,
@@ -67,14 +75,14 @@ internal struct PreparedSampleVoice: Sendable {
     }
 
     func value(at progress: Double, reversed: Bool, channel: Int) -> Double {
-        let position = reversed ? max(0, Double(sample.frameCount - 1) - progress)
-            : min(progress, Double(sample.frameCount - 1))
+        let position = reversed ? max(0, Double(frameCount - 1) - progress)
+            : min(progress, Double(frameCount - 1))
         let first = Int(position.rounded(.down))
-        let second = min(first + 1, sample.frameCount - 1)
+        let second = min(first + 1, frameCount - 1)
         let fraction = position - Double(first)
         let channel = min(channel, sample.channelCount - 1)
-        let a = Double(sample.samples[first * sample.channelCount + channel])
-        let b = Double(sample.samples[second * sample.channelCount + channel])
+        let a = Double(sample.samples[(frameRange.lowerBound + first) * sample.channelCount + channel])
+        let b = Double(sample.samples[(frameRange.lowerBound + second) * sample.channelCount + channel])
         return a + (b - a) * fraction
     }
 }

@@ -40,7 +40,7 @@ public struct LoopRenderer: Sendable {
         beatsPerBar: Int
     ) throws -> PreparedLoop {
         try validateBasicInputs(sound, bpm: bpm, beatsPerBar: beatsPerBar)
-        let preparedSamples = try SamplePreparation(sound: sound, loader: sampleLoader)
+        let preparedSamples = try SamplePreparation(sound: sound, loader: sampleLoader, secondsPerBeat: 60 / bpm)
         return try renderPrepared(sound, bpm: bpm, beatsPerBar: beatsPerBar,
                                   preparedSamples: preparedSamples)
     }
@@ -683,8 +683,27 @@ private struct RenderContext {
         }
     }
 
+    private func validateGrainBudget() throws {
+        var slots = 0
+        var launches = 0
+        for (index, event) in sound.events.enumerated() {
+            guard let configuration = sound.sources[event.sourceID].granularPlayback else { continue }
+            guard let frames = sampleFrames[index] else {
+                throw LoopRenderingError.invalidSound("granular event requires decoded PCM")
+            }
+            let dimensions = try GranularSampleVoice.dimensions(configuration, eventFrames: frames)
+            // Bound retained template rings as well as active grains, before their allocation.
+            slots += dimensions.slots
+            launches += dimensions.launches * (sound.playbackMode == .seamlessLoop ? 2 : 1)
+            guard slots <= 4096, launches <= 1_048_576 else {
+                throw LoopRenderingError.invalidSound("granular render exceeds grain budget")
+            }
+        }
+    }
+
     mutating func renderRoots() throws -> StereoBuffer {
-        if sound.sources.contains(where: { $0.voicePolicy != nil || $0.chokeGroup != nil }) {
+        try validateGrainBudget()
+        if sound.sources.contains(where: { $0.voicePolicy != nil || $0.chokeGroup != nil || $0.granularPlayback != nil }) {
             scheduledSources = try VoiceScheduler.render(
                 templates: sound.events.indices.compactMap { index in
                     let voice = try makeVoice(index)

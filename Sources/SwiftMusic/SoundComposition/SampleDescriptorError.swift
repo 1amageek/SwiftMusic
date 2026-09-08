@@ -5,4 +5,10 @@ public enum SampleDescriptorError: Error, Equatable, Sendable {
     case invalidKey(index: Int)
     case duplicateKey(String)
     case invalidPlaybackRate(Double)
+    case invalidSlice(index: Int, count: Int)
+    case invalidChopCount(Int)
+    case invalidGranularDuration
+    case invalidGranularOverlap(Double)
+    case invalidGranularJitter(Double)
+    case invalidStretchDuration(MusicalTime)
 }

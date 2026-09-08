@@ -119,6 +119,28 @@ public extension Sound {
         ModifiedSound(base: self, modifier: .sampleSelection(pattern, cycle))
     }
 
+    func sampleSlice(_ slice: SampleSlice) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .sampleSlice(slice))
+    }
+
+    func chopped(into count: Int) throws -> ModifiedSound {
+        guard (1...1_024).contains(count) else {
+            throw SampleDescriptorError.invalidChopCount(count)
+        }
+        return ModifiedSound(base: self, modifier: .chopped(count))
+    }
+
+    func granular(_ playback: GranularPlayback) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .granular(playback))
+    }
+
+    func sampleStretch(to duration: MusicalTime) throws -> ModifiedSound {
+        guard duration > .zero else {
+            throw SampleDescriptorError.invalidStretchDuration(duration)
+        }
+        return ModifiedSound(base: self, modifier: .sampleStretch(duration))
+    }
+
     func sampleReversed() -> ModifiedSound {
         ModifiedSound(base: self, modifier: .sampleReversed)
     }

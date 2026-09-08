@@ -30,6 +30,33 @@ internal enum _RhythmEventProcessing {
                 try budget(events, copies: count, maximum: maximumOutputEvents, limits: limits)
                 output.reserveCapacity(events.count * count)
                 for event in events { try ratchet(event, count: count, into: &output, copies: &harmonyCopies) }
+            case .chopped(let count):
+                guard (1...1_024).contains(count) else {
+                    throw SampleDescriptorError.invalidChopCount(count)
+                }
+                try budget(events, copies: count, maximum: maximumOutputEvents, limits: limits)
+                if count == 1 {
+                    output = events
+                } else {
+                    for event in events {
+                        _ = try composedSlice(for: event.sampleSlice, index: 0, count: count)
+                    }
+                    output.reserveCapacity(events.count * count)
+                    for original in events {
+                        let partDuration = try original.duration.divided(by: UInt64(count))
+                        for index in 0..<count {
+                            var event = harmonyCopies.copy(original, iteration: index)
+                            event.start = try original.start.adding(
+                                partDuration.multiplied(by: UInt64(index))
+                            )
+                            event.duration = partDuration
+                            event.sampleSlice = try composedSlice(
+                                for: original.sampleSlice, index: index, count: count
+                            )
+                            output.append(event)
+                        }
+                    }
+                }
             case .probability(let value):
                 if value.chance == 1 { output = events }
                 else if value.chance != 0 {
@@ -128,6 +155,24 @@ internal enum _RhythmEventProcessing {
             throw SoundCompilationError.maximumEventsExceeded(limit: limits.maximumEvents)
         }
         try _SoundCompilationContext.validateEventDuckRuleBudget(events, copies: copies)
+    }
+
+    private static func composedSlice(
+        for previous: SampleSlice?, index: Int, count: Int
+    ) throws -> SampleSlice {
+        guard let previous else {
+            return try SampleSlice(index: index, count: count)
+        }
+        let (combinedCount, countOverflow) = previous.count.multipliedReportingOverflow(by: count)
+        guard !countOverflow else {
+            throw SampleDescriptorError.invalidSlice(index: previous.index, count: Int.max)
+        }
+        let (baseIndex, indexOverflow) = previous.index.multipliedReportingOverflow(by: count)
+        let (combinedIndex, additionOverflow) = baseIndex.addingReportingOverflow(index)
+        guard !indexOverflow, !additionOverflow else {
+            throw SampleDescriptorError.invalidSlice(index: previous.index, count: combinedCount)
+        }
+        return try SampleSlice(index: combinedIndex, count: combinedCount)
     }
 
     private static func ratchet(_ original: CompiledSoundEvent, count: Int,

@@ -48,7 +48,8 @@ internal struct _LiveEventProgram {
             guard period != nil else { return .finite(finite) }
             return Self(operation: .seeds(finite.events), period: finite.extent,
                         finiteExtent: nil, sourceIDs: sourceIDs, recurringSourceIDs: sourceIDs)
-        case .portamento, .tuning, .sampleRegion, .sampleReversed, .samplePlaybackRate, .unison,
+        case .portamento, .tuning, .sampleRegion, .sampleReversed, .samplePlaybackRate,
+             .sampleSlice, .granular, .sampleStretch, .unison,
              .voicePolicy, .chokeGroup,
              .effect, .gain, .pan, .muted, .send, .output,
              .pitchEnvelope, .filterEnvelope, .tremolo, .vibrato:
@@ -218,7 +219,8 @@ internal struct _LiveEventProgram {
             ).events
         case .modifier(let child, let modifier):
             switch modifier {
-            case .gainAutomation, .panAutomation, .pitchAutomation, .tremolo, .vibrato:
+            case .gainAutomation, .panAutomation, .pitchAutomation, .tremolo, .vibrato,
+                 .sampleSlice, .granular, .sampleStretch:
                 return try child.emit(through: period ?? .quarter, limits: limits, sources: sources)
             case .cutoffAutomation(_, let automation, _, _):
                 var events = try child.emit(through: period ?? .quarter, limits: limits, sources: sources)

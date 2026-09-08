@@ -12,6 +12,8 @@ public struct CompiledSource: Sendable, Equatable {
     public internal(set) var sampleRegion: SampleRegion?
     public internal(set) var sampleReversed: Bool
     public internal(set) var samplePlaybackRate: Double
+    public internal(set) var granularPlayback: GranularPlayback?
+    public internal(set) var sampleStretchDuration: MusicalTime?
     public internal(set) var filter: SourceFilter?
     public internal(set) var unison: Unison?
     public internal(set) var voicePolicy: VoicePolicy?
@@ -31,6 +33,8 @@ public struct CompiledSource: Sendable, Equatable {
         sampleRegion: SampleRegion? = nil,
         sampleReversed: Bool = false,
         samplePlaybackRate: Double = 1,
+        granularPlayback: GranularPlayback? = nil,
+        sampleStretchDuration: MusicalTime? = nil,
         unison: Unison? = nil,
         filter: SourceFilter? = nil,
         voicePolicy: VoicePolicy? = nil,
@@ -49,6 +53,8 @@ public struct CompiledSource: Sendable, Equatable {
         self.sampleRegion = sampleRegion
         self.sampleReversed = sampleReversed
         self.samplePlaybackRate = samplePlaybackRate
+        self.granularPlayback = granularPlayback
+        self.sampleStretchDuration = sampleStretchDuration
         self.unison = unison
         self.filter = filter
         self.voicePolicy = voicePolicy

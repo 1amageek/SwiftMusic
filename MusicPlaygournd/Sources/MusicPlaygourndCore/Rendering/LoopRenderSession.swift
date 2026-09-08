@@ -22,7 +22,7 @@ public struct LoopRenderSession: Sendable {
     ) throws {
         let renderer = LoopRenderer(sampleLoader: sampleLoader)
         try renderer.validateBasicInputs(sound, bpm: bpm, beatsPerBar: beatsPerBar)
-        let preparedSamples = try SamplePreparation(sound: sound, loader: sampleLoader)
+        let preparedSamples = try SamplePreparation(sound: sound, loader: sampleLoader, secondsPerBeat: 60 / bpm)
         let catalog = try LiveControlCatalog(sound: sound, revision: revision)
         let baseline = try renderer.renderPrepared(
             sound,

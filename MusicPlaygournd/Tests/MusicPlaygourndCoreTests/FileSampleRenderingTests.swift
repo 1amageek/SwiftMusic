@@ -374,4 +374,106 @@ struct FileSampleRenderingTests {
         }
     }
 
+
+    @Test(.timeLimit(.minutes(1)))
+    func slicesAndChopsUseSelectedPCMWithoutReadingAdjacentSlices() throws {
+        let directory = try directory()
+        defer { remove(directory) }
+        let url = directory.appending(path: "slices.wav")
+        let values = (1...16).map { Float($0) / 32 }
+        try write(url, samples: [values])
+        let base = try Sample(file: url).envelope(immediate)
+        let baseline = try render(base)
+        let one = try render(base.chopped(into: 1))
+        let identical = baseline.samples == one.samples
+        #expect(identical)
+        let selected = try render(base.sampleRegion(SampleRegion(startFraction: 0.25, endFraction: 0.75))
+            .sampleSlice(SampleSlice(index: 1, count: 2)).sampleReversed().samplePlaybackRate(2))
+        let level = Float(80.0 / 127 * 0.35)
+        #expect(abs(selected.samples[0] - values[11] * level) < 1e-7)
+        #expect(abs(selected.samples[2] - values[9] * level) < 1e-7)
+        #expect(selected.samples.dropFirst(4).allSatisfy { $0 == 0 })
+        let chopped = try render(base.chopped(into: 4))
+        #expect(chopped.events.count == 4)
+        let nested = try render(base.chopped(into: 2).chopped(into: 2))
+        let nestedMatchesDirect = nested.samples == chopped.samples
+        #expect(nestedMatchesDirect)
+        for (index, event) in chopped.events.enumerated() {
+            let frame = Int((event.startBeat * 22_050).rounded(.down))
+            #expect(abs(chopped.samples[frame * 2] - values[index * 4] * level) < 1e-7)
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func granularNormalizesWindowsHasStableSeedsAndWrapsVoiceState() throws {
+        let directory = try directory()
+        defer { remove(directory) }
+        let url = directory.appending(path: "grains.wav")
+        try write(url, samples: [[Float](repeating: 0.5, count: 22_050)])
+        let base = try Sample(file: url).envelope(immediate)
+        let plain = try render(base)
+        let grains = try render(base.granular(.standard))
+        #expect(grains.samples[0] == 0)
+        for index in stride(from: 2, to: 40_000, by: 199) {
+            #expect(abs(grains.samples[index] - plain.samples[index]) < 1e-7)
+        }
+        let configuration = try GranularPlayback(grainDuration: .milliseconds(40), overlap: 0.5,
+            positionJitter: 1, seed: 92)
+        let a = try render(base.granular(configuration))
+        let b = try render(base.granular(configuration))
+        let stable = a.samples == b.samples
+        #expect(stable)
+        let different = try render(base.granular(GranularPlayback(grainDuration: .milliseconds(40),
+            overlap: 0.5, positionJitter: 1, seed: 93)))
+        let changed = a.samples != different.samples
+        #expect(changed)
+        let loop = try SoundCompiler().compile(base.rhythm("~ ~ ~ x").gate(2).samplePlaybackRate(0.5).granular(configuration),
+            liveLoop: LiveLoopPolicy(beatsPerBar: 4, maximumBeats: .whole))
+        let wrapped = try LoopRenderer().render(loop, bpm: 120, beatsPerBar: 4)
+        #expect(wrapped.samples.allSatisfy { $0.isFinite })
+        #expect(wrapped.samples.prefix(20_000).contains { abs($0) > 0.01 })
+        let excessive = try GranularPlayback(grainDuration: .milliseconds(40), overlap: 0.99999,
+            positionJitter: 0, seed: 0)
+        #expect(throws: LoopRenderingError.self) { try render(base.granular(excessive)) }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func granularUsesOrdinaryRootTuningEnvelopeAndGlideTraversal() throws {
+        let sample = try LoadedSample(samples: (0..<88_200).map {
+            Float(sin(2 * Double.pi * 220 * Double($0) / 44_100))
+        }, channelCount: 1, sampleRate: 44_100)
+        let loader = FixtureLoader(sample: sample)
+        let base = try Sample(file: URL(fileURLWithPath: "/granular-fixture.wav"), rootPitch: Pitch(midiNote: 57))
+            .notes("A3 C4").envelope(immediate)
+            .tuning(Tuning(referencePitch: Pitch(midiNote: 69), frequencyHz: 442))
+            .pitchEnvelope(Envelope(attack: .milliseconds(100), decay: .zero, sustainLevel: 1, release: .zero),
+                depth: Semitones(value: 2))
+            .portamento(Portamento(duration: .seconds(.milliseconds(200))))
+        let plain = try render(base, loader: loader)
+        let granular = try render(base.granular(.standard), loader: loader)
+        var maximumError: Float = 0
+        for index in plain.samples.indices {
+            maximumError = max(maximumError, abs(plain.samples[index] - granular.samples[index]))
+        }
+        #expect(maximumError < 1e-5)
+        #expect(plain.events == granular.events)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func granularChecksQuantizedHopAndLaunchBudgetBeforeAllocation() throws {
+        let fractional = try GranularPlayback(grainDuration: .microseconds(250), overlap: 0,
+            positionJitter: 0, seed: 0)
+        let dimensions = try GranularSampleVoice.dimensions(fractional, eventFrames: 100)
+        #expect(dimensions.frames == 12)
+        #expect(dimensions.hop == 12)
+        #expect(dimensions.slots == 1)
+        #expect(throws: LoopRenderingError.self) {
+            try GranularSampleVoice.dimensions(fractional, eventFrames: 12 * 4096 + 1)
+        }
+        let highOverlap = try GranularPlayback(grainDuration: .seconds(1), overlap: 0.9999,
+            positionJitter: 0, seed: 0)
+        #expect(throws: LoopRenderingError.self) {
+            try GranularSampleVoice.dimensions(highOverlap, eventFrames: 100)
+        }
+    }
 }
