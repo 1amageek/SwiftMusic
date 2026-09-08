@@ -8,6 +8,7 @@ internal struct RenderedVoice {
         var phase = 0.0
         var samplePosition = 0.0
         var granular: GranularSampleVoice?
+        var oscillator: PreparedOscillatorVoice?
         var filter: VoiceFilter?
         var rightFilter: VoiceFilter?
         var lastLeft: Float = 0
@@ -21,6 +22,7 @@ internal struct RenderedVoice {
     let secondsPerBeat: Double
     let automationSecondsPerBeat: Double
     let sampleVoice: PreparedSampleVoice?
+    let oscillator: OscillatorPreparation?
     let amplitudeEnvelope: VoiceEnvelope?
     let amplitude: Float
     let leftGain: Float
@@ -38,6 +40,7 @@ internal struct RenderedVoice {
     init(event: CompiledSoundEvent, source: CompiledSource, eventIndex: Int,
          startFrame: Int, eventFrames: Int, secondsPerBeat: Double,
          sampleVoice: PreparedSampleVoice?, amplitudeEnvelope: VoiceEnvelope?,
+         oscillator: OscillatorPreparation? = nil,
          amplitude: Float, leftGain: Float, rightGain: Float, edgeFrames: Int,
          automationSecondsPerBeat: Double? = nil,
          pitchOverride: Double? = nil, cutoffOverride: Double? = nil) throws {
@@ -45,6 +48,7 @@ internal struct RenderedVoice {
         self.startFrame = startFrame; self.eventFrames = eventFrames; self.secondsPerBeat = secondsPerBeat
         self.automationSecondsPerBeat = automationSecondsPerBeat ?? secondsPerBeat
         self.sampleVoice = sampleVoice; self.amplitudeEnvelope = amplitudeEnvelope
+        self.oscillator = oscillator
         self.amplitude = amplitude; self.leftGain = leftGain; self.rightGain = rightGain
         self.edgeFrames = edgeFrames
         self.pitchOverride = pitchOverride
@@ -52,7 +56,7 @@ internal struct RenderedVoice {
         legacy = source.portamento == nil && amplitudeEnvelope == nil && source.tuning == nil && source.pitchEnvelope == nil
             && source.pitchAutomation == nil && source.cutoffAutomation == nil
             && source.filter == nil && source.filterEnvelope == nil && event.pitchOffsetSemitones == 0
-            && sampleVoice == nil && pitchOverride == nil && cutoffOverride == nil
+            && sampleVoice == nil && oscillator == nil && pitchOverride == nil && cutoffOverride == nil
         let naturalDuration = Double(event.duration.numerator) / Double(event.duration.denominator) * secondsPerBeat
         pitchContour = source.pitchEnvelope.map { VoiceEnvelope($0.envelope, noteDuration: naturalDuration, gate: event.gate) }
         filterContour = source.filterEnvelope.map { VoiceEnvelope($0.envelope, noteDuration: naturalDuration, gate: event.gate) }
@@ -109,6 +113,18 @@ internal struct RenderedVoice {
             try validateFrequency(cutoffOverride ?? cutoff, depth: source.filterEnvelope?.depth.value ?? 0,
                                   eventIndex: eventIndex)
         }
+        if let oscillator {
+            let bases = [frequency, (source.tuning?.frequencyHz ?? 440) * pow(2,
+                ((event.portamentoStartMIDINote ?? midi) - Double(source.tuning?.referencePitch.midiNote ?? 69)) / 12)]
+            for base in bases {
+                for offset in [pitchOverride ?? source.pitchAutomation?.from.value ?? 0,
+                               pitchOverride ?? source.pitchAutomation?.to.value ?? 0] {
+                    try oscillator.validate(frequency: base * pow(2, offset / 12))
+                    try oscillator.validate(frequency: base * pow(2, (offset + (source.pitchEnvelope?.depth.value ?? 0)) / 12))
+                }
+            }
+            state.oscillator = PreparedOscillatorVoice(oscillator)
+        }
     }
 
     mutating func next() throws -> (left: Float, right: Float) {
@@ -147,7 +163,16 @@ internal struct RenderedVoice {
                 let currentPhase = pitchContour == nil && pitchOverride == nil
                     && source.pitchAutomation == nil && source.portamento == nil
                     ? (time * frequency).truncatingRemainder(dividingBy: 1) : state.phase
-                raw = Double(oscillator(waveform, phase: currentPhase, time: time))
+                if let oscillator {
+                    let sourceID = source.id
+                    guard let value = try state.oscillator?.next(oscillator, frequency: currentFrequency,
+                        sourceID: sourceID, eventIndex: index, offset: offset) else {
+                        throw LoopRenderingError.invalidSound("oscillator state missing")
+                    }
+                    raw = value
+                } else {
+                    raw = Double(legacyOscillator(waveform, phase: currentPhase, time: time))
+                }
                 state.phase = (state.phase + currentFrequency / PreparedLoop.requiredSampleRate).truncatingRemainder(dividingBy: 1)
             case .sample:
                 raw = Double(sample(source.kind, pitch: event.pitch, time: time))
@@ -206,7 +231,7 @@ internal struct RenderedVoice {
             let midi = Double(pitch?.midiNote ?? 60)
             let frequency = 440 * pow(2, (midi - 69) / 12)
             let phase = (time * frequency).truncatingRemainder(dividingBy: 1)
-            return oscillator(waveform, phase: phase, time: time)
+            return legacyOscillator(waveform, phase: phase, time: time)
         case .fileSample, .sampleBank:
             preconditionFailure("Decoded file voices use the sample traversal path")
         case .sample(let name):
@@ -235,13 +260,15 @@ internal struct RenderedVoice {
         }
     }
 
-    private func oscillator(_ waveform: Waveform, phase: Double, time: Double) -> Float {
+    private func legacyOscillator(_ waveform: Waveform, phase: Double, time: Double) -> Float {
         switch waveform {
         case .sine: Float(sin(2 * .pi * phase))
         case .square: phase < 0.5 ? 1 : -1
         case .saw: Float(2 * phase - 1)
         case .triangle: Float(1 - 4 * abs((phase - 0.5).rounded() - (phase - 0.5)))
         case .noise: deterministicNoise(time: time)
+        case .bandLimitedSaw, .pulse, .frequencyModulation, .coloredNoise, .wavetable:
+            preconditionFailure("Advanced oscillators require prepared state")
         }
     }
 

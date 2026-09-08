@@ -41,8 +41,9 @@ public struct LoopRenderer: Sendable {
     ) throws -> PreparedLoop {
         try validateBasicInputs(sound, bpm: bpm, beatsPerBar: beatsPerBar)
         let preparedSamples = try SamplePreparation(sound: sound, loader: sampleLoader, secondsPerBeat: 60 / bpm)
+        let preparedOscillators = try OscillatorPreparation.prepare(sound)
         return try renderPrepared(sound, bpm: bpm, beatsPerBar: beatsPerBar,
-                                  preparedSamples: preparedSamples)
+                                  preparedSamples: preparedSamples, preparedOscillators: preparedOscillators)
     }
 
     internal func renderPrepared(
@@ -50,6 +51,7 @@ public struct LoopRenderer: Sendable {
         bpm: Double,
         beatsPerBar: Int,
         preparedSamples: SamplePreparation,
+        preparedOscillators: [Int: OscillatorPreparation],
         overlay: RenderControlOverlay? = nil
     ) throws -> PreparedLoop {
         try validateBasicInputs(sound, bpm: bpm, beatsPerBar: beatsPerBar)
@@ -116,6 +118,7 @@ public struct LoopRenderer: Sendable {
             beatCount: beatCount,
             frameCount: frameCount,
             preparedSamples: preparedSamples,
+            preparedOscillators: preparedOscillators,
             sampleFrames: sampleFrames,
             overlay: overlay
         )
@@ -240,6 +243,11 @@ public struct LoopRenderer: Sendable {
             case .saw: "saw"
             case .triangle: "triangle"
             case .noise: "noise"
+            case .bandLimitedSaw: "band-limited saw"
+            case .pulse: "pulse"
+            case .frequencyModulation: "FM"
+            case .coloredNoise: "colored noise"
+            case .wavetable: "wavetable"
             }
         }
     }
@@ -333,14 +341,16 @@ private struct RenderContext {
     var neededNodes: [Bool]
     var sourcePeakEnvelopes: [[Float]]
     let preparedSamples: SamplePreparation
+    let preparedOscillators: [Int: OscillatorPreparation]
     let sampleFrames: [Int: Int]
     let overlay: RenderControlOverlay?
     var scheduledSources: [StereoBuffer]?
 
     init(sound: CompiledSound, bpm: Double, beatCount: Double, frameCount: Int,
-         preparedSamples: SamplePreparation, sampleFrames: [Int: Int],
+         preparedSamples: SamplePreparation, preparedOscillators: [Int: OscillatorPreparation], sampleFrames: [Int: Int],
          overlay: RenderControlOverlay? = nil) throws {
         self.preparedSamples = preparedSamples
+        self.preparedOscillators = preparedOscillators
         self.sampleFrames = sampleFrames
         self.overlay = overlay
         self.sound = sound
@@ -370,7 +380,12 @@ private struct RenderContext {
             }
         }
         for source in sound.sources {
-            if case .synthesizer(.noise) = source.kind,
+            let noise: Bool
+            switch source.kind {
+            case .synthesizer(.noise), .synthesizer(.coloredNoise): noise = true
+            default: noise = false
+            }
+            if noise,
                source.portamento != nil || source.tuning != nil || source.pitchEnvelope != nil || source.pitchAutomation != nil || sound.events.contains(where: {
                    $0.sourceID == source.id && $0.pitchOffsetSemitones != 0
                }) {
@@ -385,10 +400,6 @@ private struct RenderContext {
                    $0.sourceID == source.id && $0.pitchOffsetSemitones != 0
                }) {
                 throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "sample pitch traversal")
-            }
-            // FIXME(INCOMPLETE_IMPLEMENTATION): unison rendering is unavailable in editor evaluation; require PCM behavior tests before enabling it.
-            guard source.unison == nil else {
-                throw LoopRenderingError.unsupportedSourceSetting(sourceID: source.id, setting: "unison")
             }
             switch source.kind {
             case .sample(let name) where ["kick", "snare", "closedHat"].contains(name):
@@ -703,7 +714,7 @@ private struct RenderContext {
 
     mutating func renderRoots() throws -> StereoBuffer {
         try validateGrainBudget()
-        if sound.sources.contains(where: { $0.voicePolicy != nil || $0.chokeGroup != nil || $0.granularPlayback != nil }) {
+        if sound.sources.contains(where: { $0.voicePolicy != nil || $0.chokeGroup != nil || $0.granularPlayback != nil || preparedOscillators[$0.id] != nil }) {
             scheduledSources = try VoiceScheduler.render(
                 templates: sound.events.indices.compactMap { index in
                     let voice = try makeVoice(index)
@@ -1046,6 +1057,7 @@ private struct RenderContext {
         return try RenderedVoice(event: event, source: source, eventIndex: eventIndex,
             startFrame: startFrame, eventFrames: eventFrames, secondsPerBeat: secondsPerBeat,
             sampleVoice: sampleVoice, amplitudeEnvelope: amplitudeEnvelope,
+            oscillator: preparedOscillators[source.id],
             amplitude: amplitude, leftGain: leftGain, rightGain: rightGain, edgeFrames: edgeFrames,
             automationSecondsPerBeat: automationSecondsPerBeat,
             pitchOverride: overlay?.sourcePitch[source.id],

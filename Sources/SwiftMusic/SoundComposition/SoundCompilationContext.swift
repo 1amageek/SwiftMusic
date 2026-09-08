@@ -385,7 +385,7 @@ internal struct _SoundCompilationContext {
                 guard sources.indices.contains(index) else { throw invalid("Pitch automation source is missing") }
                 switch sources[index].kind {
                 case .synthesizer(let waveform):
-                    guard waveform != .noise else {
+                    guard waveform.supportsPitchTraversal else {
                         throw SoundCompilationError.unsupportedSourceSetting(
                             "Pitch automation requires a pitched source"
                         )
@@ -565,7 +565,9 @@ internal struct _SoundCompilationContext {
             guard !sourceRange.isEmpty else { throw invalid("Portamento requires a source") }
             for index in sourceRange {
                 switch sources[index].kind {
-                case .sample, .synthesizer(.noise): throw invalid("Portamento requires a pitched source")
+                case .sample: throw invalid("Portamento requires a pitched source")
+                case .synthesizer(let waveform) where !waveform.supportsPitchTraversal:
+                    throw invalid("Portamento requires a pitched source")
                 default: break
                 }
                 sources[index].portamento = value
@@ -608,12 +610,28 @@ internal struct _SoundCompilationContext {
                 fragment.events[index].gate = gate
             }
         case .tuning(let tuning):
-            for index in sourceRange { sources[index].tuning = tuning }
+            for index in sourceRange {
+                if case .synthesizer(let waveform) = sources[index].kind,
+                   !waveform.supportsPitchTraversal {
+                    throw SoundCompilationError.unsupportedSourceSetting(
+                        "Tuning requires a pitched source"
+                    )
+                }
+                sources[index].tuning = tuning
+            }
         case .envelope(let envelope):
             for index in sourceRange { sources[index].envelope = envelope }
             for index in fragment.events.indices { fragment.events[index].envelope = nil }
         case .pitchEnvelope(let modulation):
-            for index in sourceRange { sources[index].pitchEnvelope = modulation }
+            for index in sourceRange {
+                if case .synthesizer(let waveform) = sources[index].kind,
+                   !waveform.supportsPitchTraversal {
+                    throw SoundCompilationError.unsupportedSourceSetting(
+                        "Pitch envelope requires a pitched source"
+                    )
+                }
+                sources[index].pitchEnvelope = modulation
+            }
         case .filterEnvelope(let modulation):
             for index in sourceRange { sources[index].filterEnvelope = modulation }
         case .sampleRegion(let region):
@@ -663,7 +681,8 @@ internal struct _SoundCompilationContext {
             }
         case .unison(let unison):
             for index in sourceRange {
-                guard case .synthesizer = sources[index].kind else {
+                guard case .synthesizer(let waveform) = sources[index].kind,
+                      waveform.supportsPitchTraversal else {
                     throw SoundCompilationError.unsupportedSourceSetting("Unison requires a synthesizer source")
                 }
                 sources[index].unison = unison
@@ -910,6 +929,34 @@ internal struct _SoundCompilationContext {
             guard effective.isFinite, (0...127).contains(effective) else {
                 throw SoundCompilationError.pitchOutOfRange
             }
+        }
+    }
+
+    private func validateUnisonPitch(_ event: CompiledSoundEvent) throws {
+        guard sources.indices.contains(event.sourceID),
+              let unison = sources[event.sourceID].unison,
+              unison.voices > 1 else { return }
+        guard let pitch = event.pitch else { throw SoundCompilationError.missingPitch }
+        let base = Double(pitch.midiNote) + event.pitchOffsetSemitones
+        guard base.isFinite else { throw SoundCompilationError.pitchOutOfRange }
+        var lower = base
+        var upper = base
+        if let start = event.portamentoStartMIDINote {
+            lower = min(lower, start)
+            upper = max(upper, start)
+        }
+        if let automation = sources[event.sourceID].pitchAutomation {
+            lower += min(automation.from.value, automation.to.value)
+            upper += max(automation.from.value, automation.to.value)
+        }
+        if let modulation = sources[event.sourceID].pitchEnvelope {
+            lower += min(0, modulation.depth.value)
+            upper += max(0, modulation.depth.value)
+        }
+        let detune = unison.detuneCents / 100
+        guard detune.isFinite, (lower - detune).isFinite, (upper + detune).isFinite,
+              lower - detune >= 0, upper + detune <= 127 else {
+            throw SoundCompilationError.pitchOutOfRange
         }
     }
 
@@ -1503,6 +1550,7 @@ internal struct _SoundCompilationContext {
                                             recurringSources: recurringSources)
         for (index, event) in events.enumerated() {
             try validateRetainedPitchAutomation(event)
+            try validateUnisonPitch(event)
             if recurringSources.contains(event.sourceID) {
                 let duration = Double(event.duration.numerator) / Double(event.duration.denominator) * event.gate
                 let window = Double(fragment.extent.numerator) / Double(fragment.extent.denominator)

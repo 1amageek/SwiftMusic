@@ -12,6 +12,7 @@ public struct LoopRenderSession: Sendable {
     private let beatsPerBar: Int
     private let renderer: LoopRenderer
     private let preparedSamples: SamplePreparation
+    private let preparedOscillators: [Int: OscillatorPreparation]
 
     public init(
         sound: CompiledSound,
@@ -23,12 +24,14 @@ public struct LoopRenderSession: Sendable {
         let renderer = LoopRenderer(sampleLoader: sampleLoader)
         try renderer.validateBasicInputs(sound, bpm: bpm, beatsPerBar: beatsPerBar)
         let preparedSamples = try SamplePreparation(sound: sound, loader: sampleLoader, secondsPerBeat: 60 / bpm)
+        let preparedOscillators = try OscillatorPreparation.prepare(sound)
         let catalog = try LiveControlCatalog(sound: sound, revision: revision)
         let baseline = try renderer.renderPrepared(
             sound,
             bpm: bpm,
             beatsPerBar: beatsPerBar,
-            preparedSamples: preparedSamples
+            preparedSamples: preparedSamples,
+            preparedOscillators: preparedOscillators
         )
         self.revision = revision
         self.catalog = catalog
@@ -38,6 +41,7 @@ public struct LoopRenderSession: Sendable {
         self.beatsPerBar = beatsPerBar
         self.renderer = renderer
         self.preparedSamples = preparedSamples
+        self.preparedOscillators = preparedOscillators
     }
 
     /// Renders the complete active override set against the retained graph.
@@ -53,9 +57,13 @@ public struct LoopRenderSession: Sendable {
         for event in sound.events {
             guard let offset = overlay.sourcePitch[event.sourceID] else { continue }
             let midi = Double(event.pitch?.midiNote ?? 60) + event.pitchOffsetSemitones
-            let depth = sound.sources[event.sourceID].pitchEnvelope?.depth.value ?? 0
+            let source = sound.sources[event.sourceID]
+            let depth = source.pitchEnvelope?.depth.value ?? 0
+            let detune = (source.unison?.voices ?? 1) > 1 ? (source.unison?.detuneCents ?? 0) / 100 : 0
             for base in [midi, event.portamentoStartMIDINote ?? midi] {
-                guard (0...127).contains(base + offset), (0...127).contains(base + offset + depth) else {
+                guard (0...127).contains(base + offset - detune), (0...127).contains(base + offset + detune),
+                      (0...127).contains(base + offset + depth - detune),
+                      (0...127).contains(base + offset + depth + detune) else {
                     throw LoopRenderingError.invalidSound("live pitch override exceeds MIDI range")
                 }
             }
@@ -65,6 +73,7 @@ public struct LoopRenderSession: Sendable {
             bpm: bpm,
             beatsPerBar: beatsPerBar,
             preparedSamples: preparedSamples,
+            preparedOscillators: preparedOscillators,
             overlay: overlay
         )
         try Task.checkCancellation()

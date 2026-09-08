@@ -88,7 +88,7 @@ public struct LiveControlCatalog: Codable, Sendable, Equatable, Hashable {
 
     private static func supportsPitch(_ kind: SourceKind) -> Bool {
         switch kind {
-        case .synthesizer(.noise), .sample: false
+        case .synthesizer(.noise), .synthesizer(.coloredNoise), .sample: false
         case .synthesizer, .fileSample, .sampleBank: true
         }
     }
