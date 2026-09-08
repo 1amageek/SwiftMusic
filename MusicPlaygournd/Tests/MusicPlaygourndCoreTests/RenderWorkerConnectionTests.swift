@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import Testing
+import SwiftMusic
 @testable import MusicPlaygourndCore
 
 extension NativeHostTests {
@@ -243,11 +244,34 @@ struct RenderWorkerConnectionTests {
         }
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func malformedPerformanceMetadataIsRejectedBeforeReady() async throws {
+        let fixture = try makeFixture(mode: .malformedPerformanceMetadata)
+        let connection = try RenderWorkerConnection(
+            executable: fixture.executable,
+            outputURL: fixture.workspace.appending(path: "prepared.plist"),
+            revision: 20
+        )
+        let pid = try await fixture.pid()
+        do {
+            _ = try await connection.ready()
+            Issue.record("Malformed performance metadata unexpectedly initialized")
+        } catch let error as EvaluationError {
+            #expect(error.localizedDescription.contains("performance-control metadata"))
+        } catch {
+            Issue.record("Malformed performance metadata failed with the wrong error: \(error)")
+        }
+        await connection.shutdown()
+        try await fixture.waitUntilGone(pid)
+        try fixture.remove()
+    }
+
     private enum FixtureMode: String {
         case malformed
         case delayedLatest
         case exportCancellation
         case malformedManifest
+        case malformedPerformanceMetadata
         case truncated
         case unresponsive
         case shutdownAware
@@ -433,6 +457,34 @@ struct RenderWorkerConnectionTests {
             sys.stdout.buffer.write(open(root + "/malformed.frame", "rb").read())
             sys.stdout.buffer.flush()
             read_frame()
+            """
+        case .malformedPerformanceMetadata:
+            let loop = PreparedLoop(sampleRate: 44_100, bpm: 120, beatsPerBar: 4, beatCount: 4,
+                samples: [Float](repeating: 0, count: 176_400), events: [])
+            let catalog = try LiveControlCatalog(descriptors: [])
+            let invalidMetadata = PerformanceControlMetadata(
+                modelID: "SessionModel",
+                controlID: "gain",
+                label: "Gain",
+                domain: .double(range: 0...1, role: .scalar),
+                value: .position(SpatialPosition(x: 0, depth: 0))
+            )
+            let encoder = PropertyListEncoder()
+            encoder.outputFormat = .binary
+            try encoder.encode(WorkerPreparedResult(revision: 20, generation: 0, loop: loop))
+                .write(to: workspace.appending(path: "prepared.plist"))
+            try RenderWorkerFraming.encode(RenderWorkerResponse.ready(
+                revision: 20,
+                catalog: catalog,
+                performanceControls: [invalidMetadata]
+            )).write(to: workspace.appending(path: "ready.frame"))
+            script = """
+            #!/usr/bin/env python3
+            import os, sys, time
+            \(pidWrite)
+            sys.stdout.buffer.write(open(\(pythonLiteral(workspace.appending(path: "ready.frame").path)), "rb").read())
+            sys.stdout.buffer.flush()
+            time.sleep(60)
             """
         case .malformed:
             script = """

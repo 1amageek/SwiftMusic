@@ -97,20 +97,67 @@ public actor SourceEvaluator {
         #sourceLocation()
         @main
         struct EvaluationEntry {
+            @MainActor
+            static func makePreparation<M: Music>(
+                _ session: M,
+                bounds: SoundCompiler.Limits,
+                fallbackBPM: Double,
+                beatsPerBar: Int,
+                maximumLiveBeats: Int,
+                source: String,
+                revision: UInt64
+            ) throws -> RenderWorkerPreparation {
+                let policy = try LiveLoopPolicy(
+                    beatsPerBar: beatsPerBar,
+                    maximumBeats: MusicalTime(numerator: UInt64(maximumLiveBeats), denominator: 1)
+                )
+                let compiler = SoundCompiler(limits: bounds)
+                let sound = try compiler.compileDetailed(session, liveLoop: policy)
+                let metadata = try EditorSemanticMetadata(
+                    sound: sound, source: source, revision: revision)
+                let prepared = try LoopRenderSession(
+                    sound: sound, bpm: fallbackBPM, beatsPerBar: beatsPerBar, revision: revision)
+                return RenderWorkerPreparation(session: prepared, metadata: metadata)
+            }
+
+            @MainActor
+            static func makePreparation<M: PerformanceEntry>(
+                _ session: M,
+                bounds: SoundCompiler.Limits,
+                fallbackBPM: Double,
+                beatsPerBar: Int,
+                maximumLiveBeats: Int,
+                source: String,
+                revision: UInt64
+            ) throws -> RenderWorkerPreparation {
+                _ = maximumLiveBeats
+                let model = M.makePerformanceModel()
+                let adapter = PerformanceWorkerAdapter(
+                    base: session,
+                    model: model,
+                    compiler: SoundCompiler(limits: bounds)
+                )
+                return try adapter.prepare(
+                    revision: revision,
+                    source: source,
+                    fallbackBPM: fallbackBPM,
+                    beatsPerBar: beatsPerBar
+                )
+            }
+
             static func main() async {
               do {
                 let bounds = try SoundCompiler.Limits(maximumEvents: 1024, maximumSources: 32, maximumRenderNodes: 256, maximumBuses: 32)
-                let policy = try LiveLoopPolicy(
-                    beatsPerBar: \(beatsPerBar),
-                    maximumBeats: MusicalTime(numerator: \(maximumLiveBeats), denominator: 1)
-                )
                 try await RenderWorker.runPrepared(revision: \(revision), outputURL: URL(fileURLWithPath: \(Self.swiftLiteral(output.path)))) {
-                    let sound = try SoundCompiler(limits: bounds).compileDetailed(Session(), liveLoop: policy)
-                    let metadata = try EditorSemanticMetadata(
-                        sound: sound, source: \(Self.swiftLiteral(source)), revision: \(revision))
-                    let session = try LoopRenderSession(
-                        sound: sound, bpm: \(bpm), beatsPerBar: \(beatsPerBar), revision: \(revision))
-                    return RenderWorkerPreparation(session: session, metadata: metadata)
+                    try EvaluationEntry.makePreparation(
+                        Session(),
+                        bounds: bounds,
+                        fallbackBPM: \(bpm),
+                        beatsPerBar: \(beatsPerBar),
+                        maximumLiveBeats: \(maximumLiveBeats),
+                        source: \(Self.swiftLiteral(source)),
+                        revision: \(revision)
+                    )
                 }
               } catch {
                 if let located = error as? LocatedSoundCompilationError {
@@ -151,8 +198,22 @@ public actor SourceEvaluator {
         guard sdk.hasPrefix("/"), manager.fileExists(atPath: sdk, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw EvaluationError.invalidResult("The active macOS SDK is not an existing absolute directory.")
         }
+        struct TargetInfo: Decodable {
+            struct Paths: Decodable { let runtimeResourcePath: String }
+            let paths: Paths
+        }
+        let targetOutput = try await run(swiftExecutable, ["-print-target-info"], timeout: 10)
+        let targetInfo: TargetInfo
+        do { targetInfo = try JSONDecoder().decode(TargetInfo.self, from: Data(targetOutput.utf8)) }
+        catch { throw EvaluationError.invalidResult("Unable to read compiler resource paths: \(error)") }
+        let resources = targetInfo.paths.runtimeResourcePath
+        let plugins = URL(fileURLWithPath: resources).appending(path: "host/plugins")
+        guard resources.hasPrefix("/"), manager.fileExists(atPath: plugins.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw EvaluationError.invalidResult("The active compiler macro plugin directory is unavailable.")
+        }
         let ast = try await run(swiftExecutable, ["-frontend", "-dump-ast", "-dump-ast-format", "json", "-suppress-warnings",
-            "-sdk", sdk,
+            "-plugin-path", plugins.path, "-sdk", sdk,
             "-I", binaryPath, "-I", URL(fileURLWithPath: binaryPath).appending(path: "Modules").path,
             displaySource.path], timeout: 20)
         let resultLines = try ExpressionResultLocations.lines(ast: Data(ast.utf8), source: source, prefixBytes: prefix.utf8.count, rows: loop.rows)
@@ -166,7 +227,12 @@ public actor SourceEvaluator {
         try Task.checkCancellation()
         candidate = Worker(revision: revision, connection: connection,
                            directory: workerDirectory, resultLines: resultLines)
-        return RetainedEvaluation(loop: located, catalog: initial.catalog, metadata: initial.metadata)
+        return RetainedEvaluation(
+            loop: located,
+            catalog: initial.catalog,
+            metadata: initial.metadata,
+            performanceControls: initial.performanceControls
+        )
         } catch let error as EvaluationError {
             await connection.shutdown()
             try manager.removeItem(at: workerDirectory)

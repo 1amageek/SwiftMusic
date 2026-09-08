@@ -37,6 +37,35 @@ public final class PerformanceObservationSession<Base: Music> {
         }
     }
 
+    /// Evaluates one tracked body while preserving the compiler's detailed error type.
+    ///
+    /// Unlike `prepare(revision:liveLoop:)`, this entry point is used by retained
+    /// workers whose diagnostic path must keep `LocatedSoundCompilationError`
+    /// provenance intact. The body is evaluated exactly once for the call.
+    public func prepareDetailed(liveLoop: LiveLoopPolicy? = nil) throws -> CompiledSound {
+        guard let music, generation < UInt64.max else {
+            throw SoundCompilationError.invalidPerformance("Performance observation is inactive")
+        }
+        generation += 1
+        let expected = generation
+        let result: Result<CompiledSound, any Error> = withObservationTracking {
+            do {
+                if let liveLoop {
+                    return .success(try compiler.compileDetailed(music, liveLoop: liveLoop))
+                }
+                return .success(try compiler.compileDetailed(music))
+            } catch {
+                return .failure(error)
+            }
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, self.music != nil, self.generation == expected else { return }
+                self.notification?()
+            }
+        }
+        return try result.get()
+    }
+
     public func invalidate() {
         music = nil
         notification = nil

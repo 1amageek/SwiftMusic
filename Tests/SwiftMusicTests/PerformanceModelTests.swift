@@ -133,4 +133,39 @@ struct PerformanceModelTests {
         #expect(try SoundCompiler().compile(music) == SoundCompiler().compile(Piece().performance(Model())))
     }
 
+    struct LocatedFailurePiece: Music {
+        let probe: Probe
+        @Performance(Model.self) private var model
+        var body: some Sound {
+            probe.evaluations += 1
+            let pattern: GainPattern = "1 nope"
+            return Synthesizer(.sine).gain(model.gain)
+                .gain(pattern, fileID: "Session.swift", line: 12, column: 8)
+        }
+    }
+    @Test(.timeLimit(.minutes(1)))
+    func detailedPreparationPreservesLocationAndEvaluatesBodyOnce() throws {
+        let model = Model()
+        let probe = Probe()
+        let valid = PerformanceObservationSession(CheckedPiece(probe: probe).performance(model)) {}
+        defer { valid.invalidate() }
+        _ = try valid.prepareDetailed()
+        #expect(probe.evaluations == 1)
+        let invalid = PerformanceObservationSession(LocatedFailurePiece(probe: probe).performance(model)) {}
+        defer { invalid.invalidate() }
+        do {
+            _ = try invalid.prepareDetailed()
+            Issue.record("Expected located failure")
+        } catch let error as LocatedSoundCompilationError {
+            #expect(error.anchor == SoundSourceAnchor(fileID: "Session.swift", line: 12, column: 8))
+            #expect(error.utf8Offset == 2)
+            #expect(error.patternText == "1 nope")
+        }
+        #expect(probe.evaluations == 2)
+        if case .failed(_, .invalidGainPattern) = invalid.prepare(revision: 1) {} else {
+            Issue.record("Ordinary preparation must retain its unlocated typed error surface")
+        }
+        #expect(probe.evaluations == 3)
+    }
+
 }

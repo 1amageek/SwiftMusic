@@ -36,10 +36,16 @@ public enum RenderWorker {
         let writer = RenderWorkerOutputWriter(fileDescriptor: protocolDescriptor)
         try publish(session.baseline, revision: revision, generation: 0,
                     metadata: preparation.metadata, to: outputURL)
-        try await writer.send(.ready(revision: revision, catalog: session.catalog))
+        try await writer.send(.ready(
+            revision: revision,
+            catalog: session.catalog,
+            performanceControls: preparation.performanceControls
+        ))
 
         let state = RenderWorkerState(session: session, revision: revision, outputURL: outputURL,
-                                      metadata: preparation.metadata, writer: writer)
+                                      metadata: preparation.metadata,
+                                      performanceAdapter: preparation.performanceAdapter,
+                                      writer: writer)
         while true {
             let command = try RenderWorkerFraming.decode(
                 RenderWorkerCommand.self,
@@ -192,6 +198,7 @@ private actor RenderWorkerState {
     private let revision: UInt64
     private let outputURL: URL
     private let metadata: EditorSemanticMetadata?
+    private let performanceAdapter: (any RenderWorkerPerformanceAdapter)?
     private let writer: RenderWorkerOutputWriter
     private var activeRender: (operationID: UInt64, generation: UInt64, task: Task<Void, Never>)?
     private var pendingRender: Request?
@@ -207,12 +214,14 @@ private actor RenderWorkerState {
         revision: UInt64,
         outputURL: URL,
         metadata: EditorSemanticMetadata?,
+        performanceAdapter: (any RenderWorkerPerformanceAdapter)?,
         writer: RenderWorkerOutputWriter
     ) {
         self.session = session
         self.revision = revision
         self.outputURL = outputURL
         self.metadata = metadata
+        self.performanceAdapter = performanceAdapter
         self.writer = writer
     }
 

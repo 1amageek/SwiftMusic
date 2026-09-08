@@ -1,4 +1,5 @@
 import Foundation
+import SwiftMusic
 
 /// Typed failures that leave the retained worker and adopted PCM available.
 public enum RenderWorkerVisualizationFailure: Codable, Sendable, Equatable {
@@ -14,7 +15,8 @@ public enum RenderWorkerVisualizationFailure: Codable, Sendable, Equatable {
 
 /// Responses emitted by a retained evaluation worker.
 public enum RenderWorkerResponse: Codable, Sendable, Equatable {
-    case ready(revision: UInt64, catalog: LiveControlCatalog)
+    case ready(revision: UInt64, catalog: LiveControlCatalog,
+               performanceControls: [PerformanceControlMetadata])
     case rendered(revision: UInt64, generation: UInt64, operationID: UInt64)
     case stemsExported(snapshot: StemExportSnapshot, operationID: UInt64)
     case visualized(revision: UInt64, selectionGeneration: UInt64, operationID: UInt64,
@@ -26,6 +28,10 @@ public enum RenderWorkerResponse: Codable, Sendable, Equatable {
 }
 
 public extension RenderWorkerResponse {
+    static func ready(revision: UInt64, catalog: LiveControlCatalog) -> Self {
+        .ready(revision: revision, catalog: catalog, performanceControls: [])
+    }
+
     static func rendered(revision: UInt64, generation: UInt64) -> Self {
         .rendered(revision: revision, generation: generation, operationID: generation)
     }

@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import SwiftMusic
 
 /// Owns one child and bounded nonblocking pipes; the pump never blocks an actor executor.
 internal actor RenderWorkerConnection {
@@ -435,10 +436,17 @@ internal actor RenderWorkerConnection {
 
     private func receive(_ response: RenderWorkerResponse) throws {
         switch response {
-        case .ready(let responseRevision, let catalog):
+        case .ready(let responseRevision, let catalog, let performanceControls):
             guard responseRevision == revision, readyResult == nil,
                   catalog.descriptors.allSatisfy({ $0.address.revision == revision }) else {
                 throw EvaluationError.invalidResult("Invalid worker ready response.")
+            }
+            do {
+                try PerformanceControlMetadata.validate(performanceControls)
+            } catch {
+                throw EvaluationError.invalidResult(
+                    "Invalid worker performance-control metadata: \(error.localizedDescription)"
+                )
             }
             let result = try readResult(generation: 0)
             let metadata: EditorSemanticMetadata
@@ -451,7 +459,12 @@ internal actor RenderWorkerConnection {
                     throw EvaluationError.invalidResult("Worker semantic metadata is invalid: \(error.localizedDescription)")
                 }
             }
-            let ready = RetainedEvaluation(loop: result.loop, catalog: catalog, metadata: metadata)
+            let ready = RetainedEvaluation(
+                loop: result.loop,
+                catalog: catalog,
+                metadata: metadata,
+                performanceControls: performanceControls
+            )
             readyResult = ready
             lastRenderedGeneration = 0
             readyDeadline = nil

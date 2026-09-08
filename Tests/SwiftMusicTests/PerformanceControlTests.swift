@@ -51,6 +51,42 @@ struct PerformanceControlTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
+    func decodedMetadataRejectsInvalidCatalogsAndPreservesNativeLabels() throws {
+        let model = try Model()
+        let valid = try model.performanceControlMetadata()
+        try PerformanceControlMetadata.validate(valid)
+        let unlabeled = try PerformanceControlSet<Model>([
+            .mappedDouble(id: "gain", range: 0...1, keyPath: \Model.gain, label: "")
+        ]).metadata(modelID: model.performanceModelID, for: model)
+        try PerformanceControlMetadata.validate(unlabeled)
+        try PerformanceControlMetadata.validate([])
+        func entry(modelID: String = "model", id: String = "gain",
+                   domain: PerformanceControlDomain = .double(range: 0...1, role: .scalar),
+                   value: PerformanceControlValue = .double(0.5)) -> PerformanceControlMetadata {
+            .init(modelID: modelID, controlID: id, label: "", domain: domain, value: value)
+        }
+        let malformed: [[PerformanceControlMetadata]] = [
+            [entry(modelID: "")], [entry(id: "")],
+            [entry(), entry()], [entry(), entry(modelID: "other", id: "other")],
+            [entry(value: .double(.nan))], [entry(value: .double(2))],
+            [entry(domain: .double(range: 0...Double.infinity, role: .scalar))],
+            [entry(value: .position(.init(x: 0, depth: 0)))],
+            [entry(domain: .position(xRange: -2...1, depthRange: 0...1),
+                   value: .position(.init(x: 0, depth: 0)))],
+            [entry(domain: .position(xRange: -1...1, depthRange: 0...1),
+                   value: .position(.init(x: 0, depth: 2)))],
+            [entry(domain: .double(range: 0...240, role: .beatsPerMinute))],
+            [valid[1], entry(modelID: model.performanceModelID, id: "second-tempo", domain: valid[1].domain, value: .double(120))],
+            Array(repeating: entry(), count: 1_025)
+        ]
+        for catalog in malformed {
+            #expect(throws: PerformanceControlError.self) {
+                try PerformanceControlMetadata.validate(catalog)
+            }
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
     func completeCandidateValidatesBeforeMutation() throws {
         let model = try Model()
         let invalid: [String: PerformanceControlValue] = [

@@ -1,13 +1,23 @@
 import Foundation
+import SwiftMusic
 
 /// The retained worker setup produced by one source compilation.
 public struct RenderWorkerPreparation: Sendable {
     public let session: LoopRenderSession
     public let metadata: EditorSemanticMetadata?
+    public let performanceControls: [PerformanceControlMetadata]
+    public let performanceAdapter: (any RenderWorkerPerformanceAdapter)?
 
-    public init(session: LoopRenderSession, metadata: EditorSemanticMetadata? = nil) {
+    public init(
+        session: LoopRenderSession,
+        metadata: EditorSemanticMetadata? = nil,
+        performanceControls: [PerformanceControlMetadata] = [],
+        performanceAdapter: (any RenderWorkerPerformanceAdapter)? = nil
+    ) {
         self.session = session
         self.metadata = metadata
+        self.performanceControls = performanceControls
+        self.performanceAdapter = performanceAdapter
     }
 }
 
