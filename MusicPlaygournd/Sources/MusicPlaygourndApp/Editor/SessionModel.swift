@@ -88,7 +88,13 @@ final class SessionModel {
     private var adoptionTask: Task<Void, Never>?
     private var controlHealthTask: Task<Void, Never>?
     private var lastControlHealthCheck = ContinuousClock.now
-    var selectedControl: LiveControlAddress?
+    var selectedControl: LiveControlAddress? {
+        didSet { if oldValue != selectedControl { requestControlVisualization() } }
+    }
+    private(set) var controlVisualization: PreparedControlVisualization?
+    private(set) var visualizationStatus = "Choose a score control to inspect its trajectories."
+    private var visualizationTask: Task<Void, Never>?
+    private var selectionGeneration: UInt64 = 0
     var xyX: LiveControlAddress?
     var xyY: LiveControlAddress?
     var hostDiagnostic = ""
@@ -229,6 +235,8 @@ final class SessionModel {
             lastRenderedOverrides.removeAll()
             lastRenderedGeneration = 0
             controlTask?.cancel()
+            visualizationTask?.cancel()
+            controlVisualization = nil
             controlsAvailable = false
             controlCatalog = nil
             adoptionTask?.cancel()
@@ -256,6 +264,7 @@ final class SessionModel {
             overrideGeneration = snapshot.overrideGeneration
             loop = snapshot.loop
             updateRowLines()
+            requestControlVisualization()
         }
         if controlsAvailable, controlHealthTask == nil, let currentRevision,
            lastControlHealthCheck.duration(to: .now) >= .seconds(1) {
@@ -664,6 +673,8 @@ final class SessionModel {
 
     func shutdown() async throws {
         isShuttingDown = true
+        visualizationTask?.cancel()
+        await visualizationTask?.value
         hostRestoreTask?.cancel()
         effectTask?.cancel()
         midiEventTask?.cancel()
@@ -706,6 +717,47 @@ final class SessionModel {
         async let evaluationShutdown: Void = evaluator.shutdown()
         _ = try await (completionShutdown, evaluationShutdown)
         if let recordingFailure { throw recordingFailure }
+    }
+
+    private func requestControlVisualization() {
+        visualizationTask?.cancel()
+        controlVisualization = nil
+        guard selectionGeneration < UInt64.max else {
+            visualizationStatus = "Selection generation limit reached. Reopen the app."
+            return
+        }
+        selectionGeneration += 1
+        let selection = selectionGeneration
+        guard let address = selectedControl, let currentRevision, address.revision == currentRevision,
+              controlsAvailable, overrideGeneration == lastRenderedGeneration else {
+            visualizationStatus = "Waiting for an adopted score control."
+            return
+        }
+        guard address.target != .master else {
+            visualizationStatus = "Master controls use the live output monitor."
+            return
+        }
+        let generation = overrideGeneration
+        let values = lastRenderedOverrides.map { LiveControlOverride(address: $0.key, value: $0.value) }
+        visualizationStatus = "Loading control trajectories…"
+        visualizationTask = Task { [weak self, evaluator] in
+            do {
+                let result = try await evaluator.visualization(address: address, overrides: values,
+                    revision: currentRevision, selectionGeneration: selection)
+                try Task.checkCancellation()
+                guard let self, self.selectionGeneration == selection, self.currentRevision == currentRevision,
+                      self.overrideGeneration == generation, self.selectedControl == address else { return }
+                self.controlVisualization = result
+                self.visualizationStatus = "Mint: selected · Cyan: amplitude · Orange: pitch · Purple: filter · Individual scales"
+            } catch is CancellationError { }
+            catch {
+                let available = await evaluator.controlsAvailable(revision: currentRevision)
+                guard let self, self.selectionGeneration == selection, self.currentRevision == currentRevision else { return }
+                self.controlsAvailable = available
+                self.visualizationStatus = "Trajectories unavailable: \(error)"
+                self.hostDiagnostic = self.visualizationStatus
+            }
+        }
     }
 
     var displayedBPM: Double {

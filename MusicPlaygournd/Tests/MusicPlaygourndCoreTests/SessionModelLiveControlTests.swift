@@ -1,4 +1,5 @@
 import AVFoundation
+import Darwin
 import Foundation
 import Testing
 @testable import MusicPlaygourndApp
@@ -248,7 +249,7 @@ extension NativeHostTests {
         }
 
         @MainActor
-        @Test(.timeLimit(.minutes(4)))
+        @Test(.timeLimit(.minutes(6)))
         func atomicXYAndLearnRestoreRetainSourceAndPCM() async throws {
             let midi = SessionMIDIService()
             let harness = try Harness(midiService: midi)
@@ -258,6 +259,11 @@ extension NativeHostTests {
                 let source = model.source
                 let gain = try Self.requireAddress(model, target: .source(0), parameter: .gain)
                 let pan = try Self.requireAddress(model, target: .source(0), parameter: .pan)
+                let unsupported = LiveControlAddress(
+                    revision: model.revision,
+                    target: .source(0),
+                    parameter: .cutoffHz
+                )
                 model.xyX = gain; model.xyY = pan
                 try model.setXY(x: 0.1, y: 1)
                 try await Self.waitUntil("atomic XY generation") {
@@ -269,6 +275,18 @@ extension NativeHostTests {
                 let left = stride(from: 0, to: pcm.count, by: 2).reduce(0.0) { $0 + abs(Double(pcm[$1])) }
                 let right = stride(from: 1, to: pcm.count, by: 2).reduce(0.0) { $0 + abs(Double(pcm[$1])) }
                 #expect(right > 0 && left < right * 0.01)
+                let unchangedLoop = try #require(model.loop)
+                model.selectedControl = unsupported
+                try await Self.waitForUnavailable(model, description: "unsupported selection keeps controls")
+                #expect(model.controlsAvailable && model.controlVisualization == nil)
+                #expect(model.loop == unchangedLoop && model.overrideGeneration == 1)
+                model.selectedControl = gain
+                try await Self.waitUntil("selected gain trajectories") {
+                    model.controlVisualization?.address == gain
+                }
+                #expect(model.controlVisualization?.traces.isEmpty == false)
+                #expect(model.loop == unchangedLoop && model.overrideGeneration == 1)
+                #expect(model.source == source)
                 let route = MIDISessionRoute(input: midi.input, output: nil, sendsLoopNotes: false, channel: 1, clockMode: .off)
                 try await model.configureMIDI(route)
                 try model.beginMIDILearn(gain)
@@ -318,6 +336,105 @@ extension NativeHostTests {
                     #expect(model.candidateSourceDigests[model.revision] == DocumentHostStateStore.sourceDigest(model.source))
                     #expect(model.currentRevision == 1)
                 }
+
+                let retainedVisualizationLoop = try #require(model.loop)
+                let retainedVisualizationCatalog = try #require(model.controlCatalog)
+                let retainedVisualizationSource = model.source
+                let retainedVisualizationRevision = model.revision
+                let retainedVisualizationGeneration = model.overrideGeneration
+                let workerPID = try #require(await harness.evaluator.workerStateForTests().pid)
+                model.selectedControl = unsupported
+                try await Self.waitForUnavailable(model, description: "prepare stopped visualization")
+                try Self.signal(SIGSTOP, to: workerPID)
+                var workerStopped = true
+                defer {
+                    if workerStopped { _ = Darwin.kill(workerPID, SIGCONT) }
+                }
+
+                model.selectedControl = gain
+                await Task.yield()
+                try await Self.waitUntil("stopped worker pending visualization") {
+                    model.visualizationStatus.contains("Loading")
+                }
+                model.selectedControl = unsupported
+                await Task.yield()
+                try Self.signal(SIGCONT, to: workerPID)
+                workerStopped = false
+                try await Self.waitForUnavailable(model, description: "resumed visualization cancellation")
+                #expect(model.controlsAvailable)
+                #expect(model.controlVisualization == nil)
+                let afterCancellationLoop = model.loop.map { $0 == retainedVisualizationLoop } ?? false
+                #expect(afterCancellationLoop)
+                #expect(model.controlCatalog == retainedVisualizationCatalog)
+                #expect(model.source == retainedVisualizationSource)
+                #expect(model.revision == retainedVisualizationRevision)
+                #expect(model.overrideGeneration == retainedVisualizationGeneration)
+
+                model.selectedControl = gain
+                await Task.yield()
+                try await Self.waitUntil("resumed gain visualization") {
+                    model.refresh()
+                    return model.controlVisualization?.address == gain
+                }
+                let pcmAfterCancellation = try Self.render(harness.engine)
+                #expect(Self.energy(pcmAfterCancellation) > 0.0001)
+
+                model.selectedControl = unsupported
+                try await Self.waitForUnavailable(model, description: "prepare override visualization")
+                try Self.signal(SIGSTOP, to: workerPID)
+                workerStopped = true
+                model.selectedControl = gain
+                await Task.yield()
+                try await Self.waitUntil("override visualization pending") {
+                    model.visualizationStatus.contains("Loading")
+                }
+                let nextOverrideGeneration = model.overrideGeneration + 1
+                try model.setControl(gain, value: .number(0.25))
+                try Self.signal(SIGCONT, to: workerPID)
+                workerStopped = false
+                try await Self.waitUntil("override adoption after visualization") {
+                    model.refresh()
+                    return model.overrideGeneration == nextOverrideGeneration
+                }
+                let retainedOverrideLoop = try #require(model.loop)
+                let retainedOverrideCatalog = try #require(model.controlCatalog)
+                let retainedOverrideSource = model.source
+                let retainedOverrideRevision = model.revision
+                let retainedOverrideGeneration = model.overrideGeneration
+
+                try await Self.waitUntil("automatically adopted override visualization") {
+                    model.refresh()
+                    return model.controlVisualization?.address == gain
+                }
+                let selectedValues = model.controlVisualization?.traces.flatMap { trace in
+                    trace.channels.filter { $0.kind == .selectedValue }.flatMap(\.points)
+                }.map(\.value) ?? []
+                let selectedValuesUseNewOverride = !selectedValues.isEmpty
+                    && selectedValues.allSatisfy { abs($0 - 0.25) < 0.0001 }
+                #expect(selectedValuesUseNewOverride)
+                #expect(model.loop == retainedOverrideLoop)
+                #expect(model.controlCatalog == retainedOverrideCatalog)
+                #expect(model.source == retainedOverrideSource)
+                #expect(model.revision == retainedOverrideRevision)
+                #expect(model.overrideGeneration == retainedOverrideGeneration)
+
+                try Self.signal(SIGKILL, to: workerPID)
+                model.selectedControl = unsupported
+                await Task.yield()
+                try await Self.waitForUnavailable(model, description: "fatal visualization retains session")
+                try await Self.waitUntil("fatal visualization marks worker unavailable") {
+                    model.refresh()
+                    return !model.controlsAvailable
+                }
+                #expect(model.controlVisualization == nil)
+                let afterFailureLoop = model.loop.map { $0 == retainedOverrideLoop } ?? false
+                #expect(afterFailureLoop)
+                #expect(model.controlCatalog == retainedOverrideCatalog)
+                #expect(model.source == retainedOverrideSource)
+                #expect(model.revision == retainedOverrideRevision)
+                #expect(model.overrideGeneration == retainedOverrideGeneration)
+                let pcmAfterFailure = try Self.render(harness.engine)
+                #expect(Self.energy(pcmAfterFailure) > 0.0001)
                 try await harness.shutdown()
                 #expect(await midi.counters().stopped)
             } catch {
@@ -411,7 +528,7 @@ extension NativeHostTests {
         private static func adopt(_ harness: Harness, source: String, revision: UInt64) async throws {
             harness.model.source = source
             harness.model.scheduleEvaluation(immediate: true)
-            try await waitUntil("revision \(revision) adoption", timeout: .seconds(150)) {
+            try await waitUntil("revision \(revision) adoption", timeout: .seconds(260)) {
                 harness.model.refresh()
                 if !harness.model.isPreparing, !harness.model.diagnostic.isEmpty {
                     throw EvaluationError.invalidResult(harness.model.diagnostic)
@@ -461,9 +578,36 @@ extension NativeHostTests {
             }
         }
 
+        @MainActor
+        private static func waitForUnavailable(
+            _ model: SessionModel,
+            description: String
+        ) async throws {
+            do {
+                try await waitUntil(description) {
+                    model.refresh()
+                    return model.visualizationStatus.contains("unavailable")
+                }
+            } catch {
+                throw EvaluationError.timedOut(
+                    "\(description): status=\(model.visualizationStatus), "
+                        + "selected=\(String(describing: model.selectedControl)), "
+                        + "controlsAvailable=\(model.controlsAvailable), "
+                        + "overrideGeneration=\(model.overrideGeneration)"
+                )
+            }
+        }
+
         private static func energy(_ samples: [Float]) -> Double {
             guard !samples.isEmpty else { return 0 }
             return sqrt(samples.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(samples.count))
+        }
+
+        @MainActor
+        private static func signal(_ signal: Int32, to pid: pid_t) throws {
+            guard Darwin.kill(pid, signal) == 0 else {
+                throw EvaluationError.processFailed("Unable to send signal \(signal) to worker \(pid).")
+            }
         }
 
         @MainActor

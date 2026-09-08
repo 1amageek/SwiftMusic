@@ -41,6 +41,11 @@ struct LiveControlsView: View {
                             }
                         }
                     }
+                    if let visualization = model.controlVisualization {
+                        ControlTraceResult(visualization: visualization).frame(height: 64)
+                    }
+                    Text(model.visualizationStatus).font(.system(size: 9)).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("control-visualization-status")
                     if descriptors.isEmpty { Text("Play a score to expose its controls.").foregroundStyle(.secondary) }
                     if let address = model.selectedControl {
                         HStack {
