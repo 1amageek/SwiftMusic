@@ -195,6 +195,58 @@ extension NativeHostTests {
         }
 
         @MainActor
+        @Test(.timeLimit(.minutes(4)))
+        func recordingAndExportPreserveAdoptedControlsAcrossFailedRequests() async throws {
+            try await Self.withHarness { harness in
+                let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                defer { do { try FileManager.default.removeItem(at: directory) } catch { Issue.record(error) } }
+                let source = """
+                struct Session: Music {
+                    var body: some Sound {
+                        Track("Lead") { Synthesizer(.sine).notes("C4").gain(0.01) }
+                    }
+                }
+                """
+                try await Self.adopt(harness, source: source, revision: 1)
+                let initial = try await harness.model.exportStems(to: directory.appendingPathComponent("initial"))
+                #expect(initial.revision == 1 && initial.generation == 0 && initial.manifest.count == 1)
+                #expect(!harness.model.isExportingStems)
+                let gain = try Self.requireAddress(harness.model, target: .source(0), parameter: .gain)
+                try harness.model.setControl(gain, value: .number(0.005))
+                try await Self.waitUntil("first control adoption") {
+                    harness.model.refresh()
+                    return harness.model.overrideGeneration == 1
+                }
+                let controlled = try await harness.model.exportStems(to: directory.appendingPathComponent("controlled"))
+                #expect(controlled.revision == 1 && controlled.generation == 1)
+                try harness.model.setControl(gain, value: .number(-1))
+                try await Self.waitUntil("failed control request") { !harness.model.diagnostic.isEmpty }
+                let retainedExport = try await harness.model.exportStems(to: directory.appendingPathComponent("retained"))
+                #expect(retainedExport.revision == 1 && retainedExport.generation == 1)
+                #expect(harness.model.overrideGeneration == 1)
+                try harness.model.setControl(gain, value: .number(0.004))
+                try await Self.waitUntil("control after exports") {
+                    harness.model.refresh()
+                    return harness.model.overrideGeneration == 3
+                }
+                try harness.engine.play()
+                try harness.model.startRecording(to: directory.appendingPathComponent("master.wav"), maximumDuration: .seconds(2))
+                try await Task.sleep(for: .milliseconds(250))
+                let result = try await harness.model.stopRecording()
+                #expect(result.frameCount > 0)
+                #expect(!harness.model.isRecording)
+                #expect(harness.engine.snapshot().isPlaying)
+                #expect(harness.model.source == source)
+                #expect(harness.model.currentRevision == 1)
+                try harness.model.startRecording(to: directory.appendingPathComponent("shutdown.wav"), maximumDuration: .seconds(2))
+                try await harness.model.shutdown()
+                #expect(!harness.model.isRecording)
+                #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("shutdown.wav").path))
+            }
+        }
+
+        @MainActor
         private static func adopt(_ harness: Harness, source: String, revision: UInt64) async throws {
             harness.model.source = source
             harness.model.scheduleEvaluation(immediate: true)

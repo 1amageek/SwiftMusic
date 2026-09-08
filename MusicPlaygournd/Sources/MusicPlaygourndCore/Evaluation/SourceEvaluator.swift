@@ -15,12 +15,21 @@ public actor SourceEvaluator {
     }
     private var adopted: Worker?
     private var candidate: Worker?
+    private var exportingWorker: Worker?
+    private var retiredExportWorker: Worker?
 
 
     public init(packageURL: URL, workspace: URL, swiftExecutable: String) {
         self.packageURL = packageURL
         self.workspace = workspace
         self.swiftExecutable = swiftExecutable
+    }
+
+    internal func workerStateForTests() async -> (pid: pid_t?, exporting: UInt64?, retired: UInt64?) {
+        let worker = adopted
+        let exporting = exportingWorker?.revision
+        let retired = retiredExportWorker?.revision
+        return (await worker?.connection.processIdentifierForTests, exporting, retired)
     }
 
     public func evaluate(source: String, bpm: Double, beatsPerBar: Int) async throws -> PreparedLoop {
@@ -162,9 +171,13 @@ public actor SourceEvaluator {
         adopted = next
         candidate = nil
         if let previous {
-            await previous.connection.shutdown()
-            do { try FileManager.default.removeItem(at: previous.directory) }
-            catch { /* Workspace cleanup is retried by shutdown. */ }
+            if exportingWorker?.revision == previous.revision {
+                retiredExportWorker = previous
+            } else {
+                await previous.connection.shutdown()
+                do { try FileManager.default.removeItem(at: previous.directory) }
+                catch { /* Workspace cleanup is retried by shutdown. */ }
+            }
         }
         return await controlsAvailable(revision: revision)
     }
@@ -200,12 +213,68 @@ public actor SourceEvaluator {
         return located
     }
 
+    /// Exports the adopted retained session's Track stems without replacing its loop result.
+    public func exportStems(
+        revision: UInt64,
+        generation: UInt64,
+        overrides: [LiveControlOverride],
+        destination: URL
+    ) async throws -> StemExportSnapshot {
+        guard destination.isFileURL, destination.path.hasPrefix("/"), destination.path != "/" else {
+            throw StemExportError.invalidDestination
+        }
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            throw StemExportError.destinationExists
+        }
+        guard let worker = adopted, worker.revision == revision else {
+            throw EvaluationError.invalidResult("Control revision is not adopted.")
+        }
+        guard exportingWorker == nil else {
+            throw EvaluationError.invalidResult("A stem export is already in progress.")
+        }
+        exportingWorker = worker
+        do {
+            let snapshot = try await worker.connection.exportStems(
+                overrides: overrides,
+                generation: generation,
+                destination: destination
+            )
+            guard snapshot.revision == revision, snapshot.generation == generation else {
+                throw EvaluationError.invalidResult("Stem export snapshot identity does not match its request.")
+            }
+            await finishExport(worker)
+            return snapshot
+        } catch {
+            await finishExport(worker)
+            throw error
+        }
+    }
+
+    private func finishExport(_ worker: Worker) async {
+        guard exportingWorker?.revision == worker.revision else { return }
+        exportingWorker = nil
+        let remainsAdopted = adopted?.revision == worker.revision
+        if retiredExportWorker?.revision == worker.revision {
+            retiredExportWorker = nil
+        }
+        guard !remainsAdopted else { return }
+        await worker.connection.shutdown()
+        do { try FileManager.default.removeItem(at: worker.directory) }
+        catch { /* Workspace cleanup is retried by shutdown. */ }
+    }
+
     /// Call after cancelling the caller's evaluation task; waits for child cleanup before removing scratch data.
     public func shutdown() async throws {
         while busy { try await Task.sleep(for: .milliseconds(40)) }
-        let workers = [adopted, candidate].compactMap { $0 }
+        let allWorkers = [adopted, candidate, retiredExportWorker, exportingWorker].compactMap { $0 }
+        var workers = [Worker]()
+        for worker in allWorkers where !workers.contains(where: { $0.revision == worker.revision }) {
+            workers.append(worker)
+        }
         adopted = nil
         candidate = nil
+        exportingWorker = nil
+        retiredExportWorker = nil
         for worker in workers { await worker.connection.shutdown() }
         if FileManager.default.fileExists(atPath: workspace.path) {
             try FileManager.default.removeItem(at: workspace)

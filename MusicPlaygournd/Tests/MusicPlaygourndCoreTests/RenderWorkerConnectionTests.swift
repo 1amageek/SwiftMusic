@@ -147,9 +147,107 @@ struct RenderWorkerConnectionTests {
         try fixture.remove()
     }
 
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func explicitExportCancellationDoesNotCancelLaterRender(shutdown: Bool) async throws {
+        let fixture = try makeFixture(mode: .exportCancellation)
+        let connection = try RenderWorkerConnection(
+            executable: fixture.executable,
+            outputURL: fixture.workspace.appending(path: "prepared.plist"),
+            revision: 18
+        )
+        let pid = try await fixture.pid()
+        do {
+            let initial = try await connection.ready()
+            let destination = fixture.workspace.deletingLastPathComponent()
+                .appending(path: "cancelled-stems-\(UUID().uuidString)")
+            let export = Task { () throws -> StemExportSnapshot in
+                try await connection.exportStems(overrides: [], generation: 0, destination: destination)
+            }
+            try await fixture.waitForMarker("export.read")
+            let close = shutdown ? Task { await connection.shutdown() } : nil
+            if !shutdown { export.cancel() }
+            try await fixture.waitForMarker("cancel.read")
+            do {
+                _ = try await export.value
+                Issue.record("Cancelled stem export unexpectedly succeeded before its commit point")
+            } catch is CancellationError {
+            } catch {
+                Issue.record("Cancelled stem export failed with the wrong error: \(error)")
+            }
+            if let close { await close.value }
+            else {
+                let rendered = try await connection.render(overrides: [], generation: 1)
+                let retainedLoopMatches = rendered == initial.loop
+                #expect(retainedLoopMatches)
+                await connection.shutdown()
+            }
+            try await fixture.waitUntilGone(pid)
+            try fixture.remove()
+        } catch {
+            await connection.shutdown()
+            do {
+                try await fixture.waitUntilGone(pid)
+            } catch {
+                Issue.record("Worker cleanup failed: \(error)")
+            }
+            do {
+                try fixture.remove()
+            } catch {
+                Issue.record("Fixture cleanup failed: \(error)")
+            }
+            throw error
+        }
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func malformedStemManifestIsRejectedBeforePCMAccess() async throws {
+        let fixture = try makeFixture(mode: .malformedManifest)
+        let connection = try RenderWorkerConnection(
+            executable: fixture.executable,
+            outputURL: fixture.workspace.appending(path: "prepared.plist"),
+            revision: 19
+        )
+        let pid = try await fixture.pid()
+        do {
+            _ = try await connection.ready()
+            let destination = fixture.workspace.deletingLastPathComponent()
+                .appending(path: "malformed-stems-(UUID().uuidString)")
+            let export = Task { () throws -> StemExportSnapshot in
+                try await connection.exportStems(overrides: [], generation: 0, destination: destination)
+            }
+            try await fixture.waitForMarker("export.read")
+            do {
+                _ = try await export.value
+                Issue.record("Malformed stem metadata unexpectedly succeeded")
+            } catch let error as EvaluationError {
+                #expect(error.localizedDescription.contains("stem"))
+            } catch {
+                Issue.record("Malformed stem metadata failed with the wrong error: \(error)")
+            }
+            await connection.shutdown()
+            try await fixture.waitUntilGone(pid)
+            try fixture.remove()
+        } catch {
+            await connection.shutdown()
+            do {
+                try await fixture.waitUntilGone(pid)
+            } catch {
+                Issue.record("Worker cleanup failed: \(error)")
+            }
+            do {
+                try fixture.remove()
+            } catch {
+                Issue.record("Fixture cleanup failed: \(error)")
+            }
+            throw error
+        }
+    }
+
     private enum FixtureMode: String {
         case malformed
         case delayedLatest
+        case exportCancellation
+        case malformedManifest
         case truncated
         case unresponsive
         case shutdownAware
@@ -179,6 +277,17 @@ struct RenderWorkerConnectionTests {
         func waitUntilGone(_ pid: Int32) async throws {
             guard Darwin.kill(pid, 0) == -1, errno == ESRCH else {
                 throw EvaluationError.processFailed("shutdown returned before the worker was reaped.")
+            }
+        }
+
+        func waitForMarker(_ name: String) async throws {
+            let marker = workspace.appending(path: name)
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while !FileManager.default.fileExists(atPath: marker.path) {
+                guard ContinuousClock.now < deadline else {
+                    throw EvaluationError.timedOut("Worker fixture did not reach marker \(name).")
+                }
+                try await Task.sleep(for: .milliseconds(10))
             }
         }
 
@@ -234,6 +343,97 @@ struct RenderWorkerConnectionTests {
             sys.stdout.buffer.flush()
             read_frame()
             """
+        case .exportCancellation:
+            let loop = PreparedLoop(sampleRate: 44_100, bpm: 120, beatsPerBar: 4, beatCount: 4,
+                samples: [Float](repeating: 0, count: 176_400), events: [])
+            let catalog = try LiveControlCatalog(descriptors: [.init(
+                address: .init(revision: 18, target: .source(0), parameter: .gain),
+                label: "Gain", baseline: .scalar(1))])
+            let encoder = PropertyListEncoder()
+            encoder.outputFormat = .binary
+            try encoder.encode(WorkerPreparedResult(revision: 18, generation: 0, loop: loop))
+                .write(to: workspace.appending(path: "prepared.plist"))
+            try encoder.encode(WorkerPreparedResult(revision: 18, generation: 1, loop: loop))
+                .write(to: workspace.appending(path: "latest.plist"))
+            try RenderWorkerFraming.encode(RenderWorkerResponse.ready(revision: 18, catalog: catalog))
+                .write(to: workspace.appending(path: "ready.frame"))
+            try RenderWorkerFraming.encode(RenderWorkerResponse.failed(
+                revision: 18, generation: 0, operationID: 1, message: "Stem export cancelled."
+            )).write(to: workspace.appending(path: "cancelled.frame"))
+            try RenderWorkerFraming.encode(RenderWorkerResponse.rendered(
+                revision: 18, generation: 1, operationID: 2
+            )).write(to: workspace.appending(path: "rendered.frame"))
+            try RenderWorkerFraming.encode(RenderWorkerResponse.shutdownComplete)
+                .write(to: workspace.appending(path: "shutdown.frame"))
+            let exportMarker = pythonLiteral(workspace.appending(path: "export.read").path)
+            let cancelMarker = pythonLiteral(workspace.appending(path: "cancel.read").path)
+            script = """
+            #!/usr/bin/env python3
+            import os, sys, struct, plistlib
+            root = \(pythonLiteral(workspace.path))
+            \(pidWrite)
+            def read_frame():
+                header = sys.stdin.buffer.read(4)
+                if len(header) != 4: sys.exit(1)
+                size = struct.unpack(">I", header)[0]
+                payload = sys.stdin.buffer.read(size)
+                if len(payload) != size: sys.exit(1)
+                return plistlib.loads(payload)
+            sys.stdout.buffer.write(open(root + "/ready.frame", "rb").read())
+            sys.stdout.buffer.flush()
+            assert "exportStems" in read_frame()
+            open(\(exportMarker), "w").close()
+            cancellation = read_frame()
+            assert cancellation["cancelExport"]["operationID"] == 1
+            open(\(cancelMarker), "w").close()
+            sys.stdout.buffer.write(open(root + "/cancelled.frame", "rb").read())
+            sys.stdout.buffer.flush()
+            command = read_frame()
+            if "shutdown" in command:
+                sys.stdout.buffer.write(open(root + "/shutdown.frame", "rb").read())
+                sys.stdout.buffer.flush()
+                sys.exit(0)
+            assert "render" in command
+            os.replace(root + "/latest.plist", root + "/prepared.plist")
+            sys.stdout.buffer.write(open(root + "/rendered.frame", "rb").read())
+            sys.stdout.buffer.flush()
+            read_frame()
+            """
+        case .malformedManifest:
+            let loop = PreparedLoop(sampleRate: 44_100, bpm: 120, beatsPerBar: 4, beatCount: 4,
+                samples: [Float](repeating: 0, count: 176_400), events: [])
+            let catalog = try LiveControlCatalog(descriptors: [.init(
+                address: .init(revision: 19, target: .source(0), parameter: .gain),
+                label: "Gain", baseline: .scalar(1))])
+            let encoder = PropertyListEncoder()
+            encoder.outputFormat = .binary
+            try encoder.encode(WorkerPreparedResult(revision: 19, generation: 0, loop: loop))
+                .write(to: workspace.appending(path: "prepared.plist"))
+            try RenderWorkerFraming.encode(RenderWorkerResponse.ready(revision: 19, catalog: catalog))
+                .write(to: workspace.appending(path: "ready.frame"))
+            try makeMalformedManifestFrame(revision: 19)
+                .write(to: workspace.appending(path: "malformed.frame"))
+            let exportMarker = pythonLiteral(workspace.appending(path: "export.read").path)
+            script = """
+            #!/usr/bin/env python3
+            import os, sys, struct
+            root = \(pythonLiteral(workspace.path))
+            \(pidWrite)
+            def read_frame():
+                header = sys.stdin.buffer.read(4)
+                if len(header) != 4: sys.exit(1)
+                size = struct.unpack(">I", header)[0]
+                payload = sys.stdin.buffer.read(size)
+                if len(payload) != size: sys.exit(1)
+                return payload
+            sys.stdout.buffer.write(open(root + "/ready.frame", "rb").read())
+            sys.stdout.buffer.flush()
+            read_frame()
+            open(\(exportMarker), "w").close()
+            sys.stdout.buffer.write(open(root + "/malformed.frame", "rb").read())
+            sys.stdout.buffer.flush()
+            read_frame()
+            """
         case .malformed:
             script = """
             #!/usr/bin/env python3
@@ -269,6 +469,58 @@ struct RenderWorkerConnectionTests {
         try Data(script.utf8).write(to: executable)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         return Fixture(workspace: workspace, executable: executable, pidFile: pidFile)
+    }
+
+    private func makeMalformedManifestFrame(revision: UInt64) throws -> Data {
+        let stem = try PreparedStem(
+            trackID: 0,
+            label: "Lead",
+            sampleRate: PreparedLoop.requiredSampleRate,
+            bpm: 120,
+            beatsPerBar: 4,
+            beatCount: 4,
+            samples: [Float](repeating: 0, count: 176_400)
+        )
+        let manifest = StemExportManifest(stem: stem, fileName: "0-Lead.wav")
+        let response = RenderWorkerResponse.stemsExported(
+            revision: revision, generation: 0, operationID: 1, manifest: [manifest]
+        )
+        let frame = try RenderWorkerFraming.encode(response)
+        let payload = Data(frame.dropFirst(RenderWorkerFraming.headerByteCount))
+        let propertyList = try PropertyListSerialization.propertyList(from: payload, options: [], format: nil)
+
+        func corrupt(_ value: Any) -> Any {
+            if var dictionary = value as? [String: Any] {
+                for key in Array(dictionary.keys) {
+                    if let child = dictionary[key] {
+                        dictionary[key] = corrupt(child)
+                    }
+                }
+                if dictionary["beatCount"] != nil {
+                    dictionary["beatCount"] = 1.0e100
+                }
+                return dictionary
+            }
+            if let array = value as? [Any] {
+                return array.map(corrupt)
+            }
+            return value
+        }
+
+        let corruptedPayload = try PropertyListSerialization.data(
+            fromPropertyList: corrupt(propertyList), format: .binary, options: 0
+        )
+        guard UInt32(exactly: corruptedPayload.count) != nil else {
+            throw EvaluationError.invalidResult("Malformed fixture payload is too large.")
+        }
+        var corruptedFrame = Data()
+        let length = UInt32(corruptedPayload.count)
+        corruptedFrame.append(UInt8((length >> 24) & 0xff))
+        corruptedFrame.append(UInt8((length >> 16) & 0xff))
+        corruptedFrame.append(UInt8((length >> 8) & 0xff))
+        corruptedFrame.append(UInt8(length & 0xff))
+        corruptedFrame.append(corruptedPayload)
+        return corruptedFrame
     }
 
     private func pythonLiteral(_ path: String) -> String {

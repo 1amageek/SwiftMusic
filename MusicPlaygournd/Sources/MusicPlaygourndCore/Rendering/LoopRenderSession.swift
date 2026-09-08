@@ -48,7 +48,40 @@ public struct LoopRenderSession: Sendable {
     /// An empty set is the release operation and returns the immutable baseline.
     public func render(overrides: [LiveControlOverride] = []) throws -> PreparedLoop {
         try Task.checkCancellation()
+        let overlay = try makeOverlay(overrides)
         guard !overrides.isEmpty else { return baseline }
+        let rendered = try renderer.renderPrepared(
+            sound,
+            bpm: bpm,
+            beatsPerBar: beatsPerBar,
+            preparedSamples: preparedSamples,
+            preparedOscillators: preparedOscillators,
+            overlay: overlay
+        )
+        try Task.checkCancellation()
+        try validateShape(rendered)
+        return rendered
+    }
+
+    /// Captures every compiled Track boundary in stable declaration order.
+    public func renderStems(overrides: [LiveControlOverride] = []) throws -> [PreparedStem] {
+        try Task.checkCancellation()
+        let overlay = try makeOverlay(overrides)
+        let result = try renderer.renderPreparedAndStems(
+            sound,
+            bpm: bpm,
+            beatsPerBar: beatsPerBar,
+            preparedSamples: preparedSamples,
+            preparedOscillators: preparedOscillators,
+            overlay: overlay
+        )
+        try Task.checkCancellation()
+        try validateShape(result.loop)
+        return result.stems
+    }
+
+    private func makeOverlay(_ overrides: [LiveControlOverride]) throws -> RenderControlOverlay? {
+        guard !overrides.isEmpty else { return nil }
         let overlay = try RenderControlOverlay.make(
             overrides: overrides,
             catalog: catalog,
@@ -68,17 +101,7 @@ public struct LoopRenderSession: Sendable {
                 }
             }
         }
-        let rendered = try renderer.renderPrepared(
-            sound,
-            bpm: bpm,
-            beatsPerBar: beatsPerBar,
-            preparedSamples: preparedSamples,
-            preparedOscillators: preparedOscillators,
-            overlay: overlay
-        )
-        try Task.checkCancellation()
-        try validateShape(rendered)
-        return rendered
+        return overlay
     }
 
     private func validateShape(_ rendered: PreparedLoop) throws {

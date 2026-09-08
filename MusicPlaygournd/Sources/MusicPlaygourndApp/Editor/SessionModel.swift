@@ -41,6 +41,11 @@ final class SessionModel {
     var status = "Ready to play"
     var isPreparing = false
     var isPlaying = false
+    private(set) var isRecording = false
+    private(set) var isExportingStems = false
+    private var stemExportTask: Task<StemExportSnapshot, Error>?
+    private var stemExportID = UUID()
+    private var isShuttingDown = false
     var loop: PreparedLoop?
     var beatPosition = 0.0
     var currentRevision: UInt64?
@@ -76,6 +81,7 @@ final class SessionModel {
     private(set) var overrideGeneration: UInt64 = 0
     private var candidateCatalogs: [UInt64: LiveControlCatalog] = [:]
     private var overrides: [LiveControlAddress: LiveControlValue] = [:]
+    private var lastRenderedGeneration: UInt64 = 0
     private var lastRenderedOverrides: [LiveControlAddress: LiveControlValue] = [:]
     private var requestedGeneration: UInt64 = 0
     private var controlTask: Task<Void, Never>?
@@ -196,6 +202,7 @@ final class SessionModel {
             requestedGeneration = 0
             overrides.removeAll()
             lastRenderedOverrides.removeAll()
+            lastRenderedGeneration = 0
             controlTask?.cancel()
             controlsAvailable = false
             controlCatalog = nil
@@ -276,6 +283,7 @@ final class SessionModel {
                 guard let self, self.currentRevision == currentRevision,
                       self.requestedGeneration == generation, let engine = self.engine else { return }
                 try engine.replace(loop: rendered, revision: currentRevision, generation: generation)
+                self.lastRenderedGeneration = generation
                 self.lastRenderedOverrides = Dictionary(uniqueKeysWithValues: values.map { ($0.address, $0.value) })
                 self.refresh()
             } catch is CancellationError { }
@@ -555,7 +563,69 @@ final class SessionModel {
         } catch { diagnostic = error.localizedDescription }
     }
 
+    func startRecording(to destination: URL, maximumDuration: Duration) throws {
+        guard !isShuttingDown else { throw CancellationError() }
+        guard let engine else { throw MasterRecordingError.notRecording }
+        try engine.startRecording(MasterRecordingRequest(destination: destination, maximumDuration: maximumDuration))
+        isRecording = true
+    }
+
+    func stopRecording() async throws -> MasterRecordingResult {
+        guard let engine else { throw MasterRecordingError.notRecording }
+        defer { isRecording = engine.isRecording }
+        return try await engine.stopRecording()
+    }
+
+    func cancelRecording() async throws {
+        defer { isRecording = engine?.isRecording ?? false }
+        try await engine?.cancelRecording()
+    }
+
+    func exportStems(to destination: URL) async throws -> StemExportSnapshot {
+        guard !isShuttingDown else { throw CancellationError() }
+        guard stemExportTask == nil else { throw EvaluationError.invalidResult("A stem export is already in progress.") }
+        refresh()
+        guard let currentRevision, controlsAvailable,
+              lastRenderedGeneration == overrideGeneration else {
+            throw EvaluationError.invalidResult("Wait for the current live controls to be adopted before exporting stems.")
+        }
+        let generation = overrideGeneration
+        let values = lastRenderedOverrides.map { LiveControlOverride(address: $0.key, value: $0.value) }
+        let task = Task { [evaluator] in
+            try await evaluator.exportStems(revision: currentRevision, generation: generation,
+                overrides: values, destination: destination)
+        }
+        let id = UUID()
+        stemExportID = id
+        stemExportTask = task
+        isExportingStems = true
+        defer {
+            if stemExportID == id { stemExportTask = nil; isExportingStems = false }
+        }
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+
+    func cancelStemExport() async throws {
+        guard let task = stemExportTask else { return }
+        let id = stemExportID
+        task.cancel()
+        defer {
+            if stemExportID == id { stemExportTask = nil; isExportingStems = false }
+        }
+        do { _ = try await task.value }
+        catch is CancellationError { return }
+    }
+
     func shutdown() async throws {
+        isShuttingDown = true
+        var recordingFailure: Error?
+        do { try await cancelRecording() }
+        catch { recordingFailure = error; diagnostic = error.localizedDescription }
+        do { try await cancelStemExport() }
+        catch {
+            diagnostic = recordingFailure.map { "\($0.localizedDescription)\n\(error.localizedDescription)" } ?? error.localizedDescription
+            if recordingFailure == nil { recordingFailure = error }
+        }
         midiClosed = true
         midiSchedulingTask?.cancel()
         await midiSchedulingTask?.value
@@ -579,6 +649,7 @@ final class SessionModel {
         async let completionShutdown: Void = completionService.shutdown()
         async let evaluationShutdown: Void = evaluator.shutdown()
         _ = try await (completionShutdown, evaluationShutdown)
+        if let recordingFailure { throw recordingFailure }
     }
 
     static let initialSource = """

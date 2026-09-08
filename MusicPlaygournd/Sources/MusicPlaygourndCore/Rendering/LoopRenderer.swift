@@ -54,6 +54,45 @@ public struct LoopRenderer: Sendable {
         preparedOscillators: [Int: OscillatorPreparation],
         overlay: RenderControlOverlay? = nil
     ) throws -> PreparedLoop {
+        try renderPreparedResult(
+            sound,
+            bpm: bpm,
+            beatsPerBar: beatsPerBar,
+            preparedSamples: preparedSamples,
+            preparedOscillators: preparedOscillators,
+            overlay: overlay,
+            captureTrackStems: false
+        ).loop
+    }
+
+    internal func renderPreparedAndStems(
+        _ sound: CompiledSound,
+        bpm: Double,
+        beatsPerBar: Int,
+        preparedSamples: SamplePreparation,
+        preparedOscillators: [Int: OscillatorPreparation],
+        overlay: RenderControlOverlay? = nil
+    ) throws -> (loop: PreparedLoop, stems: [PreparedStem]) {
+        try renderPreparedResult(
+            sound,
+            bpm: bpm,
+            beatsPerBar: beatsPerBar,
+            preparedSamples: preparedSamples,
+            preparedOscillators: preparedOscillators,
+            overlay: overlay,
+            captureTrackStems: true
+        )
+    }
+
+    private func renderPreparedResult(
+        _ sound: CompiledSound,
+        bpm: Double,
+        beatsPerBar: Int,
+        preparedSamples: SamplePreparation,
+        preparedOscillators: [Int: OscillatorPreparation],
+        overlay: RenderControlOverlay?,
+        captureTrackStems: Bool
+    ) throws -> (loop: PreparedLoop, stems: [PreparedStem]) {
         try validateBasicInputs(sound, bpm: bpm, beatsPerBar: beatsPerBar)
         var extent = try beatValue(sound.extent)
         let automationSecondsPerBeat = sound.playbackMode == .seamlessLoop
@@ -120,7 +159,8 @@ public struct LoopRenderer: Sendable {
             preparedSamples: preparedSamples,
             preparedOscillators: preparedOscillators,
             sampleFrames: sampleFrames,
-            overlay: overlay
+            overlay: overlay,
+            captureTrackStems: captureTrackStems
         )
         let sourceBeatCount = beatCount
         try context.prepareEffects(beatsPerBar: beatsPerBar)
@@ -219,7 +259,29 @@ public struct LoopRenderer: Sendable {
         } catch let error as PreparedLoopValidationError {
             throw LoopRenderingError.invalidPreparedLoop(error)
         }
-        return prepared
+        var stems: [PreparedStem] = []
+        if captureTrackStems {
+            guard sound.tracks.count <= StemExporter.maximumStemCount else {
+                throw LoopRenderingError.invalidSound("track stem count exceeds 32")
+            }
+            stems.reserveCapacity(sound.tracks.count)
+            for track in sound.tracks {
+                guard track.renderNodeID != nil else { continue }
+                guard let buffer = context.capturedStems[track.id] else {
+                    throw LoopRenderingError.invalidSound("Track stem boundary was not rendered.")
+                }
+                stems.append(try PreparedStem(
+                    trackID: track.id,
+                    label: track.name,
+                    sampleRate: PreparedLoop.requiredSampleRate,
+                    bpm: bpm,
+                    beatsPerBar: beatsPerBar,
+                    beatCount: beatCount,
+                    samples: buffer.interleaved
+                ))
+            }
+        }
+        return (prepared, stems)
     }
 
     private func frameCount(for duration: Double) throws -> Int {
@@ -351,15 +413,18 @@ private struct RenderContext {
     let preparedOscillators: [Int: OscillatorPreparation]
     let sampleFrames: [Int: Int]
     let overlay: RenderControlOverlay?
+    let captureTrackStems: Bool
+    var capturedStems: [Int: StereoBuffer] = [:]
     var scheduledSources: [StereoBuffer]?
 
     init(sound: CompiledSound, bpm: Double, beatCount: Double, frameCount: Int,
          preparedSamples: SamplePreparation, preparedOscillators: [Int: OscillatorPreparation], sampleFrames: [Int: Int],
-         overlay: RenderControlOverlay? = nil) throws {
+         overlay: RenderControlOverlay? = nil, captureTrackStems: Bool = false) throws {
         self.preparedSamples = preparedSamples
         self.preparedOscillators = preparedOscillators
         self.sampleFrames = sampleFrames
         self.overlay = overlay
+        self.captureTrackStems = captureTrackStems
         self.sound = sound
         self.bpm = bpm
         self.sourceBeatCount = beatCount
@@ -858,6 +923,12 @@ private struct RenderContext {
             }
             if let pan { output.applyPan(pan) }
             if track.isMuted || !audibleTracks[id] { output.mute() }
+            if captureTrackStems {
+                guard capturedStems[id] == nil else {
+                    throw LoopRenderingError.invalidSound("Track stem boundary was captured twice.")
+                }
+                capturedStems[id] = output
+            }
             return output
         case .effect(let input, let effect):
             var output = try takeNode(input)

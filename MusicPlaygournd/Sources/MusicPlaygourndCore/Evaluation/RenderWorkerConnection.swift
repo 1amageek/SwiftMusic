@@ -3,6 +3,25 @@ import Foundation
 
 /// Owns one child and bounded nonblocking pipes; the pump never blocks an actor executor.
 internal actor RenderWorkerConnection {
+    private enum WorkerOperationResult: Sendable {
+        case loop(WorkerPreparedResult)
+        case stems(StemExportSnapshot)
+    }
+
+    private enum CommandKind: Equatable {
+        case render
+        case export
+        case cancelExport
+        case shutdown
+    }
+
+    private struct PendingCommand {
+        let kind: CommandKind
+        let data: Data
+    }
+
+    internal var processIdentifierForTests: pid_t { process.processIdentifier }
+
     private let process: Process
     private let completion: ProcessCompletion
     private let input: FileHandle
@@ -14,13 +33,23 @@ internal actor RenderWorkerConnection {
     private var diagnostic = Data()
     private var writing: Data?
     private var written = 0
-    private var pendingWrite: Data?
-    private var waiter: CheckedContinuation<WorkerPreparedResult, any Error>?
+    private var pendingWrites = [PendingCommand]()
+    private var renderWaiter: CheckedContinuation<WorkerOperationResult, any Error>?
+    private var exportWaiter: CheckedContinuation<WorkerOperationResult, any Error>?
     private var readyWaiter: CheckedContinuation<RetainedEvaluation, any Error>?
     private var readyResult: RetainedEvaluation?
     private var failure: EvaluationError?
-    private var latestGeneration: UInt64 = 0
-    private var deadline: ContinuousClock.Instant?
+    private var latestRenderGeneration: UInt64 = 0
+    private var lastRenderedGeneration: UInt64 = 0
+    private var latestExportGeneration: UInt64 = 0
+    private var nextOperationID: UInt64 = 0
+    private var latestOperationID: UInt64 = 0
+    private var latestRenderOperationID: UInt64 = 0
+    private var latestExportOperationID: UInt64 = 0
+    private var exportCancellationRequested = false
+    private var readyDeadline: ContinuousClock.Instant?
+    private var renderDeadline: ContinuousClock.Instant?
+    private var exportDeadline: ContinuousClock.Instant?
     private var pumpTask: Task<Void, Never>?
     private var shutdownTask: Task<Void, Never>?
     private var stopping = false
@@ -66,7 +95,7 @@ internal actor RenderWorkerConnection {
         if let readyResult { return readyResult }
         if let failure { throw failure }
         guard readyWaiter == nil else { throw EvaluationError.invalidResult("Worker initialization already awaited.") }
-        deadline = .now.advanced(by: .seconds(10))
+        readyDeadline = .now.advanced(by: .seconds(10))
         pumpTask = Task { await self.pump() }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { readyWaiter = $0 }
@@ -79,32 +108,120 @@ internal actor RenderWorkerConnection {
         try Task.checkCancellation()
         if let failure { throw failure }
         guard readyResult != nil, !stopping, !closing else { throw EvaluationError.invalidResult("Worker is unavailable.") }
-        guard generation > latestGeneration else { throw EvaluationError.invalidResult("Worker generation is stale.") }
+        guard generation > latestRenderGeneration else { throw EvaluationError.invalidResult("Worker generation is stale.") }
         guard overrides.count <= (readyResult?.catalog.descriptors.count ?? 0) else {
             throw EvaluationError.invalidResult("Override count exceeds the worker control catalog.")
         }
+        let operationID = try allocateOperationID()
+        latestRenderOperationID = operationID
         let frame = try RenderWorkerFraming.encode(RenderWorkerCommand.render(
-            revision: revision, generation: generation, overrides: overrides))
-        latestGeneration = generation
-        waiter?.resume(throwing: CancellationError())
-        waiter = nil
-        // Finish a partially written frame, retaining only one subsequent request.
-        if writing == nil { writing = frame; written = 0 }
-        else { pendingWrite = frame }
-        deadline = .now.advanced(by: .seconds(10))
+            revision: revision, generation: generation, operationID: operationID, overrides: overrides))
+        latestRenderGeneration = generation
+        renderWaiter?.resume(throwing: CancellationError())
+        renderWaiter = nil
+        renderDeadline = .now.advanced(by: .seconds(10))
         let result = try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { waiter = $0 }
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<WorkerOperationResult, any Error>) in
+                renderWaiter = continuation
+                enqueue(.render, frame)
+            }
         } onCancel: {
-            Task { await self.cancelWaiter(generation) }
-        } as WorkerPreparedResult
+            Task { await self.cancelRenderWaiter(operationID) }
+        } as WorkerOperationResult
         try Task.checkCancellation()
-        return result.loop
+        guard case .loop(let prepared) = result else {
+            throw EvaluationError.invalidResult("Worker returned a stem export for a render request.")
+        }
+        return prepared.loop
     }
 
-    private func cancelWaiter(_ generation: UInt64) {
-        guard generation == latestGeneration else { return }
-        waiter?.resume(throwing: CancellationError())
-        waiter = nil
+    func exportStems(
+        overrides: [LiveControlOverride],
+        generation: UInt64,
+        destination: URL
+    ) async throws -> StemExportSnapshot {
+        try Task.checkCancellation()
+        guard destination.isFileURL, destination.path.hasPrefix("/") else {
+            throw StemExportError.invalidDestination
+        }
+        if let failure { throw failure }
+        guard readyResult != nil, !stopping, !closing else { throw EvaluationError.invalidResult("Worker is unavailable.") }
+        guard generation <= lastRenderedGeneration else {
+            throw EvaluationError.invalidResult("Worker generation has not produced a retained render.")
+        }
+        guard overrides.count <= (readyResult?.catalog.descriptors.count ?? 0) else {
+            throw EvaluationError.invalidResult("Override count exceeds the worker control catalog.")
+        }
+        let operationID = try allocateOperationID()
+        latestExportOperationID = operationID
+        let frame = try RenderWorkerFraming.encode(RenderWorkerCommand.exportStems(
+            revision: revision, generation: generation, operationID: operationID,
+            overrides: overrides, destination: destination))
+        latestExportGeneration = generation
+        exportWaiter?.resume(throwing: CancellationError())
+        exportWaiter = nil
+        exportCancellationRequested = false
+        exportDeadline = .now.advanced(by: .seconds(10))
+        let result = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<WorkerOperationResult, any Error>) in
+                exportWaiter = continuation
+                enqueue(.export, frame)
+            }
+        } onCancel: {
+            Task { await self.cancelExportWaiter(operationID) }
+        } as WorkerOperationResult
+        guard case .stems(let snapshot) = result else {
+            throw EvaluationError.invalidResult("Worker returned a render result for a stem export request.")
+        }
+        return snapshot
+    }
+
+    private func cancelRenderWaiter(_ operationID: UInt64) {
+        guard operationID == latestRenderOperationID else { return }
+        renderWaiter?.resume(throwing: CancellationError())
+        renderWaiter = nil
+    }
+
+    private func cancelExportWaiter(_ operationID: UInt64) {
+        guard operationID == latestExportOperationID else { return }
+        // The worker may already have crossed the atomic directory rename. Keep
+        // the continuation alive until its terminal response identifies whether
+        // the committed snapshot won the cancellation race.
+        guard !exportCancellationRequested else { return }
+        exportCancellationRequested = true
+        do {
+            let frame = try RenderWorkerFraming.encode(RenderWorkerCommand.cancelExport(operationID: operationID))
+            enqueue(.cancelExport, frame)
+        } catch {
+            exportDeadline = nil
+            let waiter = exportWaiter
+            exportWaiter = nil
+            waiter?.resume(throwing: error)
+        }
+    }
+
+    private func enqueue(_ kind: CommandKind, _ data: Data) {
+        if writing == nil {
+            writing = data
+            written = 0
+            return
+        }
+        if let index = pendingWrites.firstIndex(where: { $0.kind == kind }) {
+            pendingWrites[index] = PendingCommand(kind: kind, data: data)
+            return
+        }
+        pendingWrites.append(PendingCommand(kind: kind, data: data))
+    }
+
+    private func allocateOperationID() throws -> UInt64 {
+        guard nextOperationID < UInt64.max else {
+            throw EvaluationError.invalidResult("Worker operation ID limit reached.")
+        }
+        nextOperationID += 1
+        latestOperationID = nextOperationID
+        return nextOperationID
     }
 
     func shutdown() async {
@@ -116,11 +233,19 @@ internal actor RenderWorkerConnection {
 
     private func closeWorker() async {
         closing = true
+        renderWaiter?.resume(throwing: CancellationError()); renderWaiter = nil
+        readyWaiter?.resume(throwing: CancellationError()); readyWaiter = nil
         if failure == nil, completion.result == nil {
             do {
+                if exportWaiter != nil, !exportCancellationRequested {
+                    exportCancellationRequested = true
+                    let cancel = try RenderWorkerFraming.encode(
+                        RenderWorkerCommand.cancelExport(operationID: latestExportOperationID)
+                    )
+                    enqueue(.cancelExport, cancel)
+                }
                 let command = try RenderWorkerFraming.encode(RenderWorkerCommand.shutdown)
-                if writing == nil { writing = command; written = 0 }
-                else { pendingWrite = command }
+                enqueue(.shutdown, command)
                 let until = ContinuousClock.now.advanced(by: .seconds(10))
                 while completion.result == nil, ContinuousClock.now < until, failure == nil {
                     try await Task.sleep(for: .milliseconds(10))
@@ -130,8 +255,6 @@ internal actor RenderWorkerConnection {
             }
         }
         stopping = true
-        waiter?.resume(throwing: CancellationError()); waiter = nil
-        readyWaiter?.resume(throwing: CancellationError()); readyWaiter = nil
         // Reap the worker and any user-created descendants, including a hung shutdown.
         kill(-process.processIdentifier, SIGKILL)
         if process.isRunning { kill(process.processIdentifier, SIGKILL) }
@@ -149,7 +272,8 @@ internal actor RenderWorkerConnection {
 
     private func abort(_ error: EvaluationError) async {
         failure = error
-        waiter?.resume(throwing: error); waiter = nil
+        renderWaiter?.resume(throwing: error); renderWaiter = nil
+        exportWaiter?.resume(throwing: error); exportWaiter = nil
         readyWaiter?.resume(throwing: error); readyWaiter = nil
         await shutdown()
     }
@@ -178,7 +302,8 @@ internal actor RenderWorkerConnection {
                 } else if errno != EAGAIN && errno != EINTR {
                     throw EvaluationError.processFailed("Worker protocol read failed.")
                 }
-                if let deadline, ContinuousClock.now >= deadline {
+                let deadlines = [readyDeadline, renderDeadline, exportDeadline].compactMap { $0 }
+                if let deadline = deadlines.min(), ContinuousClock.now >= deadline {
                     throw EvaluationError.timedOut("Worker exceeded 10 seconds; the previous loop continues.")
                 }
                 try await Task.sleep(for: .milliseconds(10))
@@ -209,8 +334,12 @@ internal actor RenderWorkerConnection {
         if count > 0 {
             written += count
             if written == writing.count {
-                self.writing = pendingWrite
-                pendingWrite = nil
+                if let next = pendingWrites.first {
+                    pendingWrites.removeFirst()
+                    self.writing = next.data
+                } else {
+                    self.writing = nil
+                }
                 written = 0
             }
         } else if count < 0, errno != EAGAIN && errno != EINTR {
@@ -228,26 +357,63 @@ internal actor RenderWorkerConnection {
             let result = try readResult(generation: 0)
             let ready = RetainedEvaluation(loop: result.loop, catalog: catalog)
             readyResult = ready
-            deadline = nil
+            lastRenderedGeneration = 0
+            readyDeadline = nil
             readyWaiter?.resume(returning: ready); readyWaiter = nil
-        case .rendered(let responseRevision, let generation):
-            guard responseRevision == revision, generation <= latestGeneration else {
+        case .rendered(let responseRevision, let generation, let operationID):
+            guard responseRevision == revision, operationID <= latestOperationID else {
                 throw EvaluationError.invalidResult("Invalid worker render identity.")
             }
-            guard generation == latestGeneration else { return }
+            guard operationID == latestRenderOperationID else { return }
+            guard generation == latestRenderGeneration else {
+                throw EvaluationError.invalidResult("Invalid worker render generation.")
+            }
+            guard let waiter = renderWaiter else { return }
             let result = try readResult(generation: generation)
-            deadline = nil
-            waiter?.resume(returning: result); waiter = nil
-        case .failed(let responseRevision, let generation, let message):
-            guard responseRevision == revision, generation <= latestGeneration else {
+            lastRenderedGeneration = generation
+            renderDeadline = nil
+            renderWaiter = nil
+            waiter.resume(returning: .loop(result))
+        case .stemsExported(let snapshot, let operationID):
+            guard snapshot.revision == revision, operationID <= latestOperationID else {
+                throw EvaluationError.invalidResult("Invalid worker stem export identity.")
+            }
+            guard operationID == latestExportOperationID else { return }
+            guard snapshot.generation == latestExportGeneration else {
+                throw EvaluationError.invalidResult("Invalid worker stem export generation.")
+            }
+            try validate(snapshot.manifest)
+            exportDeadline = nil
+            let waiter = exportWaiter
+            exportWaiter = nil
+            exportCancellationRequested = false
+            waiter?.resume(returning: .stems(snapshot))
+        case .failed(let responseRevision, _, let operationID, let message):
+            guard responseRevision == revision, operationID <= latestOperationID else {
                 throw EvaluationError.invalidResult("Invalid worker failure identity.")
             }
-            guard generation == latestGeneration else { return }
-            deadline = nil
-            waiter?.resume(throwing: EvaluationError.processFailed(message)); waiter = nil
+            if operationID == latestRenderOperationID {
+                renderDeadline = nil
+                renderWaiter?.resume(throwing: EvaluationError.processFailed(message)); renderWaiter = nil
+            } else if operationID == latestExportOperationID {
+                exportDeadline = nil
+                let waiter = exportWaiter
+                exportWaiter = nil
+                let wasCancelled = exportCancellationRequested
+                exportCancellationRequested = false
+                if wasCancelled {
+                    waiter?.resume(throwing: CancellationError())
+                } else {
+                    waiter?.resume(throwing: EvaluationError.processFailed(message))
+                }
+            } else {
+                return
+            }
         case .shutdownComplete:
             guard closing else { throw EvaluationError.invalidResult("Unexpected worker shutdown.") }
-            deadline = nil
+            readyDeadline = nil
+            renderDeadline = nil
+            exportDeadline = nil
         }
     }
 
@@ -262,5 +428,46 @@ internal actor RenderWorkerConnection {
         }
         try result.loop.validate()
         return result
+    }
+
+    private func validate(_ manifest: [StemExportManifest]) throws {
+        guard manifest.count <= StemExporter.maximumStemCount else {
+            throw EvaluationError.invalidResult("Worker returned too many stem files.")
+        }
+        var trackIDs = Set<Int>()
+        var reference: StemExportManifest?
+        for stem in manifest {
+            guard stem.trackID >= 0, trackIDs.insert(stem.trackID).inserted,
+                  !stem.label.isEmpty, !stem.fileName.isEmpty,
+                  stem.fileName == URL(fileURLWithPath: stem.fileName).lastPathComponent,
+                  !stem.fileName.contains("/"), !stem.fileName.contains("\\"),
+                  stem.sampleRate == PreparedLoop.requiredSampleRate,
+                  stem.bpm.isFinite, (40...240).contains(stem.bpm),
+                  (2...7).contains(stem.beatsPerBar),
+                  stem.beatCount.isFinite, stem.beatCount > 0,
+                  stem.beatCount <= PreparedLoop.maximumBeatCount,
+                  stem.frameCount > 0 else {
+                throw EvaluationError.invalidResult("Worker returned invalid stem metadata.")
+            }
+            let duration = stem.beatCount * 60 / stem.bpm
+            guard duration.isFinite, duration <= PreparedLoop.maximumDurationSeconds else {
+                throw EvaluationError.invalidResult("Worker returned an out-of-bounds stem duration.")
+            }
+            let expectedFrameCount = Int((duration * PreparedLoop.requiredSampleRate).rounded(.up))
+            guard expectedFrameCount == stem.frameCount else {
+                throw EvaluationError.invalidResult("Worker returned a stem frame count inconsistent with its metadata.")
+            }
+            if let reference {
+                guard stem.sampleRate == reference.sampleRate,
+                      stem.bpm == reference.bpm,
+                      stem.beatsPerBar == reference.beatsPerBar,
+                      stem.beatCount == reference.beatCount,
+                      stem.frameCount == reference.frameCount else {
+                    throw EvaluationError.invalidResult("Worker returned unsynchronized stem metadata.")
+                }
+            } else {
+                reference = stem
+            }
+        }
     }
 }

@@ -3,7 +3,7 @@ import Foundation
 import Synchronization
 
 @MainActor
-public final class AudioLoopEngine: AudioUnitHosting {
+public final class AudioLoopEngine: AudioUnitHosting, MasterRecording {
     private let parameterSmoother: MasterParameterSmoother
     private let audioEngine: AVAudioEngine
     private let sourceNode: AVAudioSourceNode
@@ -12,6 +12,15 @@ public final class AudioLoopEngine: AudioUnitHosting {
     private let delay: AVAudioUnitDelay
     private let reverb: AVAudioUnitReverb
     private let transport: AudioTransport
+    private let recordingCapture: MasterRecordingCapture
+    private final class RecordingTake {
+        let task: Task<MasterRecordingResult, Error>
+        var cancelled = false
+        var cleaned = false
+        init(task: Task<MasterRecordingResult, Error>) { self.task = task }
+    }
+    private var recordingTake: RecordingTake?
+    internal var recordingDidPublish: (@Sendable () async -> Void)?
     private let meterStore: OutputMeterStore
     private let audioFormat: AVAudioFormat
     private var retainedLoops: [AudioTransport.Identity: PreparedLoop] = [:]
@@ -75,11 +84,14 @@ public final class AudioLoopEngine: AudioUnitHosting {
         audioEngine.connect(delay, to: reverb, format: format)
         audioEngine.connect(reverb, to: audioEngine.mainMixerNode, format: format)
         audioEngine.mainMixerNode.outputVolume = 1
+        let recordingCapture = MasterRecordingCapture()
+        self.recordingCapture = recordingCapture
         audioEngine.mainMixerNode.installTap(
             onBus: 0,
             bufferSize: AVAudioFrameCount(OutputMeterStore.frameCapacity),
             format: nil
-        ) { @Sendable [meterStore] buffer, _ in
+        ) { @Sendable [meterStore, recordingCapture] buffer, time in
+            recordingCapture.capture(buffer, at: time)
             meterStore.capture(buffer)
         }
         self.transport = transport
@@ -91,6 +103,55 @@ public final class AudioLoopEngine: AudioUnitHosting {
         self.meterStore = meterStore
         self.audioFormat = format
         self.audioEngine = audioEngine
+    }
+
+    public var isRecording: Bool { recordingTake != nil }
+    internal var recordingCancellationRequested: Bool { recordingTake?.cancelled ?? false }
+
+    public func startRecording(_ request: MasterRecordingRequest) throws {
+        guard recordingTake == nil else { throw MasterRecordingError.alreadyRecording }
+        guard !FileManager.default.fileExists(atPath: request.destination.path) else { throw MasterRecordingError.destinationExists }
+        let format = audioEngine.mainMixerNode.outputFormat(forBus: 0)
+        try recordingCapture.begin(format: format, maximumFrames: request.maximumFrames)
+        do {
+            let writer = try MasterRecordingWriter(request: request, capture: recordingCapture, format: format, didPublish: recordingDidPublish)
+            recordingTake = RecordingTake(task: Task { try await writer.run() })
+        } catch {
+            recordingCapture.finish()
+            throw error
+        }
+    }
+
+    public func stopRecording() async throws -> MasterRecordingResult {
+        guard let take = recordingTake else { throw MasterRecordingError.notRecording }
+        recordingCapture.finish()
+        defer { if recordingTake === take { recordingTake = nil } }
+        let task = take.task
+        let result = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+        if take.cancelled || Task.isCancelled {
+            try removeCancelledRecording(result, take: take)
+            throw CancellationError()
+        }
+        return result
+    }
+
+    public func cancelRecording() async throws {
+        guard let take = recordingTake else { return }
+        take.cancelled = true
+        recordingCapture.finish()
+        take.task.cancel()
+        defer { if recordingTake === take { recordingTake = nil } }
+        do { try removeCancelledRecording(try await take.task.value, take: take) }
+        catch is CancellationError { return }
+    }
+
+    private func removeCancelledRecording(_ result: MasterRecordingResult, take: RecordingTake) throws {
+        guard !take.cleaned else { return }
+        do {
+            if FileManager.default.fileExists(atPath: result.destination.path) { try FileManager.default.removeItem(at: result.destination) }
+            take.cleaned = true
+        }
+        catch { throw MasterRecordingError.fileFailure(error.localizedDescription) }
     }
 
     public func beginUpdate(revision: UInt64) {
@@ -442,6 +503,8 @@ public final class AudioLoopEngine: AudioUnitHosting {
     }
 
     isolated deinit {
+        recordingCapture.finish()
+        recordingTake?.task.cancel()
         audioUnitRequest?.cancel()
         parameterSmoother.cancelAll()
         audioEngine.mainMixerNode.removeTap(onBus: 0)
