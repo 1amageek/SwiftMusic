@@ -1,33 +1,20 @@
 # SwiftMusic
 
-SwiftMusic declares immutable `Sound` trees. Sibling declarations are parallel, and modifiers transform only the subtree on which they are written. Rhythm and note literals stay in the declaration and resolve into exact beat-domain events during compilation.
+SwiftMusic is a declarative Swift library for immutable `Sound` trees, exact beat-domain events and ordered render plans. Sibling declarations play concurrently in musical time; modifiers apply to their own subtree in Swift call-chain order.
 
-The live music-making experience and the MusicPlaygournd editor are defined in [PHILOSOPHY.md](PHILOSOPHY.md). The example below uses the declarative foundation API.
+SwiftMusic does not depend on SwiftUI. A host owns audio rendering, playback, source evaluation and UI. The companion [MusicPlaygournd](MusicPlaygournd/README.md) is a separate native host under development; its unfinished editor work is not a completed deliverable of this library release. See [PHILOSOPHY.md](PHILOSOPHY.md) for the intended live-editing experience.
 
-The native macOS editor is in [MusicPlaygournd](MusicPlaygournd/README.md). It hosts real Swift evaluation, bounded PCM playback, and synchronized rhythm visualization.
-
-## Requirements
-
-SwiftMusic requires Swift tools 6.4. The 0.1.0 preview was verified with `swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-08-14-a` (compiler `424cae54c1a10da`) on macOS 27.0 arm64. The package deployment target is macOS 14; runtime behavior on macOS 14 is untested. This preview makes no stable API promise.
-
-## SwiftPM installation
-
-Add SwiftMusic as an exact-version dependency and link its library product:
+## Installation
 
 ```swift
-dependencies: [
-    .package(url: "https://github.com/1amageek/SwiftMusic.git", exact: "0.1.0")
-],
-
-targets: [
-    .target(
-        name: "YourTarget",
-        dependencies: [
-            .product(name: "SwiftMusic", package: "SwiftMusic")
-        ]
-    )
-]
+.package(url: "https://github.com/1amageek/SwiftMusic.git", exact: "0.2.0")
 ```
+
+Link `.product(name: "SwiftMusic", package: "SwiftMusic")` from your target.
+
+SwiftMusic 0.2.0 is a prerelease with no stable API promise. It requires Swift tools 6.4 and declares macOS 14 as its deployment target. Library tests were verified on macOS 27 arm64 with Swift 6.4.2-dev (2026-09-04, compiler `d2e983b81b18217`). Runtime behavior on macOS 14, Embedded Swift and WASM is not claimed.
+
+## Declare music
 
 ```swift
 import SwiftMusic
@@ -35,87 +22,94 @@ import SwiftMusic
 struct Groove: Sound {
     var body: some Sound {
         Sample("kick")
-            .rhythm("x ~ x ~")
-            .gain(0.9)
+            .rhythm("x [x x] ~ x")
+            .gain("1 [0.3 0.6] 0 0.8")
 
         Synthesizer(.saw)
             .notes("C2 Eb2 G2 Bb2")
-            .gain(0.5)
+            .pan("-1 1")
     }
 }
 
 struct Song: Music {
     var body: some Sound {
-        Track("groove") {
-            Groove()
-        }
+        Track("groove") { Groove() }
     }
 }
 
-var liveState = LiveMusicState()
-liveState.beginUpdate(revision: 0)
-liveState.receive(.prepare(revision: 0, music: Song()))
+@MainActor
+func prepareSong() throws -> CompiledSound {
+    try SoundCompiler().compile(Song())
+}
+```
 
-// The host calls adoption after audio resources are ready, at its musical boundary.
-// This standalone example demonstrates plan adoption only; it does not play audio.
-if let sound = liveState.adoptPendingAtBoundary() {
-    let slow = try Tempo(beatsPerMinute: 60)
-    let fast = try Tempo(beatsPerMinute: 120)
-    print(try slow.seconds(for: sound.extent))
-    print(try fast.seconds(for: sound.extent))
+`Music.body` is MainActor-isolated. Reusable `Sound` declarations and compiled values remain `Sendable`. `Track` is optional grouping and mix metadata. A compiled sound contains events and a render graph, not PCM audio.
+
+## Performance models
+
+Use native Observation for interactive state and explicitly inject it with `.performance(...)`:
+
+```swift
+import Observation
+import SwiftMusic
+
+@MainActor @Observable
+final class Stage {
+    var level = 0.5
+    var position = SpatialPosition(x: 0, depth: 0)
 }
 
-liveState.beginUpdate(revision: 1)
-liveState.receive(.prepare(revision: 1, sound: Sample("kick").rhythm("x ?")))
-assert(liveState.currentRevision == 0)
-assert(liveState.pendingSound == nil)
-assert(liveState.diagnostic != nil)
+struct PerformanceSong: Music {
+    @Performance(Stage.self) private var stage
+
+    var body: some Sound {
+        Synthesizer(.sine)
+            .notes("C4 E4 G4")
+            .gain(stage.level)
+            .position(stage.position)
+    }
+}
+
+@MainActor
+func preparePerformance(stage: Stage) throws -> CompiledSound {
+    try SoundCompiler().compile(PerformanceSong().performance(stage))
+}
 ```
 
-The same adopted pattern spans 4 seconds at 60 BPM or 2 seconds at 120 BPM. The invalid edit leaves that pattern intact and exposes a typed diagnostic. `beginUpdate` must run when an edit arrives, before preparation, so late results from older edits cannot be adopted.
+`PerformanceObservationSession` observes body reads and notifies the host when preparation is needed; it does not schedule audio. A missing model produces a typed error. Optional `PerformanceEntry` factories and `PerformanceControllable` mappings expose finite number controls, one BPM role and atomic XY position updates. UI bindings belong to the host.
+
+`SpatialPosition.x` ranges from -1 to 1; `depth` ranges from 0 to 1 and applies stylized attenuation, filtering and reverb. It does not represent physical 3D distance. Beat-domain plans remain separate from tempo; `Tempo.seconds(for:)` converts the same musical time at different BPM values.
+
+## Patterns and processing
+
+| Area | Included declarations and behavior |
+| --- | --- |
+| Patterns | Rhythm, notes, gain, pan, pitch, cutoff, envelopes and sample selection; string literals with deferred validation |
+| Timing | Bracket subdivisions, cycle alternatives, leaf repetition, rational fast/slow, phase, reversal, repetition, swing and Euclidean/event transforms |
+| Musical expression | Typed pitch, scales, chords, voicing, arpeggio, velocity, articulation, portamento and voice policy |
+| Sources | Named/file/bank sample descriptors, sample traversal and granular/stretch descriptors, oscillators, FM, noise and wavetable descriptors |
+| Processing | Ordered filter, dynamics, modulation and effect descriptors; automation and envelopes |
+| Mixing | Gain, pan, Track policy, ducking, sends, bus returns and output routing |
+
+`[x x]` subdivides one step. `<a b>` alternates across cycles; `x*8` repeats a leaf. Rhythm and notes accept `~` rests. Note patterns accept simultaneous pitches such as `C4,E4,G4`. Domain patterns retain their own types and support context-inferred string literals.
+
+Patterned gain/pan are sampled at event onsets; scalar gain/pan append ordered post-mix graph operations. They are different stages of processing. Invalid patterns fail during compilation with typed diagnostics and UTF-8 offsets; `compileDetailed` preserves source provenance for a host editor.
+
+Finite compilation and `compile(_:liveLoop:)` are explicit alternatives. Live compilation respects independent pattern periods, retains crossing event durations and emits seamless-loop metadata. The host must implement the corresponding circular playback behavior. Expansion, graph and event limits reject oversized input rather than truncate it.
+
+## Live adoption
 
 ```text
-edit -> beginUpdate -> prepare -> receive -> pending -> host boundary -> current
-                                  failure -> diagnostic (current preserved)
+edit → beginUpdate → prepare → receive → pending → host boundary → current
+                         failure → diagnostic; current stays unchanged
 ```
 
-`RhythmPattern` accepts whitespace-separated `x` and `~`; `NotePattern` accepts scientific pitch names and `~` rests. Their default cycle is four quarter-note beats. C4 is MIDI 60. Note-pattern literals generate a timed sequence; `notes([Pitch])` assigns pitches to existing events. To validate text immediately, use `try RhythmPattern(validating: text)` or `try NotePattern(validating: text)`. Literal conversion itself does not throw.
+`LiveMusicState` is a value owned and isolated by the host. Start a revision with `beginUpdate`, prepare with `LiveMusicUpdate.prepare`, and deliver its final result with `receive`. The host prepares audio resources before adopting through `adoptPendingAtBoundary`. Failed or stale edits cannot replace the current plan. The library does not start an audio device, evaluate Swift source or choose a playback boundary.
 
-Preparation is synchronous and returns immutable beat events and an ordered render plan. An audio host prepares backend resources before calling `receive`, delivering one final success or failure per revision, then adopts at its chosen boundary. The host owns revision allocation, state isolation, clocking, and rendering. `LiveMusicState` handles plan adoption only: no audio backend, automatic bar synchronization, Swift source evaluator, or Editor UI is implemented in this library. The separate MusicPlaygournd package provides those host responsibilities.
+## Development
 
-## Development branch: patterned mix controls
-
-These additions are not included in the published 0.1.0 tag. Gain and pan use separate domain types with context-inferred string literals:
-
-All pattern domains support bracket subdivisions, cycle alternatives such as `<a b>`, and leaf repetition such as `x*8`. Rhythm and notes allow `~` rests; notes also allow simultaneous pitches such as `C4,E4,G4`. Nested alternatives advance independently: `<a <b c>>` produces `a, b, a, c`. Rhythm and notes compile the complete finite period; gain and pan sample their alternatives at each absolute note onset. Pattern errors expose `utf8Offset` for source diagnostics. Expansion is bounded to 1,024 realized leaves or pitches, with typed failures instead of truncation.
-
-Each domain pattern also supports ordered `fast`, `slow`, `phase`, `reversed`, and `repeated` transforms. Phase advances onsets within each selected cycle; reversal preserves alternation-cycle order. Pattern `repeated(2)` fits two local cycles into the caller's cycle, while `Sound.repeated(2)` creates two finite copies. For example, `("<C4 D4>" as NotePattern).repeated(2)` places C4 and D4 inside one four-beat cycle. The `steps` getter retains its source-notation view; compilation resolves transforms against the caller's cycle.
-
-```swift
-Synthesizer(.sine)
-    .notes("C4 C4 C4 C4")
-    .gain("1 0.5 [0.8 0.3] 1")
-    .pan("-1 1")
-```
-
-`GainPattern` and `PanPattern` support independent `fast` and `slow` transformations with integer or fractional rates, such as `pattern.fast(1.5)`. Fractional literals use deferred `PatternRate`; an explicit `try PatternRate(numerator: 3, denominator: 2)` expresses an eagerly validated exact ratio, and `try PatternRate(validating: dynamicDouble)` requests eager validation for dynamic decimal input. Decimal inputs use Swift's shortest decimal spelling, so successive rates of 1.1 and 1.2 compose exactly to 33/25. Values are sampled at each note onset using exact beat time. Gain values multiply; the last pan pattern selects each voice's pan. Invalid literals report typed compilation errors when resolved. Pan accepts finite values from -1 to 1 and uses equal-power panning. Omitting pan preserves existing centered audio; explicitly setting zero applies the same center attenuation as scalar `.pan(0)`. Scalar gain and pan remain ordered post-mix operations.
-
-For a live host, `compile(_:liveLoop:)` repeats rhythm and note patterns independently. It chooses the smallest whole-bar window containing all active periods and finite events. Numeric patterns after a generator are evaluated over their full period; numeric values before a generator are inherited. `oneShot()` keeps a subtree finite, while `repeated` snapshots its current finite template before starting a new recurrence.
-
-```swift
-let policy = try LiveLoopPolicy(
-    beatsPerBar: 4,
-    maximumBeats: MusicalTime(numerator: 32, denominator: 1)
-)
-let loop = try SoundCompiler().compile(
-    Sample("kick").rhythm("x").gain("<1 0.5>"),
-    liveLoop: policy
-)
-// Eight beats: gain 1 at beat 0, gain 0.5 at beat 4.
-```
-
-The existing `compile(_:)` remains finite. Live output has `.seamlessLoop` playback mode, full event durations and stable source identities; a renderer must support circular voices to play crossing notes. Window, event-count and single-window voice-duration violations throw typed compilation errors.
+Run `swift test` from this package root. Tests use Swift Testing and cover actual compiler output, modifier order, validation failures, limits, Observation and revision transitions. Native audio behavior belongs to the separate host package.
 
 ## License
 
-SwiftMusic is available under the [MIT License](LICENSE).
+[MIT License](LICENSE).

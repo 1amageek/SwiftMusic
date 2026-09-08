@@ -4,7 +4,7 @@
 Standalone macOS 15+ live Swift editor; the native package owns the app and host runtime. Parent: none. Children: [Core](Sources/MusicPlaygourndCore/DESIGN.md), [App](Sources/MusicPlaygourndApp/DESIGN.md).
 
 ## Responsibilities and Boundaries
-Uses the local SwiftMusic workspace for unreleased additive source provenance and creates no library tag or release. The movable app bundle contains that exact source package. Editor code is trusted local Swift, evaluated in a separate process, not a security sandbox. Playback, transport, rendering, file editing, diagnostics, and visualization belong to this package.
+The published manifest depends on SwiftMusic 0.2.0 by URL. Build from the matching repository tag so the movable app bundle contains the same SwiftMusic source snapshot used for host compilation. The library release does not complete the independently tracked editor UI acceptance. Editor code is trusted local Swift, evaluated in a separate process, not a security sandbox. Playback, transport, rendering, file editing, diagnostics, and visualization belong to this package.
 
 ## Related Designs
 Use the parent/child links above. Dependencies: SwiftMusic owns event semantics; Core owns rendering/playback/evaluation contracts; App consumes Core.

@@ -9,7 +9,7 @@ let package = Package(
         .library(name: "MusicPlaygourndCore", targets: ["MusicPlaygourndCore"])
     ],
     dependencies: [
-        .package(path: "..")
+        .package(url: "https://github.com/1amageek/SwiftMusic.git", exact: "0.2.0")
     ],
     targets: [
         .target(

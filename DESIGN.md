@@ -8,13 +8,13 @@ SwiftMusic declares immutable `Sound` trees, prepares them as deterministic beat
 
 This task provides one working set in each of six modifier categories: rhythm, pitch and harmony, expression, source settings, audio effects, and mix and routing. Render-plan data describes audio work; this package does not synthesize PCM or prove that an effect was heard.
 
-Playback, an audio backend, editor UI, persistence, MIDI I/O, meter, tempo automation, broad pattern syntax, parameter automation, and notation import/export are outside this package. The package does not create a playback clock or choose when a musical boundary occurs. It preserves compiler call-site provenance for rhythm and note-pattern source rows; clients own layout and edit mapping.
+Playback, an audio backend, editor UI, persistence, hardware MIDI I/O, playback clock automation, and notation import/export are outside this package. Pattern syntax and parameter automation are compiled into bounded events and render-plan descriptors; hosts execute those descriptors. The package does not create a playback clock or choose when a musical boundary occurs. It preserves compiler call-site provenance for rhythm and note-pattern source rows; clients own layout and edit mapping.
 
 ## Responsibilities and Boundaries
 
 SwiftMusic owns `Music`, composable `Sound`, `SoundBuilder`, source declarations, modifier values, exact musical time, bounded preparation, observable render-plan order, separate tempo conversion, and state rules that preserve the last adopted sound across invalid or stale updates. Clients own audio rendering, scheduling, isolation of each mutable `LiveMusicState`, musical-boundary detection, revision allocation, and editor presentation.
 
-The unreleased `Score` API is replaced. `Score`, `ScoreBuilder`, `CompiledScore`, `ScoreCompiler`, `Note`, and `Rest` are removed instead of retained as aliases; the replacement occurred before the 0.1.0 preview tag. MusicPlaygournd uses the local workspace during implementation so compiler provenance and native rendering are verified against the same snapshot. After every accepted sprint and integrated native path passes, the reviewed release snapshot replaces local package references and is published as SwiftMusic 0.2.0 under the release contract in `PROGRESS.md`.
+The unreleased `Score` API is replaced. `Score`, `ScoreBuilder`, `CompiledScore`, `ScoreCompiler`, `Note`, and `Rest` are removed instead of retained as aliases; the replacement occurred before the 0.1.0 preview tag. SwiftMusic 0.2.0 releases the library product under the library verification and external-consumer contract in `PROGRESS.md`. The separately versioned MusicPlaygournd host uses the published library URL. Its pending editor changes and full native UI acceptance remain tracked independently and are not prerequisites or completed claims of the library-only release.
 
 ## Related Designs
 
