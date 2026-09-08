@@ -65,7 +65,7 @@ internal struct _LiveEventProgram {
         case .portamento, .tuning, .sampleRegion, .sampleReversed, .samplePlaybackRate,
              .sampleSlice, .granular, .sampleStretch, .unison,
              .voicePolicy, .chokeGroup,
-             .effect, .gain, .pan, .muted, .send, .output,
+             .effect, .position, .gain, .pan, .muted, .send, .output,
              .pitchEnvelope, .filterEnvelope, .tremolo, .vibrato:
             return self
         default:

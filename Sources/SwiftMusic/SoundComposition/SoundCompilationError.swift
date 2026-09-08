@@ -8,6 +8,8 @@ public enum SoundCompilationError: Error, Equatable, Sendable {
     case invalidCutoffPattern(CutoffPatternError)
     case invalidEnvelopePattern(EnvelopePatternError)
     case invalidSampleSelection(SampleSelectionPatternError)
+    case missingPerformance(String)
+    case invalidPerformance(String)
     case unexpectedFailure(String)
     case invalidParameter(String)
     case unsupportedSourceSetting(String)

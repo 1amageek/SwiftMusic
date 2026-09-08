@@ -9,12 +9,14 @@ public enum LiveMusicUpdate: Sendable, Equatable {
         }
     }
 
-    public static func prepare<M: Music>(
+    @MainActor public static func prepare<M: Music>(
         revision: UInt64,
         music: M,
         using compiler: SoundCompiler = .init()
     ) -> Self {
-        prepare(revision: revision, sound: music.body, using: compiler)
+        do { return .prepared(revision: revision, sound: try compiler.compile(music)) }
+        catch let error as SoundCompilationError { return .failed(revision: revision, error: error) }
+        catch { return .failed(revision: revision, error: .unexpectedFailure(String(describing: error))) }
     }
 
     public static func prepare<S: Sound>(

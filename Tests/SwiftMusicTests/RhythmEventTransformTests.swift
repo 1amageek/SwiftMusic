@@ -1,6 +1,7 @@
 import Testing
 import SwiftMusic
 
+@MainActor
 struct RhythmEventTransformTests {
     private let compiler = SoundCompiler()
 

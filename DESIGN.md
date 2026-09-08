@@ -25,7 +25,7 @@ The unreleased `Score` API is replaced. `Score`, `ScoreBuilder`, `CompiledScore`
 ## Architecture
 
 ```text
-Music.body: some Sound
+MainActor Music.body: some Sound
           |
           v
  Sound tree + ordered modifiers
@@ -48,11 +48,12 @@ edit revision -> LiveMusicUpdate.prepare -> prepared / failed
                  adopted current sound
 ```
 
-The package has no third-party dependency, global mutable state, task, clock access, or I/O.
+The package has no third-party dependency, clock access, or I/O. Optional performance-model resolution and Observation state are MainActor-owned; compiled Sound values remain independent of that state.
 
 ## Contracts and Invariants
 
-- `Music` is the work-level entry; `Sound` is every composable declaration, not PCM storage.
+- `Music` is the MainActor work-level entry; `Sound` is every nonisolated composable declaration, not PCM storage.
+- A performance model is explicitly injected before body evaluation. It is never default-constructed or inferred from arbitrary state, and a missing provider is a typed compilation failure.
 - `SoundBuilder` siblings start at the same musical origin. Parallel composition remains the default.
 - Modifier order is Swift call-chain order from source outward and is observable in transformed events or the render plan.
 - Rhythm, pitch, and expression modifiers transform compiled events in their subtree.
@@ -68,7 +69,7 @@ The package has no third-party dependency, global mutable state, task, clock acc
 
 ## Failure, Concurrency, and Constraints
 
-Preparation is synchronous, deterministic, side-effect free, and bounded by recursive depth, events, tracks, sources, and render nodes. Repetition, pattern expansion, rhythm hits, and chord expansion count against event limits before unbounded allocation. `LiveMusicState` is a mutable `Sendable` value with no internal shared storage; the host must isolate each instance. Public declarations, updates, and results are immutable `Sendable` values.
+Preparation is synchronous, bounded by recursive depth, events, tracks, sources, render nodes and performance requirements, and deterministic for the MainActor-isolated model snapshot read by that body evaluation. Music bodies remain side-effect free even when they read injected state. Repetition, pattern expansion, rhythm hits, and chord expansion count against event limits before unbounded allocation. `LiveMusicState` is a mutable `Sendable` value with no internal shared storage; the host must isolate each instance. Sound declarations, updates, and compiled results are immutable `Sendable` values; injected Observable models have the separate ownership contract above.
 
 This release promises native Swift value and compiler behavior only. It makes no DSP, audible-output, real-time, Embedded Swift, or WASM claim.
 

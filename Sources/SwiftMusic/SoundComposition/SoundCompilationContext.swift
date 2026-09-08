@@ -1,3 +1,5 @@
+import Foundation
+
 internal struct _SoundCompilationContext {
     let limits: SoundCompiler.Limits
     var capturesLiveProgram = false
@@ -746,6 +748,20 @@ internal struct _SoundCompilationContext {
                 to: depth
             )
             try apply(.pitchAutomation(automation), to: &fragment, sourceRange: sourceRange)
+        case .position(let position):
+            guard position.x.isFinite, (-1...1).contains(position.x),
+                  position.depth.isFinite, (0...1).contains(position.depth) else {
+                throw invalid("Spatial position requires x in -1...1 and depth in 0...1")
+            }
+            try apply(.pan(position.x), to: &fragment, sourceRange: sourceRange, sourceIDs: sourceIDs)
+            if position.depth > 0 {
+                try apply(.gain(pow(10, -6 * position.depth / 20)), to: &fragment, sourceRange: sourceRange, sourceIDs: sourceIDs)
+                let cutoff = 20_000 * pow(0.2, position.depth)
+                try apply(.effect(.filter(kind: .lowPass, cutoffHz: cutoff, resonance: 1 / sqrt(2))),
+                          to: &fragment, sourceRange: sourceRange, sourceIDs: sourceIDs)
+                try apply(.effect(.reverb(roomSize: 0.5 + 0.5 * position.depth, wet: 0.35 * position.depth)),
+                          to: &fragment, sourceRange: sourceRange, sourceIDs: sourceIDs)
+            }
         case .gain(let gain):
             try nonnegative(gain, "Gain")
             if let root = try processingRoot(fragment.roots) {

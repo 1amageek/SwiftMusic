@@ -12,7 +12,7 @@ public enum RenderWorker {
     public static func run(
         revision: UInt64,
         outputURL: URL,
-        compile: @escaping @Sendable () throws -> LoopRenderSession
+        compile: @escaping @MainActor @Sendable () throws -> LoopRenderSession
     ) async throws {
         try await runPrepared(revision: revision, outputURL: outputURL) {
             RenderWorkerPreparation(session: try compile())
@@ -23,12 +23,12 @@ public enum RenderWorker {
     public static func runPrepared(
         revision: UInt64,
         outputURL: URL,
-        prepare: @escaping @Sendable () throws -> RenderWorkerPreparation
+        prepare: @escaping @MainActor @Sendable () throws -> RenderWorkerPreparation
     ) async throws {
         let protocolDescriptor = try isolateProtocolOutput()
         defer { Darwin.close(protocolDescriptor) }
 
-        let preparation = try prepare()
+        let preparation = try await prepare()
         let session = preparation.session
         guard session.revision == revision else {
             throw EvaluationError.invalidResult("Compiled worker revision does not match the requested revision.")

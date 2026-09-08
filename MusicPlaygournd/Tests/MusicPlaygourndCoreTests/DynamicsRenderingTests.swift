@@ -3,6 +3,7 @@ import Testing
 import SwiftMusic
 @testable import MusicPlaygourndCore
 
+@MainActor
 struct DynamicsRenderingTests {
     private func compressor(attack: Duration = .zero, release: Duration = .zero,
                             knee: Double = 0, bus: String? = nil) throws -> SidechainCompressor {

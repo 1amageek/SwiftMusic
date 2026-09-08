@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import SwiftMusic
 
+@MainActor
 struct SoundCompositionTests {
     private func pitch(_ value: UInt8) throws -> Pitch {
         try Pitch(midiNote: value)

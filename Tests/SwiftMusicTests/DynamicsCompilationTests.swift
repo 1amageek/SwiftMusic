@@ -1,6 +1,7 @@
 import Testing
 import SwiftMusic
 
+@MainActor
 struct DynamicsCompilationTests {
     private struct Routed<Content: Sound>: Music {
         let content: Content

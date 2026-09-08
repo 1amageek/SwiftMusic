@@ -1,6 +1,7 @@
 import SwiftMusic
 import Testing
 
+@MainActor
 struct LiveDSLIntegrationTests {
     @Test(.timeLimit(.minutes(3)))
     func testPatternBoundariesAndCompilerLimitsRemainExplicitFailures() throws {

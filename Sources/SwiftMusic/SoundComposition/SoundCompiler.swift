@@ -47,28 +47,28 @@ public struct SoundCompiler: Sendable {
         self.limits = limits
     }
 
-    public func compile<M: Music>(_ music: M) throws -> CompiledSound {
-        try compile(music.body)
+    @MainActor public func compile<M: Music>(_ music: M) throws -> CompiledSound {
+        try compile(_PerformanceScope.body(of: music))
     }
 
     /// Compiles while retaining the declaration anchor for pattern failures.
-    public func compileDetailed<M: Music>(_ music: M) throws -> CompiledSound {
-        try compileDetailed(music.body)
+    @MainActor public func compileDetailed<M: Music>(_ music: M) throws -> CompiledSound {
+        try compileDetailed(_PerformanceScope.body(of: music))
     }
 
-    public func compile<M: Music>(
+    @MainActor public func compile<M: Music>(
         _ music: M,
         liveLoop policy: LiveLoopPolicy
     ) throws -> CompiledSound {
-        try compile(music.body, liveLoop: policy)
+        try compile(_PerformanceScope.body(of: music), liveLoop: policy)
     }
 
     /// Compiles a live loop while retaining declaration anchors for pattern failures.
-    public func compileDetailed<M: Music>(
+    @MainActor public func compileDetailed<M: Music>(
         _ music: M,
         liveLoop policy: LiveLoopPolicy
     ) throws -> CompiledSound {
-        try compileDetailed(music.body, liveLoop: policy)
+        try compileDetailed(_PerformanceScope.body(of: music), liveLoop: policy)
     }
 
     public func compile<S: Sound>(_ sound: S) throws -> CompiledSound {

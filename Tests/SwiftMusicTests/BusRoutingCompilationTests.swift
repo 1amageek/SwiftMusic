@@ -1,6 +1,7 @@
 import Testing
 import SwiftMusic
 
+@MainActor
 struct BusRoutingCompilationTests {
     @Test(.timeLimit(.minutes(3)))
     func legacySendAndOutputKeepDeclarationGraphWithoutReturn() throws {

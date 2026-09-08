@@ -47,6 +47,7 @@ internal enum _SoundModifier: Sendable {
     case effect(AudioEffect)
     case tremolo(ModulationRate, Double, LFOWaveform)
     case vibrato(ModulationRate, Semitones, LFOWaveform)
+    case position(SpatialPosition)
     case gain(Double)
     case gainPattern(GainPattern, MusicalTime, SoundSourceAnchor)
     case gainAutomation(GainAutomation)

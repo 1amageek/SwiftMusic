@@ -2,6 +2,7 @@
 public protocol Music: Sendable {
     associatedtype Body: Sound
 
+    @MainActor
     @SoundBuilder
     var body: Body { get }
 }
