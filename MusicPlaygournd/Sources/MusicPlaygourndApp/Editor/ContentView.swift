@@ -39,14 +39,19 @@ struct ContentView: View {
                 HSplitView {
                     editor
                     if !model.inlineLayout && !model.bottomLayout {
+                        VStack(spacing: 0) {
                         TimelineView(loop: model.loop, rowLines: model.rowLines, lineRects: lineRects, beatPosition: model.beatPosition, isPlaying: model.isPlaying, onScroll: { timelineScroll += $0 })
                             .frame(minWidth: 340)
+                        selectedResult
+                        }
                     }
                 }
                 if !model.inlineLayout && model.bottomLayout { rhythm }
             }
             Divider()
-            SpectrumView(bands: model.spectrum, samples: model.outputSamples, isPlaying: model.isPlaying)
+            SpectrumView(bands: model.spectrum, samples: model.outputSamples, isPlaying: model.isPlaying,
+                loop: model.loop, beatPosition: model.beatPosition, performance: model.performance,
+                resetDiagnostics: model.resetPerformanceDiagnostics)
             Divider()
             logs
             Divider()
@@ -97,7 +102,7 @@ struct ContentView: View {
                 scrollDelta: timelineScroll, onLayout: { lineRects = $0 },
                 beforeEdit: model.beforeEdit, onEdit: model.sourceChanged,
                 completions: { source, offset in try await model.completions(source: source, utf16Offset: offset) },
-                onCompletionStatus: { model.completionStatus = $0 })
+                onCompletionStatus: { model.completionStatus = $0 }, selectionRange: model.selectionRange, visualization: model.controlVisualization)
         }.frame(minWidth: 350, minHeight: 220)
     }
 
@@ -112,7 +117,7 @@ struct ContentView: View {
                             .foregroundStyle(.orange)
                     }
                     .buttonStyle(.plain)
-                    .disabled(!model.diagnostic.contains("Session.swift:"))
+                    .disabled(model.diagnosticRange == nil)
                     ScrollView {
                         Text(model.diagnostic)
                             .font(.system(size: 11, design: .monospaced))
@@ -165,7 +170,19 @@ struct ContentView: View {
     }
 
     private var rhythm: some View {
+        VStack(spacing: 0) {
         RhythmView(loop: model.loop, beatPosition: model.beatPosition, isPlaying: model.isPlaying, revealTrack: model.revealTrack)
             .frame(minWidth: 340, minHeight: 230)
+        selectedResult
+        }
     }
+    @ViewBuilder private var selectedResult: some View {
+        if let visualization = model.controlVisualization {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.visualizationStatus).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+                ControlTraceResult(visualization: visualization).frame(height: 88)
+            }.padding(8)
+        }
+    }
+
 }

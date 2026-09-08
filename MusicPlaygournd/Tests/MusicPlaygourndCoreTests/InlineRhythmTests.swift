@@ -1,11 +1,34 @@
 import AppKit
 import MusicPlaygourndCore
 import Testing
+import SwiftMusic
 @testable import MusicPlaygourndApp
 
 extension NativeHostTests {
     @MainActor
     struct InlineRhythmTests {
+        @Test(.timeLimit(.minutes(1)))
+        func finalPitchAndLimitationsUseRenderedMetadata() throws {
+            let base = Synthesizer(.sine).notes("C4")
+            let steps = try StepAutomation(values: [0, 1], cycle: .whole)
+            let varying = try PitchAutomation(.steps(steps), from: Semitones(value: 0), to: Semitones(value: 12))
+            let sounds = [base.transpose(PitchPattern("12")), base.transpose(PitchPattern("0.5")), base.transpose(varying)]
+            let expected = ["MIDI 72", "fractional pitch", "time-varying pitch"]
+            for (sound, text) in zip(sounds, expected) {
+                let loop = try LoopRenderer().render(SoundCompiler().compile(sound), bpm: 120, beatsPerBar: 4)
+                let event = try #require(loop.events.first)
+                #expect(event.pitchDescription == text)
+                let card = InlineRhythmView(frame: CGRect(x: 0, y: 0, width: 500, height: 100))
+                card.update(row: try #require(loop.rows.first), events: loop.events,
+                    beats: loop.beatCount, meter: 4, beat: 0, playing: true)
+                card.layoutSubtreeIfNeeded()
+                let labels = card.subviews.compactMap { ($0 as? NSTextField)?.stringValue }
+                #expect(card.toolTip?.contains(text) == true)
+                if text == "MIDI 72" { #expect(labels.contains("C5")); #expect(!labels.contains("C4")) }
+                else { #expect(labels.first?.contains(text) == true); #expect(event.displayedMIDINote == nil) }
+            }
+        }
+
         @Test(.timeLimit(.minutes(3)))
         func testContinuationIsVisibleAndActiveOnBothSidesOfTheInlineCard() throws {
             let card = InlineRhythmView(frame: CGRect(x: 0, y: 0, width: 400, height: 100))

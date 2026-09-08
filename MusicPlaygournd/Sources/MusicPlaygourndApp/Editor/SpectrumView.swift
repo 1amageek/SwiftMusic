@@ -5,8 +5,13 @@ struct SpectrumView: View {
     let bands: [Float]
     let samples: [Float]
     let isPlaying: Bool
+    var loop: PreparedLoop? = nil
+    var beatPosition: Double = 0
+    var performance: PlaybackPerformanceSnapshot? = nil
+    var resetDiagnostics: () -> Void = {}
 
     var body: some View {
+        VStack(spacing: 5) {
         HStack(spacing: 21) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 5) {
@@ -60,7 +65,37 @@ struct SpectrumView: View {
                 }
             }
             .accessibilityLabel("Master output spectrum, 20 hertz to 20 kilohertz, \(isPlaying ? "playing" : "paused")")
-        }.padding(.horizontal, 21).padding(.vertical, 13).frame(height: 130)
+        }.frame(height: 104)
+        meters
+        }.padding(.horizontal, 21).padding(.vertical, 10)
             .background(Color(red: 0.035, green: 0.045, blue: 0.055))
     }
+    private var meters: some View {
+        HStack(spacing: 14) {
+            if let performance {
+                Text(performance.callbackLoad.map { String(format: "SOURCE CPU %.1f%%", $0 * 100) } ?? "SOURCE CPU —")
+                    .help("Source callback time divided by its audio duration; excludes Audio Unit and system CPU.")
+                Text("DROPOUTS \(performance.dropoutCount)")
+                Text(performance.peak.map { String(format: "MASTER %.2f", $0) } ?? "MASTER —")
+                Text(performance.clipped ? "CLIP" : "OK").foregroundStyle(performance.clipped ? .red : .mint)
+                Button("Reset", action: resetDiagnostics).buttonStyle(.plain)
+            } else { Text("Master telemetry unavailable") }
+            Divider().frame(height: 12)
+            ScrollView(.horizontal) {
+                HStack(spacing: 14) {
+                    ForEach(loop?.meters ?? [], id: \.target) { meter in
+                        let index = min(meter.peaks.count - 1, max(0, Int(beatPosition / (loop?.beatCount ?? 1) * Double(meter.peaks.count))))
+                        let peak = isPlaying ? meter.peaks[index] : 0
+                        HStack(spacing: 4) {
+                            Text(meter.label).help("Rendered Track/Bus signal before native master processing.")
+                            ProgressView(value: Double(min(1, peak))).frame(width: 48).tint(peak >= 1 ? .red : .mint)
+                            Text(peak >= 1 ? "CLIP" : String(format: "%.2f", peak))
+                        }.accessibilityLabel("\(meter.label) rendered peak \(peak)")
+                    }
+                    if loop?.meters == nil { Text("Track/Bus meters unavailable") }
+                }
+            }.scrollIndicators(.hidden)
+        }.font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary).frame(height: 18)
+    }
+
 }

@@ -23,8 +23,13 @@ extension NativeHostTests {
             let range = (original as NSString).range(of: "ga", options: .backwards)
             let item = SwiftCompletion(label: "gain(value: Double)", detail: nil,
                 insertion: "gain(0.5)", replacementRange: range,
-                selectionRange: NSRange(location: 5, length: 3))
+                selectionRange: NSRange(location: 5, length: 3),
+                annotation: CompletionAnnotation(unit: "amplitude", minimum: 0, maximum: 2))
             editor.presentCompletions([item], source: original, selection: editor.selectedRange())
+            let cell = try #require(editor.tableView(NSTableView(), viewFor: nil, row: 0) as? NSStackView)
+            let labels = cell.arrangedSubviews.compactMap { $0 as? NSTextField }
+            #expect(labels.map(\.stringValue) == ["gain(value: Double)", "amplitude 0…2"])
+            #expect(labels[1].contentCompressionResistancePriority(for: .horizontal) == .required)
             editor.moveCompletion(by: 1)
             #expect(editor.string == original)
             #expect(observer.changes == 0)
@@ -92,8 +97,13 @@ extension NativeHostTests {
             let range = (original as NSString).range(of: "ga", options: .backwards)
             let item = SwiftCompletion(label: "gain(value: Double)", detail: nil,
                 insertion: "gain(0.5)", replacementRange: range,
-                selectionRange: NSRange(location: 5, length: 3))
+                selectionRange: NSRange(location: 5, length: 3),
+                annotation: CompletionAnnotation(unit: "amplitude", minimum: 0, maximum: 2))
             editor.presentCompletions([item], source: original, selection: editor.selectedRange())
+            let cell = try #require(editor.tableView(NSTableView(), viewFor: nil, row: 0) as? NSStackView)
+            let labels = cell.arrangedSubviews.compactMap { $0 as? NSTextField }
+            #expect(labels.map(\.stringValue) == ["gain(value: Double)", "amplitude 0…2"])
+            #expect(labels[1].contentCompressionResistancePriority(for: .horizontal) == .required)
             let event = try #require(NSEvent.keyEvent(
                 with: .keyDown,
                 location: .zero,

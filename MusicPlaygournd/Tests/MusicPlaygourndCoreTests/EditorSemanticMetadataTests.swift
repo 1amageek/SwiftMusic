@@ -82,6 +82,14 @@ struct EditorSemanticMetadataTests {
         let decoder = PropertyListDecoder()
         let roundTrip = try decoder.decode(EditorSemanticMetadata.self, from: encoder.encode(metadata))
         #expect(roundTrip == metadata)
+        let empty = try EditorSemanticMetadata.SampleCompletionSite(
+            sourceID: 0, contentRange: NSRange(location: 4, length: 0), values: ["kick"])
+        #expect(try decoder.decode(EditorSemanticMetadata.SampleCompletionSite.self,
+            from: encoder.encode(empty)) == empty)
+        #expect(throws: (any Error).self) {
+            try EditorSemanticMetadata.SampleCompletionSite(
+                sourceID: 0, contentRange: NSRange(location: 4, length: -1), values: ["kick"])
+        }
 
         let malformed: [String: Any] = [
             "revision": 45,

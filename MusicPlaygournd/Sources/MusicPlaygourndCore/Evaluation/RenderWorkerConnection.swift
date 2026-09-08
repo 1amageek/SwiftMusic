@@ -70,6 +70,7 @@ internal actor RenderWorkerConnection {
     private var latestVisualizationOperationID: UInt64 = 0
     private var latestVisualizationAddress: LiveControlAddress?
     private var exportCancellationRequested = false
+    private var protocolCloseDeadline: ContinuousClock.Instant?
     private var readyDeadline: ContinuousClock.Instant?
     private var renderDeadline: ContinuousClock.Instant?
     private var exportDeadline: ContinuousClock.Instant?
@@ -485,7 +486,7 @@ internal actor RenderWorkerConnection {
     private func pump() async {
         while !stopping {
             do {
-                try readDiagnostics()
+                let diagnosticEOF = try readDiagnostics()
                 try writeCommand()
                 var bytes = [UInt8](repeating: 0, count: 16_384)
                 let count = Darwin.read(output.fileDescriptor, &bytes, bytes.count)
@@ -496,14 +497,18 @@ internal actor RenderWorkerConnection {
                 } else if count == 0 {
                     try parser.finish()
                     if closing { return }
-                    if let compilerDiagnostic = WorkerCompilerDiagnostic.decode(from: diagnostic) {
-                        throw EvaluationError.workerCompilerDiagnostic(compilerDiagnostic)
+                    if protocolCloseDeadline == nil { protocolCloseDeadline = .now.advanced(by: .seconds(10)) }
+                    // Preparation unwinds protocol ownership before the outer entry point writes stderr.
+                    if diagnosticEOF {
+                        if let compilerDiagnostic = WorkerCompilerDiagnostic.decode(from: diagnostic) {
+                            throw EvaluationError.workerCompilerDiagnostic(compilerDiagnostic)
+                        }
+                        throw EvaluationError.processFailed("Worker exited. \(String(decoding: diagnostic, as: UTF8.self))")
                     }
-                    throw EvaluationError.processFailed("Worker exited. \(String(decoding: diagnostic, as: UTF8.self))")
                 } else if errno != EAGAIN && errno != EINTR {
                     throw EvaluationError.processFailed("Worker protocol read failed.")
                 }
-                let deadlines = [readyDeadline, renderDeadline, exportDeadline, visualizationDeadline, performanceDeadline, performanceCommandDeadline].compactMap { $0 }
+                let deadlines = [readyDeadline, renderDeadline, exportDeadline, visualizationDeadline, performanceDeadline, performanceCommandDeadline, protocolCloseDeadline].compactMap { $0 }
                 if let deadline = deadlines.min(), ContinuousClock.now >= deadline {
                     throw EvaluationError.timedOut("Worker exceeded 10 seconds; the previous loop continues.")
                 }
@@ -514,7 +519,7 @@ internal actor RenderWorkerConnection {
         }
     }
 
-    private func readDiagnostics() throws {
+    private func readDiagnostics() throws -> Bool {
         var bytes = [UInt8](repeating: 0, count: 16_384)
         let count = Darwin.read(errors.fileDescriptor, &bytes, bytes.count)
         if count > 0 {
@@ -525,6 +530,7 @@ internal actor RenderWorkerConnection {
         } else if count < 0, errno != EAGAIN && errno != EINTR {
             throw EvaluationError.processFailed("Worker diagnostic read failed.")
         }
+        return count == 0
     }
 
     private func writeCommand() throws {

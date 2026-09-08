@@ -6,6 +6,44 @@ import SwiftMusic
 
 extension NativeHostTests {
 struct RenderWorkerConnectionTests {
+    @Test(.timeLimit(.minutes(1)))
+    func closedProtocolWithOpenDiagnosticsIsBoundedAfterReadiness() async throws {
+        let fixture = try makeFixture(mode: .closedOutput)
+        let connection = try RenderWorkerConnection(executable: fixture.executable,
+            outputURL: fixture.workspace.appending(path: "prepared.plist"), revision: 12)
+        let pid = try await fixture.pid()
+        _ = try await connection.ready()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(14))
+        while await connection.isAvailable, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(await connection.isAvailable == false)
+        await connection.shutdown()
+        try await fixture.waitUntilGone(pid)
+        try fixture.remove()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func protocolClosureDrainsDelayedCompilerDiagnosticBeforeFailure() async throws {
+        let fixture = try makeFixture(mode: .delayedDiagnostic)
+        let connection = try RenderWorkerConnection(executable: fixture.executable,
+            outputURL: fixture.workspace.appending(path: "prepared.plist"), revision: 12)
+        let pid = try await fixture.pid()
+        do {
+            _ = try await connection.ready()
+            Issue.record("A failed compiler must not publish readiness")
+        } catch let error as EvaluationError {
+            if case .workerCompilerDiagnostic(let diagnostic) = error {
+                #expect(diagnostic.revision == 12)
+                #expect(diagnostic.patternText == "1 nope")
+                #expect(diagnostic.utf8Offset == 2)
+            } else { Issue.record("Lost delayed diagnostic: \(error)") }
+        }
+        await connection.shutdown()
+        try await fixture.waitUntilGone(pid)
+        try fixture.remove()
+    }
+
     @Test(.timeLimit(.minutes(3)))
     func malformedFrameFailsWithTypedErrorAndReapsWorker() async throws {
         let fixture = try makeFixture(mode: .malformed)
@@ -307,6 +345,8 @@ struct RenderWorkerConnectionTests {
 
     private enum FixtureMode: String {
         case malformed
+        case delayedDiagnostic
+        case closedOutput
         case delayedLatest
         case exportCancellation
         case malformedManifest
@@ -582,6 +622,43 @@ struct RenderWorkerConnectionTests {
             sys.stdout.buffer.write(open(\(pythonLiteral(workspace.appending(path: "ready.frame").path)), "rb").read())
             sys.stdout.buffer.flush()
             time.sleep(60)
+            """
+        case .closedOutput:
+            let loop = PreparedLoop(sampleRate: 44_100, bpm: 120, beatsPerBar: 4, beatCount: 4,
+                samples: [Float](repeating: 0, count: 176_400), events: [])
+            let encoder = PropertyListEncoder()
+            encoder.outputFormat = .binary
+            try encoder.encode(WorkerPreparedResult(revision: 12, generation: 0, loop: loop))
+                .write(to: workspace.appending(path: "prepared.plist"))
+            try RenderWorkerFraming.encode(RenderWorkerResponse.ready(revision: 12,
+                catalog: LiveControlCatalog(descriptors: [])))
+                .write(to: workspace.appending(path: "ready.frame"))
+            script = """
+            #!/usr/bin/env python3
+            import os, sys, time
+            \(pidWrite)
+            sys.stdout.buffer.write(open(\(pythonLiteral(workspace.appending(path: "ready.frame").path)), "rb").read())
+            sys.stdout.buffer.flush()
+            time.sleep(0.1)
+            os.close(1)
+            time.sleep(60)
+            """
+        case .delayedDiagnostic:
+            let located = LocatedSoundCompilationError(
+                underlying: .invalidGainPattern(.invalidToken(token: "nope", index: 1, offset: 2)),
+                anchor: SoundSourceAnchor(fileID: "Session.swift", line: 4, column: 33),
+                utf8Offset: 2, patternText: "1 nope")
+            let data = try WorkerCompilerDiagnostic(revision: 12, error: located).encodedStderrLine()
+            try data.write(to: workspace.appending(path: "diagnostic"))
+            script = """
+            #!/usr/bin/env python3
+            import os, sys, time
+            \(pidWrite)
+            os.close(1)
+            time.sleep(1)
+            sys.stderr.buffer.write(open(\(pythonLiteral(workspace.appending(path: "diagnostic").path)), "rb").read())
+            sys.stderr.buffer.flush()
+            sys.exit(1)
             """
         case .malformed:
             script = """

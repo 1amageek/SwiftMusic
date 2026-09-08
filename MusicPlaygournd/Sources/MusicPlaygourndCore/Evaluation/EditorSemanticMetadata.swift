@@ -51,7 +51,7 @@ public struct EditorSemanticMetadata: Codable, Sendable, Equatable, Hashable {
         public var replacementRange: NSRange { contentRange }
 
         public init(sourceID: Int, contentRange: NSRange, values: [String]) throws {
-            guard sourceID >= 0, contentRange.location >= 0, contentRange.length > 0,
+            guard sourceID >= 0, contentRange.location >= 0, contentRange.length >= 0,
                   contentRange.location <= 65_536,
                   contentRange.length <= 65_536 - contentRange.location,
                   !values.isEmpty, values.count <= 1_024 else {

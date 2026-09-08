@@ -54,7 +54,7 @@ struct RhythmView: View {
                                             width: max(3, (range.upperBound - range.lowerBound) * scale - 3), height: size.height - 16)
                                         let active = isPlaying && event.gain > 0 && event.isActive(at: beatPosition, in: loop.beatCount)
                                         context.fill(Path(roundedRect: rect, cornerRadius: 5), with: .color(colors[index % colors.count].opacity(active ? 1 : 0.5)))
-                                        if let note = event.midiNote, rect.width > 23 {
+                                        if let note = event.displayedMIDINote, rect.width > 23 {
                                             let pitchNames = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"]
                                             let label = Text("\(pitchNames[note % 12])\(note / 12 - 1)").font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundColor(.black.opacity(0.8))
                                             context.draw(label, at: CGPoint(x: rect.midX, y: rect.midY))
@@ -68,6 +68,7 @@ struct RhythmView: View {
                             }.frame(height: 58)
                                 .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 6))
                                 .accessibilityLabel("\(name), \(events.count) notes in \(Int(loop.beatCount)) beats")
+                                .help(events.map(\.eventDescription).joined(separator: "\n"))
                         }
                     }
                 }
@@ -93,5 +94,28 @@ struct RhythmView: View {
             }
         }.padding(26).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(Color(red: 0.075, green: 0.09, blue: 0.105))
+    }
+}
+
+// Presentation consumes the renderer's final pitch capability, never source-note guesses.
+extension LoopEvent {
+    var displayedMIDINote: Int? {
+        if case .note(let value) = midiProjection { return value }
+        return nil
+    }
+
+    var pitchDescription: String {
+        switch midiProjection {
+        case .none: "unpitched"
+        case .note(let value): "MIDI \(value)"
+        case .unsupported(.fractionalPitch): "fractional pitch"
+        case .unsupported(.timeVaryingPitch): "time-varying pitch"
+        case .unsupported(.legacyMetadataMissing): "pitch metadata unavailable"
+        case .unsupported(.outOfRange): "pitch outside MIDI range"
+        }
+    }
+
+    var eventDescription: String {
+        "onset \(startBeat), duration \(durationBeats), \(pitchDescription)"
     }
 }

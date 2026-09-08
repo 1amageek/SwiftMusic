@@ -18,7 +18,7 @@ final class InlineRhythmLayout: NSObject, @MainActor NSLayoutManagerDelegate {
         editor.layoutManager?.delegate = self
     }
 
-    func update(loop: PreparedLoop?, rowLines: [Int: Int], enabled: Bool, beat: Double, isPlaying: Bool) {
+    func update(loop: PreparedLoop?, rowLines: [Int: Int], enabled: Bool, beat: Double, isPlaying: Bool, visualization: PreparedControlVisualization? = nil) {
         guard let editor, let manager = editor.layoutManager else { return }
         let rows = enabled ? (loop?.rows ?? []) : []
         let mapped = Dictionary(uniqueKeysWithValues: rows.compactMap { row in
@@ -54,7 +54,7 @@ final class InlineRhythmLayout: NSObject, @MainActor NSLayoutManagerDelegate {
                 if card.superview == nil { editor.addSubview(card) }
                 cards[row.sourceID] = card
                 card.update(row: row, events: loop.events.filter { $0.sourceID == row.sourceID },
-                    beats: loop.beatCount, meter: loop.beatsPerBar, beat: beat, playing: isPlaying)
+                    beats: loop.beatCount, meter: loop.beatsPerBar, beat: beat, playing: isPlaying, visualization: visualization)
             }
         }
         layoutCards()

@@ -8,6 +8,7 @@ final class InlineRhythmView: NSView {
     private let lowLabel = NSTextField(labelWithString: "")
     private let highLabel = NSTextField(labelWithString: "")
     private var row: LoopRow?
+    private var visualization: PreparedControlVisualization?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -28,7 +29,8 @@ final class InlineRhythmView: NSView {
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    func update(row: LoopRow, events: [LoopEvent], beats: Double, meter: Int, beat: Double, playing: Bool) {
+    func update(row: LoopRow, events: [LoopEvent], beats: Double, meter: Int, beat: Double, playing: Bool, visualization: PreparedControlVisualization? = nil) {
+        self.visualization = visualization
         self.row = row
         self.events = events
         self.beats = beats
@@ -36,7 +38,13 @@ final class InlineRhythmView: NSView {
         self.beat = beat
         self.playing = playing
         titleLabel.stringValue = row.label
-        let notes = events.compactMap(\.midiNote)
+        if let visualization, visualization.address.target == .source(row.sourceID) {
+            titleLabel.stringValue += " · \(visualization.address.parameter) · individual curve scales"
+        }
+        let limitations = Set(events.filter { if case .unsupported = $0.midiProjection { return true }; return false }.map(\.pitchDescription))
+        if !limitations.isEmpty { titleLabel.stringValue += " · " + limitations.sorted().joined(separator: ", ") }
+        toolTip = events.map(\.eventDescription).joined(separator: "\n")
+        let notes = events.compactMap(\.displayedMIDINote)
         let low = notes.min() ?? 0
         let high = notes.max() ?? low
         let names = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"]
@@ -52,7 +60,7 @@ final class InlineRhythmView: NSView {
     override func layout() {
         super.layout()
         titleLabel.frame = CGRect(x: 12, y: 5, width: max(1, bounds.width - 24), height: 16)
-        let notes = events.compactMap(\.midiNote)
+        let notes = events.compactMap(\.displayedMIDINote)
         let low = notes.min() ?? 0
         let high = notes.max() ?? low
         lowLabel.frame = CGRect(x: 12, y: 28 + CGFloat(high - low) * 55 / CGFloat(max(1, high - low + 1)), width: 32, height: 14)
@@ -68,7 +76,7 @@ final class InlineRhythmView: NSView {
         let plot = bounds.insetBy(dx: 12, dy: 0)
         let area = CGRect(x: plot.minX + 32, y: 28, width: max(1, plot.width - 32), height: 55)
         let scale = area.width / max(1, beats)
-        let notes = events.compactMap(\.midiNote)
+        let notes = events.compactMap(\.displayedMIDINote)
         let low = notes.min() ?? 0
         let high = notes.max() ?? low
         let lanes = max(1, high - low + 1)
@@ -83,13 +91,16 @@ final class InlineRhythmView: NSView {
         }
         for event in events {
             let active = playing && event.gain > 0 && event.isActive(at: beat, in: beats)
-            let y = area.minY + CGFloat(high - (event.midiNote ?? high)) * laneHeight
+            let y = area.minY + CGFloat(high - (event.displayedMIDINote ?? high)) * laneHeight
             NSColor.systemMint.withAlphaComponent(active ? 1 : (event.gain > 0 ? 0.45 : 0.12)).setFill()
             event.forEachBeatRange(in: beats) { range in
                 let rect = CGRect(x: area.minX + range.lowerBound * scale, y: y + 1,
                     width: max(2, (range.upperBound - range.lowerBound) * scale - 2), height: max(2, laneHeight - 2))
                 NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2).fill()
             }
+        }
+        if let visualization, let row, visualization.address.target == .source(row.sourceID) {
+            ControlTracePlot.draw(visualization, sourceID: row.sourceID, in: area)
         }
         let cursor = NSBezierPath()
         let x = area.minX + beat * scale

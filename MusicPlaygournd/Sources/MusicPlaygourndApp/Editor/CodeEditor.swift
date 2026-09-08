@@ -21,6 +21,8 @@ struct CodeEditor: NSViewRepresentable {
     let onEdit: () -> Void
     let completions: @MainActor (String, Int) async throws -> [SwiftCompletion]
     let onCompletionStatus: (String) -> Void
+    var selectionRange: NSRange? = nil
+    var visualization: PreparedControlVisualization? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -103,10 +105,17 @@ struct CodeEditor: NSViewRepresentable {
             clip.scroll(to: CGPoint(x: clip.bounds.minX, y: y))
             scroll.reflectScrolledClipView(clip)
         }
-        context.coordinator.inlineLayout?.update(loop: inlineLoop, rowLines: resultLines, enabled: inlineEnabled, beat: beatPosition, isPlaying: isPlaying)
+        context.coordinator.inlineLayout?.update(loop: inlineLoop, rowLines: resultLines, enabled: inlineEnabled, beat: beatPosition, isPlaying: isPlaying, visualization: visualization)
         context.coordinator.publishLayout()
         context.coordinator.highlightPlayback(editor)
-        if context.coordinator.lastSelection != selectionToken, let selectionLine {
+        if context.coordinator.lastSelection != selectionToken, let range = selectionRange {
+            context.coordinator.lastSelection = selectionToken
+            let count = (editor.string as NSString).length
+            guard range.location >= 0, range.location <= count, range.length >= 0, range.length <= count - range.location else { return }
+            editor.setSelectedRange(range)
+            editor.scrollRangeToVisible(range)
+            editor.window?.makeFirstResponder(editor)
+        } else if context.coordinator.lastSelection != selectionToken, let selectionLine {
             context.coordinator.lastSelection = selectionToken
             let lines = editor.string.components(separatedBy: "\n")
             guard selectionLine > 0, selectionLine <= lines.count else { return }

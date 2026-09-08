@@ -102,11 +102,27 @@ final class CompletionTextView: NSTextView, NSTableViewDataSource, NSTableViewDe
     func numberOfRows(in tableView: NSTableView) -> Int { candidates.count }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let label = NSTextField(labelWithString: candidates[row].label)
+        let candidate = candidates[row]
+        let label = NSTextField(labelWithString: candidate.label)
         label.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         label.lineBreakMode = .byTruncatingTail
-        label.toolTip = candidates[row].detail
-        return label
+        label.toolTip = candidate.detail
+        guard let annotation = candidate.annotation else { return label }
+        var text = annotation.unit ?? ""
+        if let minimum = annotation.minimum, let maximum = annotation.maximum {
+            text += String(format: " %.3g…%.3g", minimum, maximum)
+        }
+        if annotation.scale == "logarithmic" { text += " log" }
+        let detail = NSTextField(labelWithString: text)
+        detail.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        detail.textColor = .secondaryLabelColor
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        detail.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let stack = NSStackView(views: [label, detail])
+        stack.orientation = .horizontal
+        stack.spacing = 8
+        stack.toolTip = [candidate.label, text, candidate.detail].compactMap { $0 }.joined(separator: "\n")
+        return stack
     }
 
     func accept(_ candidate: SwiftCompletion) {

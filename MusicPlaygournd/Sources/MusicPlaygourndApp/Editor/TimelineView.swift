@@ -71,6 +71,7 @@ struct TimelineView: View {
                         cursor.addLine(to: CGPoint(x: x, y: size.height))
                         context.stroke(cursor, with: .color(.mint.opacity(isPlaying ? 0.8 : 0.18)), lineWidth: 1)
                     }
+                    .help(loop.events.map(\.eventDescription).joined(separator: "\n"))
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Source wave timeline, \(rowLines.count) aligned sources, \(loop.events.count) note events")
                     .overlay(alignment: .bottomLeading) {

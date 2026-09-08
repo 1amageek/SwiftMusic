@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 
 @MainActor @Observable
 final class SessionModel {
-    var source = SessionModel.initialSource
+    var source = SessionModel.initialSource { didSet { diagnosticRange = nil } }
     private var masterBPM = 120.0
     var bpm: Double {
         get { performanceBPMControlID.flatMap { performanceNumber($0) } ?? masterBPM }
@@ -47,7 +47,7 @@ final class SessionModel {
     }
     var outputSamples = [Float](repeating: 0, count: 4096)
     var beatsPerBar = 4
-    var diagnostic = ""
+    var diagnostic = "" { didSet { diagnosticRange = nil } }
     var status = "Ready to play"
     var isPreparing = false
     var isPlaying = false
@@ -61,6 +61,11 @@ final class SessionModel {
     var currentRevision: UInt64?
     var revision: UInt64 = 0
     var selectionLine: Int?
+    var selectionRange: NSRange?
+    private(set) var diagnosticRange: NSRange?
+    private(set) var completionSites: [EditorSemanticMetadata.SampleCompletionSite] = []
+    private var completionSource = ""
+    private var candidateMetadata: [UInt64: EditorSemanticMetadata] = [:]
     var selectionToken = 0
     var fileURL: URL?
     var hasUnsavedChanges = false
@@ -191,7 +196,16 @@ final class SessionModel {
     }
 
     func completions(source: String, utf16Offset: Int) async throws -> [SwiftCompletion] {
-        try await completionService.completions(source: source, utf16Offset: utf16Offset)
+        if source == self.source, source == completionSource, let site = completionSites.first(where: {
+            utf16Offset >= $0.contentRange.location && utf16Offset <= NSMaxRange($0.contentRange)
+        }), NSMaxRange(site.contentRange) <= source.utf16.count {
+            let prefix = (source as NSString).substring(with: NSRange(location: site.contentRange.location,
+                length: utf16Offset - site.contentRange.location))
+            return site.values.filter { $0.hasPrefix(prefix) }.map {
+                SwiftCompletion(label: $0, detail: "Sample bank", insertion: $0, replacementRange: site.contentRange)
+            }
+        }
+        return try await completionService.completions(source: source, utf16Offset: utf16Offset)
     }
 
     func sourceChanged() {
@@ -228,6 +242,7 @@ final class SessionModel {
         let tempo = 120.0
         let meter = beatsPerBar
         diagnostic = ""
+        diagnosticRange = nil
         isPreparing = true
         status = loop == nil ? "Preparing your first loop…" : "Preparing edit · current loop continues"
         evaluationTask = Task { [weak self, evaluator] in
@@ -241,6 +256,7 @@ final class SessionModel {
                 guard let engine = self.engine else { throw EvaluationError.invalidResult(self.audioError) }
                 self.lineMaps[requested] = SourceLineMap(source: text, lines: candidate.rows.flatMap { [$0.anchor?.line, $0.resultLine].compactMap { $0 } })
                 self.candidateCatalogs = [requested: evaluation.catalog]
+                self.candidateMetadata = [requested: evaluation.metadata]
                 self.candidatePerformanceControls = [requested: evaluation.performanceControls]
                 if let issue = evaluation.performanceTransferIssue {
                     self.candidatePerformanceTransferIssues = [requested: issue]
@@ -259,6 +275,9 @@ final class SessionModel {
                 guard let self, requested == self.revision else { return }
                 self.isPreparing = false
                 self.diagnostic = error.localizedDescription
+                if case EvaluationError.compilerDiagnostic(_, let range) = error, self.source == text {
+                    self.diagnosticRange = range?.utf16Range
+                }
                 self.status = self.loop == nil ? "Fix the error to start" : "Edit failed · previous loop continues"
             }
         }
@@ -598,6 +617,10 @@ final class SessionModel {
             guard currentRevision == intent.revision, revision == intent.revision,
                   requestedPerformanceGeneration == intent.generation else { return }
             diagnostic = error.localizedDescription
+            if case EvaluationError.compilerDiagnostic(_, let range) = error,
+               adoptedSourceDigest == DocumentHostStateStore.sourceDigest(source) {
+                diagnosticRange = range?.utf16Range
+            }
             status = "Performance update failed · previous loop continues"
         }
     }
@@ -656,6 +679,10 @@ final class SessionModel {
         }
         controlCatalog = nextCatalog
         candidateCatalogs[revision] = transaction.evaluation.catalog
+        candidateMetadata[revision] = transaction.evaluation.metadata
+        completionSource = source
+        completionSites = adoptedSourceDigest == DocumentHostStateStore.sourceDigest(source)
+            ? transaction.evaluation.metadata.completionSites : []
         candidatePerformanceControls[revision] = nextPerformanceControls
         candidatePerformanceTransferIssues.removeValue(forKey: revision)
         if graphChanged {
@@ -802,6 +829,26 @@ final class SessionModel {
     }
 
     func beforeEdit(range: NSRange, replacement: String) {
+        diagnosticRange = nil
+        selectionRange = nil
+        if source != completionSource || range.location < 0 || range.length < 0 || range.location > source.utf16.count
+            || range.length > source.utf16.count - range.location {
+            completionSites = []
+            completionSource = ""
+        } else {
+            completionSource = (source as NSString).replacingCharacters(in: range, with: replacement)
+        }
+        let delta = replacement.utf16.count - range.length
+        completionSites = completionSites.compactMap { site in
+            var content = site.contentRange
+            if range.location >= content.location, NSMaxRange(range) <= NSMaxRange(content),
+                    !replacement.contains(where: { $0 == "\"" || $0 == "\\" || $0.isNewline }) {
+                content.length += delta
+            } else { return nil }
+            guard content.length >= 0 else { return nil }
+            do { return try .init(sourceID: site.sourceID, contentRange: content, values: site.values) }
+            catch { hostDiagnostic = error.localizedDescription; return nil }
+        }
         for key in Array(lineMaps.keys) { lineMaps[key]?.applyEdit(range: range, replacement: replacement) }
     }
 
@@ -820,12 +867,13 @@ final class SessionModel {
     }
 
     func revealDiagnostic() {
-        guard let range = diagnostic.range(of: #"Session\.swift:([0-9]+):"#, options: .regularExpression) else { return }
-        let part = String(diagnostic[range]).split(separator: ":")
-        if part.count > 1, let line = Int(part[1]) { selectionLine = line; selectionToken += 1 }
+        guard let diagnosticRange else { return }
+        selectionRange = diagnosticRange
+        selectionToken += 1
     }
 
     func revealTrack(_ name: String) {
+        selectionRange = nil
         let literal = "Track(\"\(name)\""
         guard let range = source.range(of: literal) else { return }
         selectionLine = source[..<range.lowerBound].filter { $0 == "\n" }.count + 1
@@ -1212,6 +1260,8 @@ final class SessionModel {
         }?.controlID
     }
 
+    func resetPerformanceDiagnostics() { engine?.resetDiagnostics() }
+
     var displayedBPM: Double {
         if let performanceBPMControlID, let value = performanceNumber(performanceBPMControlID) {
             return value
@@ -1367,6 +1417,10 @@ final class SessionModel {
 
     private func adoptedControlsDidChange(revision: UInt64) {
         adoptedSourceDigest = candidateSourceDigests[revision]
+        completionSource = source
+        completionSites = adoptedSourceDigest == DocumentHostStateStore.sourceDigest(source)
+            ? (candidateMetadata[revision]?.completionSites ?? []) : []
+        candidateMetadata = candidateMetadata.filter { $0.key == revision }
         candidateSourceDigests = candidateSourceDigests.filter { $0.key == revision }
         if !learnedBindings.isEmpty { hostDiagnostic = "MIDI Learn bindings were detached after the score changed." }
         learnedBindings.removeAll()
