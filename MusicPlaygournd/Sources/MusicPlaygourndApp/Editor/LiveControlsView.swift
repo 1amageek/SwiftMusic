@@ -1,5 +1,6 @@
 import AppKit
 import MusicPlaygourndCore
+import SwiftMusic
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -16,7 +17,12 @@ struct LiveControlsView: View {
 
     var body: some View {
         DisclosureGroup("Live Controls", isExpanded: $expanded) {
-            HStack(alignment: .top, spacing: 20) {
+            VStack(alignment: .leading, spacing: 10) {
+                if !model.performanceControlMetadata.isEmpty {
+                    performanceControls
+                    Divider()
+                }
+                HStack(alignment: .top, spacing: 20) {
                 VStack(alignment: .leading, spacing: 10) {
                     if !targets.isEmpty { Picker("Controls", selection: Binding(get: { model.selectedControl?.target ?? .master }, set: { target in
                         model.selectedControl = descriptors.first { $0.address.target == target }?.address
@@ -61,6 +67,7 @@ struct LiveControlsView: View {
                 }.frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
                 xyPad.frame(width: 190)
                 hostControls.frame(width: 250).disabled(model.isRestoringHostState)
+                }
             }.padding(.top, 10)
         }
         .padding(.horizontal, 20).padding(.vertical, 9)
@@ -70,6 +77,100 @@ struct LiveControlsView: View {
             catch is CancellationError { }
             catch { model.hostDiagnostic = error.localizedDescription }
         }
+    }
+
+    private var performanceControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Performance").font(.system(size: 11, weight: .semibold))
+                if model.isPerformanceUpdating {
+                    ProgressView().controlSize(.mini)
+                    Text("Applying…").foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let id = model.performanceControlMetadata.first(where: {
+                    if case .double(_, let role) = $0.domain { return role == .beatsPerMinute }
+                    return false
+                })?.controlID, let value = model.performanceNumber(id) {
+                    Text(String(format: "%.0f BPM", value)).font(.system(size: 10, design: .monospaced)).foregroundStyle(.mint)
+                }
+            }
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: 16) {
+                    ForEach(model.performanceControlMetadata, id: \.controlID) { metadata in
+                        performanceControl(metadata)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 2)
+        .disabled(!model.controlsAvailable || model.isPreparing)
+        .accessibilityIdentifier("performance-controls")
+    }
+
+    @ViewBuilder
+    private func performanceControl(_ metadata: PerformanceControlMetadata) -> some View {
+        switch metadata.domain {
+        case .double(let range, let role):
+            VStack(alignment: .leading, spacing: 4) {
+                Text(metadata.label).font(.system(size: 9)).lineLimit(1)
+                Slider(value: Binding(
+                    get: { model.performanceNumber(metadata.controlID) ?? range.lowerBound },
+                    set: { value in perform { try model.setPerformanceValue(metadata.controlID, value: .double(value)) } }
+                ), in: range)
+                Text(role == .beatsPerMinute
+                     ? String(format: "%.0f BPM", model.performanceNumber(metadata.controlID) ?? range.lowerBound)
+                     : String(format: "%.3g", model.performanceNumber(metadata.controlID) ?? range.lowerBound))
+                    .font(.system(size: 9, design: .monospaced)).foregroundStyle(.mint)
+            }
+            .frame(width: 140)
+            .accessibilityIdentifier("performance-\(metadata.controlID)")
+        case .position(let xRange, let depthRange):
+            let position = model.performancePosition(metadata.controlID)
+                ?? SpatialPosition(x: xRange.lowerBound, depth: depthRange.lowerBound)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(metadata.label).font(.system(size: 9)).lineLimit(1)
+                GeometryReader { geometry in
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 7).fill(.cyan.opacity(0.08))
+                        Path { path in
+                            for fraction in [0.25, 0.5, 0.75] {
+                                path.move(to: CGPoint(x: geometry.size.width * fraction, y: 0))
+                                path.addLine(to: CGPoint(x: geometry.size.width * fraction, y: geometry.size.height))
+                                path.move(to: CGPoint(x: 0, y: geometry.size.height * fraction))
+                                path.addLine(to: CGPoint(x: geometry.size.width, y: geometry.size.height * fraction))
+                            }
+                        }.stroke(.cyan.opacity(0.18), lineWidth: 1)
+                        Circle().fill(.cyan).frame(width: 11, height: 11)
+                            .position(x: normalized(position.x, in: xRange) * geometry.size.width,
+                                      y: (1 - normalized(position.depth, in: depthRange)) * geometry.size.height)
+                    }
+                    .contentShape(Rectangle())
+                    .gesture(DragGesture(minimumDistance: 0).onChanged { event in
+                        let x = xRange.lowerBound + min(1, max(0, event.location.x / max(1, geometry.size.width))) * (xRange.upperBound - xRange.lowerBound)
+                        let depth = depthRange.lowerBound + min(1, max(0, 1 - event.location.y / max(1, geometry.size.height))) * (depthRange.upperBound - depthRange.lowerBound)
+                        perform { try model.setPerformancePosition(metadata.controlID, x: x, depth: depth) }
+                    })
+                }
+                .frame(width: 140, height: 76)
+                Slider(value: Binding(get: { position.x }, set: { x in
+                    perform { try model.setPerformancePosition(metadata.controlID, x: x) }
+                }), in: xRange).accessibilityLabel("\(metadata.label) X")
+                Slider(value: Binding(get: { position.depth }, set: { depth in
+                    perform { try model.setPerformancePosition(metadata.controlID, depth: depth) }
+                }), in: depthRange).accessibilityLabel("\(metadata.label) Depth")
+                Text(String(format: "x %.2f · depth %.2f", position.x, position.depth))
+                    .font(.system(size: 9, design: .monospaced)).foregroundStyle(.cyan)
+            }
+            .frame(width: 140)
+            .accessibilityLabel(metadata.label)
+            .accessibilityIdentifier("performance-\(metadata.controlID)")
+        }
+    }
+
+    private func normalized(_ value: Double, in range: ClosedRange<Double>) -> Double {
+        guard range.upperBound > range.lowerBound else { return 0.5 }
+        return min(1, max(0, (value - range.lowerBound) / (range.upperBound - range.lowerBound)))
     }
 
     private var xyPad: some View {

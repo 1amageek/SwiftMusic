@@ -2,6 +2,8 @@ import AVFoundation
 import Darwin
 import Foundation
 import Testing
+import SwiftMusic
+import SwiftUI
 @testable import MusicPlaygourndApp
 @testable import MusicPlaygourndCore
 
@@ -525,6 +527,183 @@ extension NativeHostTests {
         }
 
         @MainActor
+        @Test(.timeLimit(.minutes(6)))
+        func performanceControlsCommitAfterAudibleFadeAndKeepEditorState() async throws {
+            try await Self.withHarness { harness in
+                let model = harness.model
+                try await Self.adopt(harness, source: Self.performanceSource, revision: 1)
+                let originalSource = model.source
+                let originalRevision = model.revision
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
+                    styleMask: [.titled], backing: .buffered, defer: false)
+                let host = NSHostingView(rootView: PerformanceEditorFixture(model: model))
+                window.contentView = host
+                host.layoutSubtreeIfNeeded()
+                let editor = try #require(Self.findEditor(in: host))
+                window.makeFirstResponder(editor)
+                editor.insertText(" ", replacementRange: NSRange(location: originalSource.utf16.count, length: 0))
+                let undo = try #require(editor.undoManager)
+                undo.undo()
+                #expect(editor.string == originalSource)
+                #expect(undo.canRedo)
+                (editor.delegate as? CodeEditor.Coordinator)?.cancelCompletion()
+                let selection = NSRange(location: 0, length: 0)
+                editor.setSelectedRange(selection)
+                let completion = SwiftCompletion(label: "Comment", detail: nil, insertion: "// retained\n",
+                    replacementRange: selection)
+                editor.presentCompletions([completion], source: originalSource, selection: selection)
+                model.completionStatus = "Completion retained"
+                defer { editor.dismissCompletions(); window.contentView = nil }
+                #expect(model.performanceControlMetadata.map(\.controlID) == ["gain", "tempo", "position"])
+                #expect(model.performanceNumber("tempo") == 90)
+                #expect(model.controlCatalog?.descriptors.contains { $0.address.parameter == .playbackRate } == false)
+
+                let gainAddress = try Self.requireAddress(model, target: .source(0), parameter: .gain)
+                try model.setControl(gainAddress, value: .number(-1))
+                try await Self.waitUntil("rejected score generation") { !model.diagnostic.isEmpty }
+                model.diagnostic = ""
+                try harness.engine.prepareOfflineRenderingForTests()
+                try harness.engine.play()
+                _ = try harness.engine.renderOfflineForTests(frameCount: 4096)
+                var release: CheckedContinuation<Void, Never>?
+                model.performanceReservationDidPrepare = {
+                    await withCheckedContinuation { release = $0 }
+                }
+                defer { release?.resume(); model.performanceReservationDidPrepare = nil }
+                try model.setPerformanceValue("gain", value: .double(0.4))
+                try await Self.waitUntil("first performance reservation") { release != nil }
+                try model.setPerformanceValue("tempo", value: .double(100))
+                try model.setPerformancePosition("position", x: 0.5)
+                try model.setPerformancePosition("position", depth: 0.5)
+                model.performanceReservationDidPrepare = nil
+                release?.resume()
+                release = nil
+                try await Self.waitUntil("performance generation confirmation", timeout: .seconds(240)) {
+                    let samples = try harness.engine.renderOfflineForTests(frameCount: 256)
+                    #expect(samples.allSatisfy { $0.isFinite })
+                    if harness.engine.snapshot().performanceGeneration == 0 {
+                        #expect(model.performanceNumber("tempo") == 90)
+                    }
+                    model.refresh()
+                    return harness.engine.snapshot().performanceGeneration > 0
+                        && model.performanceNumber("gain") == 0.4
+                        && model.performanceNumber("tempo") == 100
+                        && model.performancePosition("position") == .init(x: 0.5, depth: 0.5)
+                        && !model.isPerformanceUpdating
+                }
+                #expect(model.source == originalSource)
+                #expect(model.revision == originalRevision)
+                #expect(model.currentRevision == originalRevision)
+                host.layoutSubtreeIfNeeded()
+                #expect(Self.findEditor(in: host) === editor)
+                #expect(editor.selectedRange() == selection)
+                #expect(undo.canRedo)
+                #expect(model.completionStatus == "Completion retained")
+                editor.acceptSelectedCompletion()
+                #expect(editor.string == "// retained\n" + originalSource)
+                undo.undo()
+                #expect(editor.string == originalSource)
+                #expect(model.source == originalSource)
+                #expect(model.loop?.bpm == 100)
+                #expect(model.loop?.rows.count == 2)
+                #expect(model.resultLines.count == 2)
+                #expect(model.loop?.samples.contains { abs($0) > 0.001 } == true)
+                #expect(abs(harness.engine.masterParametersForTests.rate - 1) < 0.00001)
+                #expect(model.diagnostic.isEmpty)
+                let nextGain = try Self.requireAddress(model, target: .source(0), parameter: .gain)
+                try model.setControl(nextGain, value: .number(0.15))
+                try await Self.waitUntil("score generation remains monotonic after graph change") {
+                    _ = try harness.engine.renderOfflineForTests(frameCount: 4096)
+                    model.refresh()
+                    if !model.diagnostic.isEmpty { throw EvaluationError.invalidResult(model.diagnostic) }
+                    return model.overrideGeneration == 2
+                }
+                try model.setControl(nextGain, value: nil)
+                try await Self.waitUntil("score override release") {
+                    _ = try harness.engine.renderOfflineForTests(frameCount: 4096)
+                    model.refresh()
+                    return model.overrideGeneration == 3
+                }
+                let accepted = model.loop
+                try model.setPerformanceValue("gain", value: .double(0.9))
+                try await Self.waitUntil("invalid performance body rollback", timeout: .seconds(30)) {
+                    _ = try harness.engine.renderOfflineForTests(frameCount: 256)
+                    model.refresh()
+                    return !model.isPerformanceUpdating && !model.diagnostic.isEmpty
+                }
+                #expect(model.loop == accepted)
+                #expect(model.performanceNumber("gain") == 0.4)
+                #expect(model.controlsAvailable)
+                #expect(model.source == originalSource)
+            }
+        }
+
+        @MainActor
+        @Test(.timeLimit(.minutes(6)))
+        func documentSwitchDiscardsReservedPerformanceBeforeWorkerAcknowledgement() async throws {
+            try await Self.withHarness { harness in
+                let model = harness.model
+                try await Self.adopt(harness, source: Self.performanceSource, revision: 1)
+                try harness.engine.prepareOfflineRenderingForTests()
+                try harness.engine.play()
+                try model.setPerformanceValue("gain", value: .double(0.4))
+                try await Self.waitUntil("initial performance confirmation", timeout: .seconds(30)) {
+                    _ = try harness.engine.renderOfflineForTests(frameCount: 4096)
+                    model.refresh()
+                    return model.performanceNumber("gain") == 0.4 && !model.isPerformanceUpdating
+                }
+                var release: CheckedContinuation<Void, Never>?
+                model.performanceReservationDidPrepare = {
+                    await withCheckedContinuation { release = $0 }
+                }
+                defer { release?.resume(); model.performanceReservationDidPrepare = nil }
+                try model.setPerformanceValue("gain", value: .double(0.5))
+                try await Self.waitUntil("reserved performance", timeout: .seconds(30)) { release != nil }
+                let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                defer { do { try FileManager.default.removeItem(at: directory) } catch { Issue.record(error) } }
+                let document = directory.appendingPathComponent("Session.swift")
+                try Self.performanceSource.write(to: document, atomically: true, encoding: .utf8)
+                try model.openDocument(at: document)
+                release?.resume()
+                release = nil
+                model.performanceReservationDidPrepare = nil
+                try await Self.waitUntil("new document worker", timeout: .seconds(260)) {
+                    _ = try harness.engine.renderOfflineForTests(frameCount: 4096)
+                    model.refresh()
+                    return model.currentRevision == 2 && model.controlsAvailable
+                }
+                #expect(model.performanceNumber("gain") == 0.2)
+                #expect(model.performanceNumber("tempo") == 90)
+                #expect(harness.engine.snapshot().performanceGeneration == 0)
+                #expect(model.fileURL == document)
+                #expect(model.diagnostic.isEmpty)
+            }
+        }
+
+        @MainActor
+        private struct PerformanceEditorFixture: View {
+            @Bindable var model: SessionModel
+            var body: some View {
+                CodeEditor(text: $model.source, inlineLoop: model.loop, inlineEnabled: true,
+                    resultLines: model.resultLines, beatPosition: model.beatPosition, isPlaying: model.isPlaying,
+                    selectionLine: nil, selectionToken: 0, rhythmLines: [], rowLines: model.rowLines,
+                    patternTexts: [:], activeTokens: model.activeTokens, scrollDelta: 0,
+                    onLayout: { _ in }, beforeEdit: model.beforeEdit, onEdit: {},
+                    completions: { _, _ in [] }, onCompletionStatus: { model.completionStatus = $0 })
+            }
+        }
+
+        @MainActor
+        private static func findEditor(in view: NSView) -> CompletionTextView? {
+            if let editor = view as? CompletionTextView { return editor }
+            for child in view.subviews {
+                if let editor = findEditor(in: child) { return editor }
+            }
+            return nil
+        }
+
+        @MainActor
         private static func adopt(_ harness: Harness, source: String, revision: UInt64) async throws {
             harness.model.source = source
             harness.model.scheduleEvaluation(immediate: true)
@@ -629,6 +808,41 @@ extension NativeHostTests {
         struct Session: Music {
             var body: some Sound {
                 Synthesizer(.sine).notes("C4 C4 C4 C4").gain(0.8)
+            }
+        }
+        """
+
+        private static let performanceSource = """
+        import Observation
+
+        @MainActor @Observable
+        final class PerformanceState: PerformanceControllable {
+            let performanceModelID = "session-model-performance"
+            var gain = 0.2
+            var tempo = 90.0
+            var position = SpatialPosition(x: -0.5, depth: 0)
+            var performanceControls: PerformanceControlSet<PerformanceState> {
+                get throws {
+                    try PerformanceControlSet([
+                        .mappedDouble(id: "gain", range: 0...1, keyPath: \\PerformanceState.gain),
+                        .mappedBPM(id: "tempo", range: 60...180, keyPath: \\PerformanceState.tempo),
+                        .mappedPosition(id: "position", keyPath: \\PerformanceState.position)
+                    ])
+                }
+            }
+        }
+
+        struct Session: PerformanceEntry {
+            @Performance(PerformanceState.self) private var state
+            @MainActor static func makePerformanceModel() -> PerformanceState { PerformanceState() }
+            var body: some Sound {
+                Synthesizer(.sine).notes("C4").gain(state.gain).position(state.position)
+                if state.gain > 0.3 {
+                    Synthesizer(.sine).notes("G4").gain(0.1)
+                }
+                if state.gain > 0.8 {
+                    Synthesizer(.sine).notes("E4").gain("oops")
+                }
             }
         }
         """

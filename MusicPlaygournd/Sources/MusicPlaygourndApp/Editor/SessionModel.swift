@@ -1,20 +1,30 @@
 import AppKit
 import MusicPlaygourndCore
 import Observation
+import SwiftMusic
 import UniformTypeIdentifiers
 
 @MainActor @Observable
 final class SessionModel {
     var source = SessionModel.initialSource
-    var bpm = 120.0 {
-        didSet {
-            guard bpm.isFinite, (40...240).contains(bpm) else {
-                bpm = oldValue
+    private var masterBPM = 120.0
+    var bpm: Double {
+        get { performanceBPMControlID.flatMap { performanceNumber($0) } ?? masterBPM }
+        set {
+            guard newValue.isFinite, (40...240).contains(newValue) else {
                 diagnostic = "Tempo must be between 40 and 240 BPM."
                 return
             }
-            do { try engine?.setPlaybackRate(Float(bpm / 120)); masterControlValues.removeValue(forKey: .playbackRate) }
-            catch { bpm = oldValue; diagnostic = error.localizedDescription }
+            if let performanceBPMControlID {
+                do { try setPerformanceValue(performanceBPMControlID, value: .double(newValue)) }
+                catch { diagnostic = error.localizedDescription }
+                return
+            }
+            masterBPM = newValue
+            do {
+                try engine?.setPlaybackRate(Float(newValue / (loop?.bpm ?? 120)))
+                masterControlValues.removeValue(forKey: .playbackRate)
+            } catch { diagnostic = error.localizedDescription }
         }
     }
     var lowPass = 20_000.0 {
@@ -80,6 +90,10 @@ final class SessionModel {
     private(set) var controlsAvailable = false
     private(set) var overrideGeneration: UInt64 = 0
     private(set) var candidateCatalogs: [UInt64: LiveControlCatalog] = [:]
+    private(set) var performanceControlMetadata: [PerformanceControlMetadata] = []
+    private(set) var performanceValues: [String: PerformanceControlValue] = [:]
+    private(set) var candidatePerformanceControls: [UInt64: [PerformanceControlMetadata]] = [:]
+    private(set) var candidatePerformanceTransferIssues: [UInt64: PerformanceControlError] = [:]
     private var overrides: [LiveControlAddress: LiveControlValue] = [:]
     private var lastRenderedGeneration: UInt64 = 0
     private var lastRenderedOverrides: [LiveControlAddress: LiveControlValue] = [:]
@@ -115,6 +129,33 @@ final class SessionModel {
     private(set) var candidateSourceDigests: [UInt64: String] = [:]
     private let hostStateStore: DocumentHostStateStore
     private(set) var isRestoringHostState = false
+
+    private struct PerformanceIntent {
+        let revision: UInt64
+        let generation: UInt64
+        let values: [String: PerformanceControlValue]
+    }
+
+    private struct PerformanceTransaction {
+        let revision: UInt64
+        let generation: UInt64
+        let values: [String: PerformanceControlValue]
+        let evaluation: RetainedEvaluation
+    }
+
+    private var requestedPerformanceGeneration: UInt64 = 0
+    private var pendingPerformanceIntent: PerformanceIntent?
+    private var activePerformanceIntent: PerformanceIntent?
+    private var performanceTask: Task<Void, Never>?
+    private var performanceConfirmationTask: Task<Void, Never>?
+    private var performanceTransaction: PerformanceTransaction?
+    private var deferredEvaluation = false
+    private var deferredEvaluationImmediate = false
+    private var publishedPerformanceGeneration: UInt64 = 0
+    private var reservedPerformanceToken: PerformanceReplacementToken?
+    internal var performanceReservationDidPrepare: (() async -> Void)?
+    private var requiresEvaluatorReset = false
+    private var evaluatorResetTask: Task<Void, Never>?
 
     init() {
         hostStateStore = DocumentHostStateStore()
@@ -160,6 +201,19 @@ final class SessionModel {
     }
 
     func scheduleEvaluation(immediate: Bool = false) {
+        if requiresEvaluatorReset {
+            deferredEvaluation = true
+            deferredEvaluationImmediate = deferredEvaluationImmediate || immediate
+            status = "Performance update in progress · edit queued"
+            if performanceTask == nil { resumeDeferredEvaluationIfPossible() }
+            return
+        }
+        if performanceTask != nil || performanceTransaction != nil || performanceConfirmationTask != nil {
+            deferredEvaluation = true
+            deferredEvaluationImmediate = deferredEvaluationImmediate || immediate
+            status = "Performance update in progress · edit queued"
+            return
+        }
         refresh()
         evaluationTask?.cancel()
         guard revision < UInt64.max else { diagnostic = "Revision limit reached. Reopen the app."; return }
@@ -187,6 +241,12 @@ final class SessionModel {
                 guard let engine = self.engine else { throw EvaluationError.invalidResult(self.audioError) }
                 self.lineMaps[requested] = SourceLineMap(source: text, lines: candidate.rows.flatMap { [$0.anchor?.line, $0.resultLine].compactMap { $0 } })
                 self.candidateCatalogs = [requested: evaluation.catalog]
+                self.candidatePerformanceControls = [requested: evaluation.performanceControls]
+                if let issue = evaluation.performanceTransferIssue {
+                    self.candidatePerformanceTransferIssues = [requested: issue]
+                } else {
+                    self.candidatePerformanceTransferIssues = [:]
+                }
                 self.candidateSourceDigests = [requested: DocumentHostStateStore.sourceDigest(text)]
                 try engine.submit(loop: candidate, revision: requested)
                 if self.wantsPlayback { try engine.play() }
@@ -234,6 +294,14 @@ final class SessionModel {
             overrides.removeAll()
             lastRenderedOverrides.removeAll()
             lastRenderedGeneration = 0
+            requestedPerformanceGeneration = 0
+            pendingPerformanceIntent = nil
+            performanceTransaction = nil
+            performanceConfirmationTask?.cancel()
+            performanceConfirmationTask = nil
+            performanceControlMetadata = []
+            performanceValues = [:]
+            publishedPerformanceGeneration = snapshot.performanceGeneration
             controlTask?.cancel()
             visualizationTask?.cancel()
             controlVisualization = nil
@@ -242,6 +310,8 @@ final class SessionModel {
             adoptionTask?.cancel()
             if let adoptedRevision = snapshot.revision,
                let catalog = candidateCatalogs[adoptedRevision] {
+                let performanceControls = candidatePerformanceControls[adoptedRevision] ?? []
+                let transferIssue = candidatePerformanceTransferIssues[adoptedRevision]
                 adoptionTask = Task { [weak self, evaluator] in
                     let adopted = await evaluator.adopt(revision: adoptedRevision)
                     let available = await evaluator.controlsAvailable(revision: adoptedRevision)
@@ -251,13 +321,27 @@ final class SessionModel {
                         return
                     }
                     do {
+                        self.performanceControlMetadata = performanceControls
+                        self.performanceValues = Dictionary(uniqueKeysWithValues: performanceControls.map { ($0.controlID, $0.value) })
                         self.controlCatalog = try self.catalogWithMasters(catalog, revision: adoptedRevision)
+                        if self.performanceBPMControlID != nil {
+                            try self.engine?.setPlaybackRate(1)
+                        } else if case .number(let rate) = self.masterControlValues[.playbackRate] {
+                            try self.engine?.setPlaybackRate(Float(rate))
+                        } else {
+                            try self.engine?.setPlaybackRate(Float(self.masterBPM / (self.loop?.bpm ?? 120)))
+                        }
                         self.controlsAvailable = true
                         self.adoptedControlsDidChange(revision: adoptedRevision)
+                        if let transferIssue {
+                            self.hostDiagnostic = transferIssue.localizedDescription
+                        }
                     } catch { self.diagnostic = error.localizedDescription }
                 }
             }
             lineMaps = lineMaps.filter { $0.key == currentRevision || $0.key == revision }
+            candidatePerformanceControls = candidatePerformanceControls.filter { $0.key == currentRevision || $0.key == revision }
+            candidatePerformanceTransferIssues = candidatePerformanceTransferIssues.filter { $0.key == currentRevision || $0.key == revision }
             updateRowLines()
         }
         if overrideGeneration != snapshot.overrideGeneration {
@@ -265,6 +349,18 @@ final class SessionModel {
             loop = snapshot.loop
             updateRowLines()
             requestControlVisualization()
+        }
+        if let transaction = performanceTransaction,
+           snapshot.revision == transaction.revision,
+           snapshot.performanceGeneration == transaction.generation,
+           performanceConfirmationTask == nil {
+            let revision = transaction.revision
+            let generation = transaction.generation
+            performanceConfirmationTask = Task { [weak self, evaluator] in
+                let confirmed = await evaluator.confirmPerformance(revision: revision, generation: generation)
+                guard let self else { return }
+                self.finishPerformanceConfirmation(revision: revision, generation: generation, confirmed: confirmed)
+            }
         }
         if controlsAvailable, controlHealthTask == nil, let currentRevision,
            lastControlHealthCheck.duration(to: .now) >= .seconds(1) {
@@ -315,6 +411,10 @@ final class SessionModel {
             masterControlValues[master.key.parameter] = master.value
             return
         }
+        guard performanceTask == nil, performanceTransaction == nil,
+              performanceConfirmationTask == nil else {
+            throw EvaluationError.invalidResult("Wait for the performance update to become audible.")
+        }
         guard controlsAvailable else { throw EvaluationError.invalidResult("Live controls are unavailable. Audio continues.") }
         guard requestedGeneration < UInt64.max else { throw EvaluationError.invalidResult("Control generation limit reached.") }
         var next = overrides
@@ -333,12 +433,15 @@ final class SessionModel {
                 try engine.replace(loop: rendered, revision: currentRevision, generation: generation)
                 self.lastRenderedGeneration = generation
                 self.lastRenderedOverrides = Dictionary(uniqueKeysWithValues: values.map { ($0.address, $0.value) })
+                self.controlTask = nil
                 self.refresh()
             } catch is CancellationError { }
             catch {
                 let available = await evaluator.controlsAvailable(revision: currentRevision)
                 guard let self, self.currentRevision == currentRevision,
                       self.requestedGeneration == generation else { return }
+                self.controlTask = nil
+                self.controlTask = nil
                 self.controlsAvailable = available
                 self.overrides = self.lastRenderedOverrides
                 self.diagnostic = error.localizedDescription
@@ -346,14 +449,320 @@ final class SessionModel {
         }
     }
 
+    /// Applies one complete performance-model value set. The source and undo stack never change.
+    func setPerformanceValue(_ controlID: String, value: PerformanceControlValue) throws {
+        var values = pendingPerformanceIntent?.values ?? activePerformanceIntent?.values
+            ?? performanceTransaction?.values ?? performanceValues
+        guard values[controlID] != nil else { throw PerformanceControlError.unknownControl(controlID) }
+        values[controlID] = value
+        try requestPerformanceValues(values)
+    }
+
+    /// Applies both axes of one declared position control as one performance generation.
+    func setPerformancePosition(_ controlID: String, x: Double? = nil, depth: Double? = nil) throws {
+        let values = pendingPerformanceIntent?.values ?? activePerformanceIntent?.values
+            ?? performanceTransaction?.values ?? performanceValues
+        guard case .position(let position) = values[controlID] else {
+            throw PerformanceControlError.valueTypeMismatch(controlID)
+        }
+        try setPerformanceValue(controlID, value: .position(SpatialPosition(
+            x: x ?? position.x, depth: depth ?? position.depth)))
+    }
+
+    func performanceValue(_ controlID: String) -> PerformanceControlValue? {
+        performanceValues[controlID]
+    }
+
+    func performanceNumber(_ controlID: String) -> Double? {
+        guard case .double(let value) = performanceValues[controlID] else { return nil }
+        return value
+    }
+
+    func performancePosition(_ controlID: String) -> SpatialPosition? {
+        guard case .position(let value) = performanceValues[controlID] else { return nil }
+        return value
+    }
+
+    var isPerformanceUpdating: Bool {
+        performanceTask != nil || performanceTransaction != nil || performanceConfirmationTask != nil
+    }
+
+    private func requestPerformanceValues(_ values: [String: PerformanceControlValue]) throws {
+        guard !isShuttingDown, !requiresEvaluatorReset else { throw CancellationError() }
+        guard let revision = currentRevision, revision == self.revision, !isPreparing else {
+            throw EvaluationError.invalidResult("Wait for the current score to finish loading before changing performance controls.")
+        }
+        guard controlsAvailable, !performanceControlMetadata.isEmpty else {
+            throw EvaluationError.invalidResult("Performance controls are unavailable. Audio continues.")
+        }
+        guard controlTask == nil, lastRenderedGeneration == overrideGeneration else {
+            throw EvaluationError.invalidResult("Wait for the current score controls to become audible.")
+        }
+        try PerformanceControlMetadata.validate(performanceControlMetadata.map { metadata in
+            guard let value = values[metadata.controlID] else { return metadata }
+            return PerformanceControlMetadata(modelID: metadata.modelID, controlID: metadata.controlID,
+                label: metadata.label, domain: metadata.domain, value: value)
+        })
+        let knownIDs = Set(performanceControlMetadata.map(\.controlID))
+        guard Set(values.keys) == knownIDs else {
+            let missing = knownIDs.subtracting(values.keys).sorted().first
+            let unknown = Set(values.keys).subtracting(knownIDs).sorted().first
+            throw missing.map(PerformanceControlError.missingValue) ?? unknown.map(PerformanceControlError.unknownControl)
+                ?? PerformanceControlError.invalidMapping("control set is incomplete")
+        }
+        guard requestedPerformanceGeneration < UInt64.max else {
+            throw EvaluationError.invalidResult("Performance generation limit reached.")
+        }
+        requestedPerformanceGeneration += 1
+        let intent = PerformanceIntent(revision: revision, generation: requestedPerformanceGeneration, values: values)
+        pendingPerformanceIntent = intent
+        if performanceTask == nil, performanceTransaction == nil {
+            pendingPerformanceIntent = nil
+            startPerformance(intent)
+        } else {
+            performanceTask?.cancel()
+        }
+    }
+
+    private func startPerformance(_ intent: PerformanceIntent) {
+        guard performanceTask == nil, performanceTransaction == nil else { return }
+        activePerformanceIntent = intent
+        status = "Rendering performance update…"
+        performanceTask = Task { @MainActor [weak self] in
+            await self?.runPerformance(intent)
+            self?.performanceTaskFinished(intent.generation)
+        }
+    }
+
+    private func runPerformance(_ intent: PerformanceIntent) async {
+        guard currentRevision == intent.revision, revision == intent.revision, !isPreparing,
+              let engine else { return }
+        var reservedToken: PerformanceReplacementToken?
+        do {
+            try Task.checkCancellation()
+            let scoreOverrides = lastRenderedOverrides.map { LiveControlOverride(address: $0.key, value: $0.value) }
+            let rendered = try await evaluator.renderPerformance(values: intent.values,
+                overrides: scoreOverrides, revision: intent.revision, generation: intent.generation)
+            try Task.checkCancellation()
+            guard currentRevision == intent.revision, revision == intent.revision,
+                  requestedPerformanceGeneration == intent.generation else {
+                await evaluator.discardPerformance(revision: intent.revision, generation: intent.generation)
+                return
+            }
+            reservedToken = try engine.preparePerformanceReplacement(loop: rendered.loop,
+                revision: intent.revision, generation: intent.generation)
+            self.reservedPerformanceToken = reservedToken
+            await performanceReservationDidPrepare?()
+            try Task.checkCancellation()
+            guard !requiresEvaluatorReset, !isShuttingDown else { throw CancellationError() }
+
+            // Once the worker ACK is requested, cancellation cannot abandon the transaction.
+            let acknowledged = await evaluator.adoptPerformance(revision: intent.revision, generation: intent.generation)
+            guard let token = reservedToken else {
+                await evaluator.discardPerformance(revision: intent.revision, generation: intent.generation)
+                return
+            }
+            guard self.reservedPerformanceToken == token else {
+                await evaluator.discardPerformance(revision: intent.revision, generation: intent.generation)
+                return
+            }
+            guard acknowledged else {
+                _ = engine.discardPerformanceReplacement(token)
+                self.reservedPerformanceToken = nil
+                await evaluator.discardPerformance(revision: intent.revision, generation: intent.generation)
+                throw EvaluationError.invalidResult("The performance worker rejected the requested generation.")
+            }
+            guard engine.commitPerformanceReplacement(token) else {
+                self.reservedPerformanceToken = nil
+                controlsAvailable = false
+                diagnostic = "The performance replacement reservation expired; edit the score to restore controls."
+                return
+            }
+            self.performanceTransaction = PerformanceTransaction(revision: intent.revision,
+                generation: intent.generation, values: intent.values, evaluation: rendered)
+            self.status = "Performance update · waiting for fade"
+            self.reservedPerformanceToken = nil
+            reservedToken = nil
+        } catch is CancellationError {
+            if let reservedToken {
+                _ = engine.discardPerformanceReplacement(reservedToken)
+                if self.reservedPerformanceToken == reservedToken { self.reservedPerformanceToken = nil }
+            }
+            await evaluator.discardPerformance(revision: intent.revision, generation: intent.generation)
+        } catch {
+            if let reservedToken {
+                _ = engine.discardPerformanceReplacement(reservedToken)
+                if self.reservedPerformanceToken == reservedToken { self.reservedPerformanceToken = nil }
+            }
+            await evaluator.discardPerformance(revision: intent.revision, generation: intent.generation)
+            guard currentRevision == intent.revision, revision == intent.revision,
+                  requestedPerformanceGeneration == intent.generation else { return }
+            diagnostic = error.localizedDescription
+            status = "Performance update failed · previous loop continues"
+        }
+    }
+
+    private func performanceTaskFinished(_ generation: UInt64) {
+        guard activePerformanceIntent?.generation == generation else { return }
+        activePerformanceIntent = nil
+        performanceTask = nil
+        guard performanceTransaction == nil else { return }
+        guard let pending = pendingPerformanceIntent, pending.generation == requestedPerformanceGeneration else {
+            resumeDeferredEvaluationIfPossible()
+            return
+        }
+        pendingPerformanceIntent = nil
+        startPerformance(pending)
+    }
+
+    private func finishPerformanceConfirmation(revision: UInt64, generation: UInt64, confirmed: Bool) {
+        guard let transaction = performanceTransaction,
+              transaction.revision == revision, transaction.generation == generation else { return }
+        performanceConfirmationTask = nil
+        guard confirmed else {
+            performanceTransaction = nil
+            controlsAvailable = false
+            diagnostic = "The performance worker and playback snapshot disagreed; controls remain unavailable."
+            status = "Performance update could not be confirmed · previous values retained"
+            resumeDeferredEvaluationIfPossible()
+            return
+        }
+        let previousLoop = loop
+        let previousCatalog = controlCatalog
+        let previousPerformanceControls = performanceControlMetadata
+        let previousPerformanceValues = performanceValues
+        let nextLoop = transaction.evaluation.loop
+        let nextPerformanceControls = transaction.evaluation.performanceControls
+        performanceControlMetadata = nextPerformanceControls
+        performanceValues = Dictionary(uniqueKeysWithValues: nextPerformanceControls.map { ($0.controlID, $0.value) })
+        let nextCatalog: LiveControlCatalog
+        do {
+            nextCatalog = try catalogWithMasters(transaction.evaluation.catalog, revision: revision)
+        } catch {
+            performanceControlMetadata = previousPerformanceControls
+            performanceValues = previousPerformanceValues
+            performanceTransaction = nil
+            controlsAvailable = false
+            diagnostic = error.localizedDescription
+            status = "Performance update could not be confirmed · previous values retained"
+            return
+        }
+        let graphChanged = !controlLayoutMatches(previousCatalog, nextCatalog)
+            || !rowProvenanceMatches(previousLoop, nextLoop)
+        loop = nextLoop
+        if adoptedSourceDigest == DocumentHostStateStore.sourceDigest(source) {
+            lineMaps[revision] = SourceLineMap(source: source,
+                lines: nextLoop.rows.flatMap { [$0.anchor?.line, $0.resultLine].compactMap { $0 } })
+        }
+        controlCatalog = nextCatalog
+        candidateCatalogs[revision] = transaction.evaluation.catalog
+        candidatePerformanceControls[revision] = nextPerformanceControls
+        candidatePerformanceTransferIssues.removeValue(forKey: revision)
+        if graphChanged {
+            overrides.removeAll()
+            lastRenderedOverrides.removeAll()
+            lastRenderedGeneration = overrideGeneration
+            reconcilePerformanceHandles(after: nextCatalog)
+        }
+        updateRowLines()
+        publishedPerformanceGeneration = generation
+        performanceTransaction = nil
+        requestControlVisualization()
+        refresh()
+        status = isPlaying ? "Live · edit freely" : "Paused"
+        if let pending = pendingPerformanceIntent {
+            pendingPerformanceIntent = nil
+            startPerformance(pending)
+        } else {
+            resumeDeferredEvaluationIfPossible()
+        }
+    }
+
+    private func controlLayoutMatches(_ previous: LiveControlCatalog?, _ next: LiveControlCatalog) -> Bool {
+        guard let previous, previous.descriptors.count == next.descriptors.count else { return false }
+        return zip(previous.descriptors, next.descriptors).allSatisfy { old, new in
+            old.address == new.address && old.label == new.label
+        }
+    }
+
+    private func rowProvenanceMatches(_ previous: PreparedLoop?, _ next: PreparedLoop) -> Bool {
+        guard let previous, previous.rows.count == next.rows.count else { return false }
+        return zip(previous.rows, next.rows).allSatisfy { old, new in
+            old.sourceID == new.sourceID
+                && old.label == new.label
+                && old.anchor == new.anchor
+                && old.patternText == new.patternText
+                && old.resultLine == new.resultLine
+        }
+    }
+
+    private func reconcilePerformanceHandles(after catalog: LiveControlCatalog) {
+        if let selectedControl,
+           selectedControl.target != .master || catalog.descriptor(for: selectedControl) == nil {
+            self.selectedControl = nil
+        }
+        xyX = nil
+        xyY = nil
+        let previousBindingCount = learnedBindings.count
+        learnedBindings.removeAll { binding in
+            binding.address.target != .master || catalog.descriptor(for: binding.address) == nil
+        }
+        if previousBindingCount != learnedBindings.count {
+            hostDiagnostic = "MIDI Learn bindings were detached after the performance graph changed."
+        }
+        if let learnAddress,
+           learnAddress.target != .master || catalog.descriptor(for: learnAddress) == nil {
+            self.learnAddress = nil
+        }
+        controlVisualization = nil
+        visualizationStatus = "Choose a score control to inspect its trajectories."
+    }
+
+    private func resumeDeferredEvaluationIfPossible() {
+        guard deferredEvaluation, performanceTask == nil, performanceTransaction == nil,
+              performanceConfirmationTask == nil else { return }
+        let immediate = deferredEvaluationImmediate
+        deferredEvaluation = false
+        deferredEvaluationImmediate = false
+        if requiresEvaluatorReset {
+            deferredEvaluation = true
+            deferredEvaluationImmediate = immediate
+            guard evaluatorResetTask == nil else { return }
+            evaluatorResetTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.evaluationTask?.value
+                await self.controlTask?.value
+                await self.adoptionTask?.value
+                do { try await self.evaluator.shutdown() }
+                catch {
+                    self.diagnostic = error.localizedDescription
+                    self.evaluatorResetTask = nil
+                    self.deferredEvaluation = false
+                    return
+                }
+                self.requiresEvaluatorReset = false
+                self.evaluatorResetTask = nil
+                guard !self.isShuttingDown else { return }
+                self.resumeDeferredEvaluationIfPossible()
+            }
+            return
+        }
+        scheduleEvaluation(immediate: immediate)
+    }
+
     private func catalogWithMasters(_ catalog: LiveControlCatalog, revision: UInt64) throws -> LiveControlCatalog {
+        let hasPerformanceBPM = performanceControlMetadata.contains { metadata in
+            if case .double(_, let role) = metadata.domain { return role == .beatsPerMinute }
+            return false
+        }
         let masters: [(LiveControlParameter, String, LiveControlBaseline)] = [
-            (.playbackRate, "Master Tempo", .scalar(bpm / 120)),
             (.lowPassCutoff, "Master Filter", lowPass >= 19_999 ? .bypassed : .scalar(lowPass)),
             (.delayMix, "Master Delay", .scalar(delayMix)),
             (.reverbMix, "Master Reverb", .scalar(reverbMix))
         ]
-        return try LiveControlCatalog(descriptors: catalog.descriptors + masters.map {
+        let tempo: [(LiveControlParameter, String, LiveControlBaseline)] = hasPerformanceBPM
+            ? [] : [(.playbackRate, "Master Tempo", .scalar(masterBPM / (loop?.bpm ?? 120)))]
+        return try LiveControlCatalog(descriptors: catalog.descriptors + (tempo + masters).map {
             LiveControlDescriptor(address: .init(revision: revision, target: .master, parameter: $0.0),
                                   label: $0.1, baseline: $0.2,
                                   presentation: try .suggested(for: $0.0))
@@ -373,7 +782,7 @@ final class SessionModel {
         case nil: number = nil
         }
         switch address.parameter {
-        case .playbackRate: try engine.setPlaybackRate(Float(number ?? bpm / 120))
+        case .playbackRate: try engine.setPlaybackRate(Float(number ?? masterBPM / (loop?.bpm ?? 120)))
         case .lowPassCutoff:
             let cutoff = value == .bypassed ? nil : (number ?? (lowPass >= 19_999 ? nil : lowPass))
             try engine.setLowPass(cutoff: cutoff.map(Float.init))
@@ -436,6 +845,7 @@ final class SessionModel {
     func openDocument(at url: URL) throws {
         let text = try String(contentsOf: url, encoding: .utf8)
         guard text.utf8.count <= 65_536 else { throw EvaluationError.invalidSource("Source exceeds 64 KiB.") }
+        abortPerformanceForDocumentChange()
         lineMaps = [:]
         rowLines = [:]
         resultLines = [:]
@@ -444,6 +854,23 @@ final class SessionModel {
         loadHostSettings(for: url)
         hasUnsavedChanges = false
         scheduleEvaluation(immediate: true)
+    }
+
+    private func abortPerformanceForDocumentChange() {
+        requiresEvaluatorReset = true
+        evaluationTask?.cancel()
+        controlTask?.cancel()
+        adoptionTask?.cancel()
+        if let reservedPerformanceToken {
+            _ = engine?.discardPerformanceReplacement(reservedPerformanceToken)
+            self.reservedPerformanceToken = nil
+        }
+        performanceTask?.cancel()
+        performanceConfirmationTask?.cancel()
+        performanceConfirmationTask = nil
+        pendingPerformanceIntent = nil
+        performanceTransaction = nil
+        controlsAvailable = false
     }
 
     @discardableResult func saveDocument() -> Bool {
@@ -673,6 +1100,11 @@ final class SessionModel {
 
     func shutdown() async throws {
         isShuttingDown = true
+        if let reservedPerformanceToken {
+            _ = engine?.discardPerformanceReplacement(reservedPerformanceToken)
+            self.reservedPerformanceToken = nil
+        }
+        await evaluatorResetTask?.value
         visualizationTask?.cancel()
         await visualizationTask?.value
         hostRestoreTask?.cancel()
@@ -692,6 +1124,19 @@ final class SessionModel {
             diagnostic = recordingFailure.map { "\($0.localizedDescription)\n\(error.localizedDescription)" } ?? error.localizedDescription
             if recordingFailure == nil { recordingFailure = error }
         }
+        performanceTask?.cancel()
+        if let reservedPerformanceToken {
+            _ = engine?.discardPerformanceReplacement(reservedPerformanceToken)
+            self.reservedPerformanceToken = nil
+        }
+        await performanceTask?.value
+        performanceConfirmationTask?.cancel()
+        await performanceConfirmationTask?.value
+        performanceTask = nil
+        performanceConfirmationTask = nil
+        pendingPerformanceIntent = nil
+        performanceTransaction = nil
+        deferredEvaluation = false
         midiClosed = true
         midiSchedulingTask?.cancel()
         await midiSchedulingTask?.value
@@ -760,7 +1205,17 @@ final class SessionModel {
         }
     }
 
+    private var performanceBPMControlID: String? {
+        performanceControlMetadata.first { metadata in
+            if case .double(_, let role) = metadata.domain { return role == .beatsPerMinute }
+            return false
+        }?.controlID
+    }
+
     var displayedBPM: Double {
+        if let performanceBPMControlID, let value = performanceNumber(performanceBPMControlID) {
+            return value
+        }
         if case .number(let rate) = masterControlValues[.playbackRate] { return rate * 120 }
         return bpm
     }
@@ -776,7 +1231,7 @@ final class SessionModel {
         if value == .bypassed { return nil }
         if descriptor.address.target == .master {
             switch descriptor.address.parameter {
-            case .playbackRate: return bpm / 120
+            case .playbackRate: return masterBPM / (loop?.bpm ?? 120)
             case .lowPassCutoff: return lowPass >= 19_999 ? nil : lowPass
             case .delayMix: return delayMix
             case .reverbMix: return reverbMix
