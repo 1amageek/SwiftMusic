@@ -34,7 +34,19 @@ struct SwiftCompletionServiceTests {
             catch is CancellationError { }
             #expect(gains.contains { $0.label.contains("gain") && $0.label.contains("Double") })
             #expect(gains.contains { $0.label.contains("gain") && $0.label.contains("GainPattern") })
-            let gain = try #require(gains.first { $0.label.contains("gain") && $0.label.contains("Double") })
+            let gain = try #require(gains.first { $0.label == "gain(value: Double)" })
+            #expect(gain.detail == "ModifiedSound")
+            #expect(gain.semanticKey == SwiftCompletionSemanticKey(
+                label: "gain(value: Double)", detail: "ModifiedSound", argumentIndex: 0
+            ))
+            #expect(gain.annotation?.unit == "amplitude")
+            #expect(gain.annotation?.minimum == 0)
+            #expect(gain.annotation?.maximum == 2)
+            let unsupportedPattern = try #require(
+                gains.first { $0.label == "gain(pattern: GainPattern)" }
+            )
+            #expect(unsupportedPattern.detail == "ModifiedSound")
+            #expect(unsupportedPattern.annotation == nil)
             #expect((source as NSString).substring(with: gain.replacementRange) == "ga")
             #expect(gain.insertion.hasPrefix("gain("))
             #expect(gain.selectionRange != nil)

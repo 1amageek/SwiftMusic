@@ -64,12 +64,16 @@ public final class AudioLoopEngine: AudioUnitHosting, MasterRecording {
         reverb.loadFactoryPreset(.mediumRoom)
         reverb.wetDryMix = 0
 
-        let sourceNode = AVAudioSourceNode(format: format) { @Sendable [transport] isSilence, timestamp, frameCount, audioBufferList in
+        let sourceNode = AVAudioSourceNode(format: format) { @Sendable [transport, meterStore] isSilence, timestamp, frameCount, audioBufferList in
+            let began = mach_absolute_time()
             let hostTime = timestamp.pointee.mFlags.contains(.hostTimeValid)
                 ? timestamp.pointee.mHostTime : nil
             let status = transport.render(frameCount: Int(frameCount), audioBufferList: audioBufferList,
                                           hostTime: hostTime)
             isSilence.pointee = ObjCBool(status != noErr)
+            let elapsed = AVAudioTime.seconds(forHostTime: mach_absolute_time() - began)
+            meterStore.recordCallback(elapsed: elapsed,
+                duration: Double(frameCount) / PreparedLoop.requiredSampleRate, failed: status != noErr)
             return status
         }
         let audioEngine = AVAudioEngine()
@@ -92,7 +96,7 @@ public final class AudioLoopEngine: AudioUnitHosting, MasterRecording {
             format: nil
         ) { @Sendable [meterStore, recordingCapture] buffer, time in
             recordingCapture.capture(buffer, at: time)
-            meterStore.capture(buffer)
+            meterStore.capture(buffer, at: time)
         }
         self.transport = transport
         self.sourceNode = sourceNode
@@ -304,6 +308,8 @@ public final class AudioLoopEngine: AudioUnitHosting, MasterRecording {
         return (timePitch.rate, filter.bypass ? nil : filter.frequency,
                 delay.wetDryMix / 100, reverb.wetDryMix / 100)
     }
+
+    public func resetDiagnostics() { meterStore.resetDiagnostics() }
 
     public func outputMeter() -> OutputMeterSnapshot {
         if !transport.snapshot().isPlaying {

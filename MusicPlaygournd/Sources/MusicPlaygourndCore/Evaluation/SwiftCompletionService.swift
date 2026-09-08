@@ -221,8 +221,21 @@ public actor SwiftCompletionService {
                 }
                 guard Range(range, in: source) != nil else { throw SwiftCompletionError.malformedResponse("Edit splits Unicode.") }
                 let decoded = try decodeSnippet(insertion, enabled: (item["insertTextFormat"] as? Int) == 2)
-                values.append(SwiftCompletion(label: label, detail: item["detail"] as? String,
-                    insertion: decoded.0, replacementRange: range, selectionRange: decoded.1))
+                let detail = item["detail"] as? String
+                let semanticKey = SwiftCompletionSemanticKey(
+                    label: label,
+                    detail: detail,
+                    argumentIndex: item["argumentIndex"] as? Int ?? 0
+                )
+                values.append(SwiftCompletion(
+                    label: label,
+                    detail: detail,
+                    insertion: decoded.0,
+                    replacementRange: range,
+                    selectionRange: decoded.1,
+                    annotation: SwiftCompletionSignatureTable.annotation(for: semanticKey),
+                    semanticKey: semanticKey
+                ))
                 if values.count == 256 { break }
             } catch let error as SwiftCompletionError {
                 switch error {

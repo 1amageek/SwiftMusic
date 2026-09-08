@@ -20,6 +20,9 @@ public struct CompiledSource: Sendable, Equatable {
     public internal(set) var chokeGroup: String?
     public internal(set) var patternAnchor: SoundSourceAnchor?
     public internal(set) var patternText: String?
+    /// The latest bank-selection declaration used only for editor value completion.
+    public internal(set) var sampleSelectionAnchor: SoundSourceAnchor?
+    public internal(set) var sampleSelectionText: String?
 
     internal init(
         id: Int,
@@ -40,7 +43,9 @@ public struct CompiledSource: Sendable, Equatable {
         voicePolicy: VoicePolicy? = nil,
         chokeGroup: String? = nil,
         patternAnchor: SoundSourceAnchor? = nil,
-        patternText: String? = nil
+        patternText: String? = nil,
+        sampleSelectionAnchor: SoundSourceAnchor? = nil,
+        sampleSelectionText: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -61,5 +66,7 @@ public struct CompiledSource: Sendable, Equatable {
         self.chokeGroup = chokeGroup
         self.patternAnchor = patternAnchor
         self.patternText = patternText
+        self.sampleSelectionAnchor = sampleSelectionAnchor
+        self.sampleSelectionText = sampleSelectionText
     }
 }

@@ -1,6 +1,6 @@
 import MusicPlaygourndCore
 
-struct MIDISessionRoute: Sendable, Equatable {
+struct MIDISessionRoute: Codable, Sendable, Equatable {
     var input: MIDIEndpointID?
     var output: MIDIEndpointID?
     var sendsLoopNotes: Bool

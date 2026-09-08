@@ -1,4 +1,5 @@
 public enum PreparedLoopValidationError: Error, Codable, Sendable, Equatable, CustomStringConvertible {
+    case invalidTelemetry(String)
     case invalidSampleRate(Double)
     case invalidBPM(Double)
     case invalidMeter(Int)
@@ -13,6 +14,7 @@ public enum PreparedLoopValidationError: Error, Codable, Sendable, Equatable, Cu
 
     public var description: String {
         switch self {
+        case .invalidTelemetry(let reason): "Invalid telemetry: \(reason)"
         case .invalidSampleRate(let value): "Invalid sample rate: \(value)"
         case .invalidBPM(let value): "Invalid BPM: \(value)"
         case .invalidMeter(let value): "Invalid beats per bar: \(value)"

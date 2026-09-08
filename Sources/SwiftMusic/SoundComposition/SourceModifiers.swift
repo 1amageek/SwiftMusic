@@ -9,8 +9,15 @@ public extension Sound {
         ModifiedSound(base: self, modifier: .envelope(value))
     }
 
-    func envelope(_ pattern: EnvelopePattern, cycle: MusicalTime = .whole) -> ModifiedSound {
-        ModifiedSound(base: self, modifier: .envelopePattern(pattern, cycle))
+    func envelope(
+        _ pattern: EnvelopePattern,
+        cycle: MusicalTime = .whole,
+        fileID: String = #fileID,
+        line: Int = #line,
+        column: Int = #column
+    ) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .envelopePattern(
+            pattern, cycle, SoundSourceAnchor(fileID: fileID, line: line, column: column)))
     }
 
     func pitchEnvelope(_ envelope: Envelope, depth: Semitones) -> ModifiedSound {
@@ -55,9 +62,14 @@ public extension Sound {
         _ pattern: CutoffPattern,
         cycle: MusicalTime = .whole,
         resonanceQ: Double = 0.7071067811865476,
-        slope: FilterSlope = .twelve
+        slope: FilterSlope = .twelve,
+        fileID: String = #fileID,
+        line: Int = #line,
+        column: Int = #column
     ) -> ModifiedSound {
-        ModifiedSound(base: self, modifier: .cutoffPattern(.lowPass, pattern, cycle, resonanceQ, slope))
+        ModifiedSound(base: self, modifier: .cutoffPattern(
+            .lowPass, pattern, cycle, resonanceQ, slope,
+            SoundSourceAnchor(fileID: fileID, line: line, column: column)))
     }
 
     func lowPass(
@@ -72,11 +84,16 @@ public extension Sound {
         _ pattern: CutoffPattern,
         cycle: MusicalTime = .whole,
         resonanceQ: Double = 0.7071067811865476,
-        slope: FilterSlope = .twelve
+        slope: FilterSlope = .twelve,
+        fileID: String = #fileID,
+        line: Int = #line,
+        column: Int = #column
     ) -> ModifiedSound {
         ModifiedSound(
             base: self,
-            modifier: .cutoffPattern(.highPass, pattern, cycle, resonanceQ, slope)
+            modifier: .cutoffPattern(
+                .highPass, pattern, cycle, resonanceQ, slope,
+                SoundSourceAnchor(fileID: fileID, line: line, column: column))
         )
     }
 
@@ -92,11 +109,16 @@ public extension Sound {
         _ pattern: CutoffPattern,
         cycle: MusicalTime = .whole,
         resonanceQ: Double = 0.7071067811865476,
-        slope: FilterSlope = .twelve
+        slope: FilterSlope = .twelve,
+        fileID: String = #fileID,
+        line: Int = #line,
+        column: Int = #column
     ) -> ModifiedSound {
         ModifiedSound(
             base: self,
-            modifier: .cutoffPattern(.bandPass, pattern, cycle, resonanceQ, slope)
+            modifier: .cutoffPattern(
+                .bandPass, pattern, cycle, resonanceQ, slope,
+                SoundSourceAnchor(fileID: fileID, line: line, column: column))
         )
     }
 
@@ -114,9 +136,13 @@ public extension Sound {
 
     func sampleSelection(
         _ pattern: SampleSelectionPattern,
-        cycle: MusicalTime = .whole
+        cycle: MusicalTime = .whole,
+        fileID: String = #fileID,
+        line: Int = #line,
+        column: Int = #column
     ) -> ModifiedSound {
-        ModifiedSound(base: self, modifier: .sampleSelection(pattern, cycle))
+        ModifiedSound(base: self, modifier: .sampleSelection(
+            pattern, cycle, SoundSourceAnchor(fileID: fileID, line: line, column: column)))
     }
 
     func sampleSlice(_ slice: SampleSlice) -> ModifiedSound {

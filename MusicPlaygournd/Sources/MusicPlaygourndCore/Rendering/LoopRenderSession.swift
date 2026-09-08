@@ -80,6 +80,18 @@ public struct LoopRenderSession: Sendable {
         return result.stems
     }
 
+    /// Samples the selected control without rendering, adopting or mutating audio.
+    public func visualization(for address: LiveControlAddress,
+                              overrides: [LiveControlOverride] = []) throws -> PreparedControlVisualization {
+        guard address.revision == revision else {
+            throw LiveControlError.staleRevision(expected: revision, actual: address.revision)
+        }
+        guard let descriptor = catalog.descriptor(for: address) else { throw LiveControlError.unknownAddress(address) }
+        let overlay = try makeOverlay(overrides)
+        return try ControlVisualizationRenderer.render(sound: sound, loop: baseline, samples: preparedSamples,
+            descriptor: descriptor, overlay: overlay)
+    }
+
     private func makeOverlay(_ overrides: [LiveControlOverride]) throws -> RenderControlOverlay? {
         guard !overrides.isEmpty else { return nil }
         let overlay = try RenderControlOverlay.make(

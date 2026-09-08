@@ -104,11 +104,23 @@ public actor SourceEvaluator {
                     beatsPerBar: \(beatsPerBar),
                     maximumBeats: MusicalTime(numerator: \(maximumLiveBeats), denominator: 1)
                 )
-                try await RenderWorker.run(revision: \(revision), outputURL: URL(fileURLWithPath: \(Self.swiftLiteral(output.path)))) {
-                    let sound = try SoundCompiler(limits: bounds).compile(Session(), liveLoop: policy)
-                    return try LoopRenderSession(sound: sound, bpm: \(bpm), beatsPerBar: \(beatsPerBar), revision: \(revision))
+                try await RenderWorker.runPrepared(revision: \(revision), outputURL: URL(fileURLWithPath: \(Self.swiftLiteral(output.path)))) {
+                    let sound = try SoundCompiler(limits: bounds).compileDetailed(Session(), liveLoop: policy)
+                    let metadata = try EditorSemanticMetadata(
+                        sound: sound, source: \(Self.swiftLiteral(source)), revision: \(revision))
+                    let session = try LoopRenderSession(
+                        sound: sound, bpm: \(bpm), beatsPerBar: \(beatsPerBar), revision: \(revision))
+                    return RenderWorkerPreparation(session: session, metadata: metadata)
                 }
               } catch {
+                if let located = error as? LocatedSoundCompilationError {
+                  do {
+                    let diagnostic = try WorkerCompilerDiagnostic(revision: \(revision), error: located)
+                    FileHandle.standardError.write(try diagnostic.encodedStderrLine())
+                  } catch {
+                    FileHandle.standardError.write(Data("Compiler diagnostic serialization failed: \\(error)\\n".utf8))
+                  }
+                }
                 FileHandle.standardError.write(Data("Music preparation error: \\(String(describing: error))\\n".utf8))
                 exit(1)
               }
@@ -149,12 +161,25 @@ public actor SourceEvaluator {
             rows: loop.rows.map { row in
                 LoopRow(sourceID: row.sourceID, label: row.label, anchor: row.anchor, peaks: row.peaks,
                     patternText: row.patternText, resultLine: resultLines[row.sourceID])
-            })
+            }, meters: loop.meters)
         try located.validate()
         try Task.checkCancellation()
         candidate = Worker(revision: revision, connection: connection,
                            directory: workerDirectory, resultLines: resultLines)
-        return RetainedEvaluation(loop: located, catalog: initial.catalog)
+        return RetainedEvaluation(loop: located, catalog: initial.catalog, metadata: initial.metadata)
+        } catch let error as EvaluationError {
+            await connection.shutdown()
+            try manager.removeItem(at: workerDirectory)
+            if case .workerCompilerDiagnostic(let diagnostic) = error {
+                let range: SourceDiagnosticRange?
+                do {
+                    range = try ExpressionResultLocations.diagnosticRange(source: source, diagnostic: diagnostic)
+                } catch {
+                    range = nil
+                }
+                throw EvaluationError.compilerDiagnostic(message: diagnostic.message, range: range)
+            }
+            throw error
         } catch {
             await connection.shutdown()
             try manager.removeItem(at: workerDirectory)
@@ -208,7 +233,7 @@ public actor SourceEvaluator {
             events: loop.events, rows: loop.rows.map {
                 LoopRow(sourceID: $0.sourceID, label: $0.label, anchor: $0.anchor, peaks: $0.peaks,
                         patternText: $0.patternText, resultLine: worker.resultLines[$0.sourceID])
-            })
+            }, meters: loop.meters)
         try located.validate()
         return located
     }

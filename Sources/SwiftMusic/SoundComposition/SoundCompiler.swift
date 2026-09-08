@@ -51,6 +51,11 @@ public struct SoundCompiler: Sendable {
         try compile(music.body)
     }
 
+    /// Compiles while retaining the declaration anchor for pattern failures.
+    public func compileDetailed<M: Music>(_ music: M) throws -> CompiledSound {
+        try compileDetailed(music.body)
+    }
+
     public func compile<M: Music>(
         _ music: M,
         liveLoop policy: LiveLoopPolicy
@@ -58,15 +63,71 @@ public struct SoundCompiler: Sendable {
         try compile(music.body, liveLoop: policy)
     }
 
+    /// Compiles a live loop while retaining declaration anchors for pattern failures.
+    public func compileDetailed<M: Music>(
+        _ music: M,
+        liveLoop policy: LiveLoopPolicy
+    ) throws -> CompiledSound {
+        try compileDetailed(music.body, liveLoop: policy)
+    }
+
     public func compile<S: Sound>(_ sound: S) throws -> CompiledSound {
-        try compileSound(sound, liveLoop: nil)
+        do {
+            return try compileSound(sound, liveLoop: nil)
+        } catch let failure as _LocatedCompilationFailure {
+            throw mappedCompilationError(failure.error)
+        } catch {
+            throw mappedCompilationError(error)
+        }
+    }
+
+    /// Compiles while retaining the declaration anchor for pattern failures.
+    public func compileDetailed<S: Sound>(_ sound: S) throws -> CompiledSound {
+        do {
+            return try compileSound(sound, liveLoop: nil)
+        } catch let failure as _LocatedCompilationFailure {
+            let underlying = locatedUnderlying(failure.error)
+            throw LocatedSoundCompilationError(
+                underlying: underlying,
+                anchor: failure.anchor,
+                utf8Offset: Self.utf8Offset(in: failure.error),
+                patternText: failure.patternText
+            )
+        } catch {
+            throw mappedCompilationError(error)
+        }
     }
 
     public func compile<S: Sound>(
         _ sound: S,
         liveLoop policy: LiveLoopPolicy
     ) throws -> CompiledSound {
-        try compileSound(sound, liveLoop: policy)
+        do {
+            return try compileSound(sound, liveLoop: policy)
+        } catch let failure as _LocatedCompilationFailure {
+            throw mappedCompilationError(failure.error)
+        } catch {
+            throw mappedCompilationError(error)
+        }
+    }
+
+    /// Compiles a live loop while retaining the declaration anchor for pattern failures.
+    public func compileDetailed<S: Sound>(
+        _ sound: S,
+        liveLoop policy: LiveLoopPolicy
+    ) throws -> CompiledSound {
+        do {
+            return try compileSound(sound, liveLoop: policy)
+        } catch let failure as _LocatedCompilationFailure {
+            throw LocatedSoundCompilationError(
+                underlying: locatedUnderlying(failure.error),
+                anchor: failure.anchor,
+                utf8Offset: Self.utf8Offset(in: failure.error),
+                patternText: failure.patternText
+            )
+        } catch {
+            throw mappedCompilationError(error)
+        }
     }
 
     private func compileSound<S: Sound>(
@@ -77,14 +138,38 @@ public struct SoundCompiler: Sendable {
             limits: limits,
             capturesLiveProgram: policy != nil
         )
-        do {
-            let fragment = try context.visit(sound, depth: 0)
-            if let policy {
-                return try context.finishLive(fragment, policy: policy)
+        let fragment = try context.visit(sound, depth: 0)
+        if let policy {
+            return try context.finishLive(fragment, policy: policy)
+        }
+        return try context.finish(fragment)
+    }
+
+    private static func utf8Offset(in error: Error) -> Int? {
+        switch error {
+        case let error as RhythmPatternError: error.utf8Offset
+        case let error as NotePatternError: error.utf8Offset
+        case let error as GainPatternError: error.utf8Offset
+        case let error as PanPatternError: error.utf8Offset
+        case let error as PitchPatternError: error.utf8Offset
+        case let error as CutoffPatternError: error.utf8Offset
+        case let error as EnvelopePatternError: error.utf8Offset
+        case let error as SampleSelectionPatternError: error.utf8Offset
+        case let error as SoundCompilationError:
+            switch error {
+            case .invalidRhythm(let value): value.utf8Offset
+            case .invalidNotes(let value): value.utf8Offset
+            case .invalidGainPattern(let value): value.utf8Offset
+            case .invalidPanPattern(let value): value.utf8Offset
+            case .invalidPitchPattern(let value): value.utf8Offset
+            case .invalidCutoffPattern(let value): value.utf8Offset
+            case .invalidEnvelopePattern(let value): value.utf8Offset
+            case .invalidSampleSelection(let value): value.utf8Offset
+            case .unknownSampleKey(_, let offset): offset
+            default: nil
             }
-            return try context.finish(fragment)
-        } catch {
-            throw mappedCompilationError(error)
+        default:
+            nil
         }
     }
 
@@ -112,8 +197,18 @@ public struct SoundCompiler: Sendable {
             return SoundCompilationError.invalidBusRouting(error)
         case is MusicalTimeError:
             return SoundCompilationError.timeOverflow
+        case let error as SoundCompilationError:
+            return error
         default:
+            // Preserve the source-compatible compile surface for unexpected client errors.
             return error
         }
+    }
+
+    private func locatedUnderlying(_ error: Error) -> SoundCompilationError {
+        if let mapped = mappedCompilationError(error) as? SoundCompilationError {
+            return mapped
+        }
+        return .unexpectedFailure(String(describing: error))
     }
 }

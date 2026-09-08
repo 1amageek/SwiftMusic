@@ -145,10 +145,20 @@ internal struct _SoundCompilationContext {
 
             var fragment = try visit(base, depth: baseDepth)
             for modifier in modifiers.reversed() {
-                let childProgram = fragment.liveProgram
-                try apply(modifier, to: &fragment, sourceRange: firstSource..<sources.count)
-                if let childProgram {
-                    fragment.liveProgram = try childProgram.applying(modifier, finite: fragment)
+                do {
+                    let childProgram = fragment.liveProgram
+                    try apply(modifier, to: &fragment, sourceRange: firstSource..<sources.count)
+                    if let childProgram {
+                        fragment.liveProgram = try childProgram.applying(modifier, finite: fragment)
+                    }
+                } catch let failure as _LocatedCompilationFailure {
+                    throw failure
+                } catch {
+                    if let anchor = modifier.sourceAnchor {
+                        throw _LocatedCompilationFailure(error: error, anchor: anchor,
+                                                         patternText: modifier.sourcePatternText)
+                    }
+                    throw error
                 }
             }
             return fragment
@@ -367,7 +377,7 @@ internal struct _SoundCompilationContext {
                 fragment.events[index].pitch = try transposed(fragment.events[index].pitch, by: semitones)
                 try validateEffectivePitch(fragment.events[index])
             }
-        case .pitchPattern(let pattern, let cycle):
+        case .pitchPattern(let pattern, let cycle, _):
             guard cycle > .zero else { throw invalid("Pitch pattern cycle must be positive") }
             let resolved = try pattern.resolvedTransform(cycle: cycle)
             let period = try resolved.period
@@ -408,7 +418,7 @@ internal struct _SoundCompilationContext {
             for index in fragment.events.indices {
                 fragment.events[index].cutoffHz = cutoff.hertz
             }
-        case .cutoffPattern(let kind, let pattern, let cycle, let resonanceQ, let slope):
+        case .cutoffPattern(let kind, let pattern, let cycle, let resonanceQ, let slope, _):
             guard cycle > .zero else { throw invalid("Cutoff pattern cycle must be positive") }
             let filter = try SourceFilter(kind: kind, resonanceQ: resonanceQ, slope: slope)
             let resolved = try pattern.resolvedTransform(cycle: cycle)
@@ -434,7 +444,7 @@ internal struct _SoundCompilationContext {
             for index in fragment.events.indices {
                 fragment.events[index].cutoffHz = automation.from.hertz
             }
-        case .envelopePattern(let pattern, let cycle):
+        case .envelopePattern(let pattern, let cycle, _):
             guard cycle > .zero else { throw invalid("Envelope pattern cycle must be positive") }
             let resolved = try pattern.resolvedTransform(cycle: cycle)
             let period = try resolved.period
@@ -442,7 +452,7 @@ internal struct _SoundCompilationContext {
                 let leaf = try sampledLeaf(resolved, period: period, at: fragment.events[index].start)
                 fragment.events[index].envelope = try pattern.value(at: leaf)
             }
-        case .sampleSelection(let pattern, let cycle):
+        case .sampleSelection(let pattern, let cycle, let anchor):
             guard cycle > .zero else { throw invalid("Sample selection cycle must be positive") }
             let resolved = try pattern.resolvedTransform(cycle: cycle)
             let leaves = resolved.program.leaves
@@ -463,6 +473,8 @@ internal struct _SoundCompilationContext {
                         key: key, utf8Offset: leaves[index].offset
                     )
                 }
+                sources[sourceID].sampleSelectionAnchor = anchor
+                sources[sourceID].sampleSelectionText = pattern.rawValue
             }
             for index in fragment.events.indices {
                 let eventStart = fragment.events[index].start
@@ -739,7 +751,7 @@ internal struct _SoundCompilationContext {
             if let root = try processingRoot(fragment.roots) {
                 fragment.roots = [try appendNode(.gain(input: root, value: gain))]
             }
-        case .gainPattern(let pattern, let cycle):
+        case .gainPattern(let pattern, let cycle, _):
             guard cycle > .zero else { throw invalid("Gain pattern cycle must be positive") }
             let resolved = try pattern.resolvedTransform(cycle: cycle)
             let leaves = resolved.program.leaves
@@ -772,7 +784,7 @@ internal struct _SoundCompilationContext {
             if let root = try processingRoot(fragment.roots) {
                 fragment.roots = [try appendNode(.pan(input: root, value: pan))]
             }
-        case .panPattern(let pattern, let cycle):
+        case .panPattern(let pattern, let cycle, _):
             guard cycle > .zero else { throw invalid("Pan pattern cycle must be positive") }
             let resolved = try pattern.resolvedTransform(cycle: cycle)
             let leaves = resolved.program.leaves
@@ -846,7 +858,17 @@ internal struct _SoundCompilationContext {
         var context = Self(limits: limits, eventTransformPeriod: livePeriod, sources: sources)
         context.eventCount = events.count
         var fragment = _SoundFragment(events: events, extent: extent)
-        try context.apply(modifier, to: &fragment, sourceRange: 0..<0, sourceIDs: sourceIDs)
+        do {
+            try context.apply(modifier, to: &fragment, sourceRange: 0..<0, sourceIDs: sourceIDs)
+        } catch let failure as _LocatedCompilationFailure {
+            throw failure
+        } catch {
+            if let anchor = modifier.sourceAnchor {
+                throw _LocatedCompilationFailure(error: error, anchor: anchor,
+                                                 patternText: modifier.sourcePatternText)
+            }
+            throw error
+        }
         return fragment
     }
 

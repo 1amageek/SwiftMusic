@@ -14,7 +14,7 @@ internal enum _SoundModifier: Sendable {
     case notes([Pitch], SoundSourceAnchor)
     case notePattern(NotePattern, MusicalTime, SoundSourceAnchor)
     case transpose(Int)
-    case pitchPattern(PitchPattern, MusicalTime)
+    case pitchPattern(PitchPattern, MusicalTime, SoundSourceAnchor)
     case scaleNotes([ScaleDegree], Key, SoundSourceAnchor)
     case voicing(Voicing)
     case inversion(Int)
@@ -31,9 +31,9 @@ internal enum _SoundModifier: Sendable {
     case pitchEnvelope(EnvelopeModulation)
     case filterEnvelope(EnvelopeModulation)
     case fixedFilter(FilterKind, Frequency, Double, FilterSlope)
-    case cutoffPattern(FilterKind, CutoffPattern, MusicalTime, Double, FilterSlope)
-    case envelopePattern(EnvelopePattern, MusicalTime)
-    case sampleSelection(SampleSelectionPattern, MusicalTime)
+    case cutoffPattern(FilterKind, CutoffPattern, MusicalTime, Double, FilterSlope, SoundSourceAnchor)
+    case envelopePattern(EnvelopePattern, MusicalTime, SoundSourceAnchor)
+    case sampleSelection(SampleSelectionPattern, MusicalTime, SoundSourceAnchor)
     case sampleSlice(SampleSlice)
     case chopped(Int)
     case granular(GranularPlayback)
@@ -48,10 +48,10 @@ internal enum _SoundModifier: Sendable {
     case tremolo(ModulationRate, Double, LFOWaveform)
     case vibrato(ModulationRate, Semitones, LFOWaveform)
     case gain(Double)
-    case gainPattern(GainPattern, MusicalTime)
+    case gainPattern(GainPattern, MusicalTime, SoundSourceAnchor)
     case gainAutomation(GainAutomation)
     case pan(Double)
-    case panPattern(PanPattern, MusicalTime)
+    case panPattern(PanPattern, MusicalTime, SoundSourceAnchor)
     case panAutomation(PanAutomation)
     case duck(String, Decibels, Duration, Duration)
     case pitchAutomation(PitchAutomation)
@@ -59,4 +59,33 @@ internal enum _SoundModifier: Sendable {
     case muted
     case send(String, Double)
     case output(String)
+
+    var sourceAnchor: SoundSourceAnchor? {
+        switch self {
+        case .rhythm(_, _, let anchor), .notes(_, let anchor),
+             .notePattern(_, _, let anchor), .scaleNotes(_, _, let anchor),
+             .gainPattern(_, _, let anchor), .panPattern(_, _, let anchor),
+             .pitchPattern(_, _, let anchor),
+             .cutoffPattern(_, _, _, _, _, let anchor),
+             .envelopePattern(_, _, let anchor),
+             .sampleSelection(_, _, let anchor):
+            anchor
+        default:
+            nil
+        }
+    }
+
+    var sourcePatternText: String? {
+        switch self {
+        case .rhythm(let pattern, _, _): pattern.rawValue
+        case .notePattern(let pattern, _, _): pattern.rawValue
+        case .pitchPattern(let pattern, _, _): pattern.rawValue
+        case .cutoffPattern(_, let pattern, _, _, _, _): pattern.rawValue
+        case .envelopePattern(let pattern, _, _): pattern.rawValue
+        case .sampleSelection(let pattern, _, _): pattern.rawValue
+        case .gainPattern(let pattern, _, _): pattern.rawValue
+        case .panPattern(let pattern, _, _): pattern.rawValue
+        default: nil
+        }
+    }
 }

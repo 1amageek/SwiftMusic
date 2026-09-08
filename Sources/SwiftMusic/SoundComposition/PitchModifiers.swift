@@ -37,8 +37,15 @@ public extension Sound {
         ModifiedSound(base: self, modifier: .transpose(semitones))
     }
 
-    func transpose(_ pattern: PitchPattern, cycle: MusicalTime = .whole) -> ModifiedSound {
-        ModifiedSound(base: self, modifier: .pitchPattern(pattern, cycle))
+    func transpose(
+        _ pattern: PitchPattern,
+        cycle: MusicalTime = .whole,
+        fileID: String = #fileID,
+        line: Int = #line,
+        column: Int = #column
+    ) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .pitchPattern(
+            pattern, cycle, SoundSourceAnchor(fileID: fileID, line: line, column: column)))
     }
 
     func transpose(_ automation: PitchAutomation) -> ModifiedSound {

@@ -13,6 +13,17 @@ public struct LiveControlCatalog: Codable, Sendable, Equatable, Hashable {
             if case .scalar(let value) = descriptor.baseline, !value.isFinite {
                 throw LiveControlError.invalidCatalog("scalar baselines must be finite")
             }
+            if let presentation = descriptor.presentation {
+                let standard = try LiveControlPresentation.suggested(for: descriptor.address.parameter)
+                guard presentation.unit == standard.unit, presentation.scale == standard.scale,
+                      presentation.minimum <= standard.minimum, presentation.maximum >= standard.maximum else {
+                    throw LiveControlError.invalidCatalog("Presentation must preserve its parameter unit, scale and standard span")
+                }
+                if case .scalar(let value) = descriptor.baseline,
+                   !(presentation.minimum...presentation.maximum).contains(value) {
+                    throw LiveControlError.invalidCatalog("Presentation excludes its scalar baseline")
+                }
+            }
             guard addresses.insert(descriptor.address).inserted else {
                 throw LiveControlError.duplicateAddress(descriptor.address)
             }
@@ -81,6 +92,34 @@ public struct LiveControlCatalog: Codable, Sendable, Equatable, Hashable {
             descriptors.append(.init(address: address(target, .trackLevel), label: "Track \(track.id) Level", baseline: .scalar(track.level)))
             descriptors.append(.init(address: address(target, .trackPan), label: "Track \(track.id) Pan",
                                      baseline: track.pan.map(LiveControlBaseline.scalar) ?? .bypassed))
+        }
+
+        descriptors = try descriptors.map { descriptor in
+            var values: [Double] = []
+            if case .scalar(let value) = descriptor.baseline { values.append(value) }
+            switch descriptor.address.target {
+            case .source(let id):
+                let source = sound.sources[id]
+                if descriptor.address.parameter == .pitchOffsetSemitones, let automation = source.pitchAutomation {
+                    values += [automation.from.value, automation.to.value]
+                }
+                if descriptor.address.parameter == .cutoffHz {
+                    if let automation = source.cutoffAutomation { values += [automation.from.hertz, automation.to.hertz] }
+                    for event in sound.events where event.sourceID == id {
+                        if let cutoff = event.cutoffHz { values.append(cutoff) }
+                    }
+                }
+            case .renderNode(let id):
+                switch sound.renderNodes[id] {
+                case .gainAutomation(_, let automation): values += [automation.from, automation.to]
+                case .panAutomation(_, let automation): values += [automation.from, automation.to]
+                default: break
+                }
+            default: break
+            }
+            return LiveControlDescriptor(address: descriptor.address, label: descriptor.label,
+                baseline: descriptor.baseline,
+                presentation: try .suggested(for: descriptor.address.parameter, including: values))
         }
 
         try self.init(descriptors: descriptors)

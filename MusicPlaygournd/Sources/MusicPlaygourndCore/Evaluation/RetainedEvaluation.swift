@@ -2,9 +2,21 @@
 public struct RetainedEvaluation: Sendable {
     public let loop: PreparedLoop
     public let catalog: LiveControlCatalog
+    public let metadata: EditorSemanticMetadata
 
-    public init(loop: PreparedLoop, catalog: LiveControlCatalog) {
+    public init(
+        loop: PreparedLoop,
+        catalog: LiveControlCatalog,
+        metadata: EditorSemanticMetadata? = nil
+    ) {
         self.loop = loop
         self.catalog = catalog
+        if let metadata {
+            self.metadata = metadata
+        } else {
+            // An empty metadata value is valid by construction and preserves source compatibility
+            // for callers that create retained fixtures before semantic metadata is available.
+            self.metadata = .empty
+        }
     }
 }

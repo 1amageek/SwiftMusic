@@ -14,6 +14,7 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
     public let beatCount: Double
     public let samples: [Float]
     public let events: [LoopEvent]
+    public let meters: [PreparedMeterEnvelope]?
     public let rows: [LoopRow]
 
     public init(
@@ -23,7 +24,8 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
         beatCount: Double,
         samples: [Float],
         events: [LoopEvent],
-        rows: [LoopRow] = []
+        rows: [LoopRow] = [],
+        meters: [PreparedMeterEnvelope]? = nil
     ) {
         self.sampleRate = sampleRate
         self.bpm = bpm
@@ -32,6 +34,7 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
         self.samples = samples
         self.events = events
         self.rows = rows
+        self.meters = meters
     }
 
     public func validate() throws {
@@ -103,6 +106,19 @@ public struct PreparedLoop: Codable, Sendable, Equatable {
             for peak in row.peaks {
                 guard peak.isFinite, peak >= 0 else {
                     throw PreparedLoopValidationError.invalidRow(index: index, reason: "peak envelope contains an invalid value")
+                }
+            }
+        }
+
+        if let meters {
+            guard meters.count <= 64 else {
+                throw PreparedLoopValidationError.invalidTelemetry("Meter count exceeds Track/Bus limits")
+            }
+            var targets = Set<PreparedMeterEnvelope.Target>()
+            for meter in meters {
+                try meter.validate()
+                guard targets.insert(meter.target).inserted else {
+                    throw PreparedLoopValidationError.invalidTelemetry("Duplicate meter identity")
                 }
             }
         }

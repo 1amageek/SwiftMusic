@@ -35,6 +35,20 @@ internal struct _LiveEventProgram {
     }
 
     func applying(_ modifier: _SoundModifier, finite: _SoundFragment) throws -> Self {
+        do {
+            return try applyingUnlocated(modifier, finite: finite)
+        } catch let failure as _LocatedCompilationFailure {
+            throw failure
+        } catch {
+            if let anchor = modifier.sourceAnchor {
+                throw _LocatedCompilationFailure(error: error, anchor: anchor,
+                                                 patternText: modifier.sourcePatternText)
+            }
+            throw error
+        }
+    }
+
+    private func applyingUnlocated(_ modifier: _SoundModifier, finite: _SoundFragment) throws -> Self {
         switch modifier {
         case .oneShot:
             return .finite(finite)
@@ -64,22 +78,22 @@ internal struct _LiveEventProgram {
             case .periodically(let value):
                 guard period != nil else { return .finite(finite) }
                 period = try Self.commonPeriod(period, value.cycle.multiplied(by: value.every))
-            case .gainPattern(let pattern, let cycle):
+            case .gainPattern(let pattern, let cycle, _):
                 guard period != nil else { return .finite(finite) }
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
-            case .panPattern(let pattern, let cycle):
+            case .panPattern(let pattern, let cycle, _):
                 guard period != nil else { return .finite(finite) }
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
-            case .pitchPattern(let pattern, let cycle):
+            case .pitchPattern(let pattern, let cycle, _):
                 guard period != nil else { return .finite(finite) }
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
-            case .cutoffPattern(_, let pattern, let cycle, _, _):
+            case .cutoffPattern(_, let pattern, let cycle, _, _, _):
                 guard period != nil else { return .finite(finite) }
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
-            case .envelopePattern(let pattern, let cycle):
+            case .envelopePattern(let pattern, let cycle, _):
                 guard period != nil else { return .finite(finite) }
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
-            case .sampleSelection(let pattern, let cycle):
+            case .sampleSelection(let pattern, let cycle, _):
                 guard period != nil else { return .finite(finite) }
                 period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
             case .fast(let factor):

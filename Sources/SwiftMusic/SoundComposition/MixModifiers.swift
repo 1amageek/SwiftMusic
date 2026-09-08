@@ -3,8 +3,15 @@ public extension Sound {
         ModifiedSound(base: self, modifier: .gain(value))
     }
 
-    func gain(_ pattern: GainPattern, cycle: MusicalTime = .whole) -> ModifiedSound {
-        ModifiedSound(base: self, modifier: .gainPattern(pattern, cycle))
+    func gain(
+        _ pattern: GainPattern,
+        cycle: MusicalTime = .whole,
+        fileID: String = #fileID,
+        line: Int = #line,
+        column: Int = #column
+    ) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .gainPattern(
+            pattern, cycle, SoundSourceAnchor(fileID: fileID, line: line, column: column)))
     }
 
     func gain(_ automation: GainAutomation) -> ModifiedSound {
@@ -15,8 +22,15 @@ public extension Sound {
         ModifiedSound(base: self, modifier: .pan(value))
     }
 
-    func pan(_ pattern: PanPattern, cycle: MusicalTime = .whole) -> ModifiedSound {
-        ModifiedSound(base: self, modifier: .panPattern(pattern, cycle))
+    func pan(
+        _ pattern: PanPattern,
+        cycle: MusicalTime = .whole,
+        fileID: String = #fileID,
+        line: Int = #line,
+        column: Int = #column
+    ) -> ModifiedSound {
+        ModifiedSound(base: self, modifier: .panPattern(
+            pattern, cycle, SoundSourceAnchor(fileID: fileID, line: line, column: column)))
     }
 
     func pan(_ automation: PanAutomation) -> ModifiedSound {

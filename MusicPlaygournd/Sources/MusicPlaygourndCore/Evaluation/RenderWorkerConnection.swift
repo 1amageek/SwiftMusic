@@ -298,6 +298,9 @@ internal actor RenderWorkerConnection {
                 } else if count == 0 {
                     try parser.finish()
                     if closing { return }
+                    if let compilerDiagnostic = WorkerCompilerDiagnostic.decode(from: diagnostic) {
+                        throw EvaluationError.workerCompilerDiagnostic(compilerDiagnostic)
+                    }
                     throw EvaluationError.processFailed("Worker exited. \(String(decoding: diagnostic, as: UTF8.self))")
                 } else if errno != EAGAIN && errno != EINTR {
                     throw EvaluationError.processFailed("Worker protocol read failed.")
@@ -355,7 +358,17 @@ internal actor RenderWorkerConnection {
                 throw EvaluationError.invalidResult("Invalid worker ready response.")
             }
             let result = try readResult(generation: 0)
-            let ready = RetainedEvaluation(loop: result.loop, catalog: catalog)
+            let metadata: EditorSemanticMetadata
+            if let stored = result.metadata {
+                metadata = stored
+            } else {
+                do {
+                    metadata = try EditorSemanticMetadata(revision: revision)
+                } catch {
+                    throw EvaluationError.invalidResult("Worker semantic metadata is invalid: \(error.localizedDescription)")
+                }
+            }
+            let ready = RetainedEvaluation(loop: result.loop, catalog: catalog, metadata: metadata)
             readyResult = ready
             lastRenderedGeneration = 0
             readyDeadline = nil
@@ -425,6 +438,11 @@ internal actor RenderWorkerConnection {
         let result = try PropertyListDecoder().decode(WorkerPreparedResult.self, from: Data(contentsOf: outputURL))
         guard result.revision == revision, result.generation == generation else {
             throw EvaluationError.invalidResult("Worker result identity does not match its response.")
+        }
+        if let metadata = result.metadata {
+            guard metadata.revision == revision else {
+                throw EvaluationError.invalidResult("Worker semantic metadata revision does not match its result.")
+            }
         }
         try result.loop.validate()
         return result

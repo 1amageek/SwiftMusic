@@ -14,18 +14,32 @@ public enum RenderWorker {
         outputURL: URL,
         compile: @escaping @Sendable () throws -> LoopRenderSession
     ) async throws {
+        try await runPrepared(revision: revision, outputURL: outputURL) {
+            RenderWorkerPreparation(session: try compile())
+        }
+    }
+
+    /// Runs a retained worker while carrying compiler-owned semantic metadata.
+    public static func runPrepared(
+        revision: UInt64,
+        outputURL: URL,
+        prepare: @escaping @Sendable () throws -> RenderWorkerPreparation
+    ) async throws {
         let protocolDescriptor = try isolateProtocolOutput()
         defer { Darwin.close(protocolDescriptor) }
 
-        let session = try compile()
+        let preparation = try prepare()
+        let session = preparation.session
         guard session.revision == revision else {
             throw EvaluationError.invalidResult("Compiled worker revision does not match the requested revision.")
         }
         let writer = RenderWorkerOutputWriter(fileDescriptor: protocolDescriptor)
-        try publish(session.baseline, revision: revision, generation: 0, to: outputURL)
+        try publish(session.baseline, revision: revision, generation: 0,
+                    metadata: preparation.metadata, to: outputURL)
         try await writer.send(.ready(revision: revision, catalog: session.catalog))
 
-        let state = RenderWorkerState(session: session, revision: revision, outputURL: outputURL, writer: writer)
+        let state = RenderWorkerState(session: session, revision: revision, outputURL: outputURL,
+                                      metadata: preparation.metadata, writer: writer)
         while true {
             let command = try RenderWorkerFraming.decode(
                 RenderWorkerCommand.self,
@@ -91,9 +105,16 @@ public enum RenderWorker {
         }
     }
 
-    fileprivate static func publish(_ loop: PreparedLoop, revision: UInt64, generation: UInt64, to outputURL: URL) throws {
+    fileprivate static func publish(
+        _ loop: PreparedLoop,
+        revision: UInt64,
+        generation: UInt64,
+        metadata: EditorSemanticMetadata? = nil,
+        to outputURL: URL
+    ) throws {
         try loop.validate()
-        let result = WorkerPreparedResult(revision: revision, generation: generation, loop: loop)
+        let result = WorkerPreparedResult(revision: revision, generation: generation,
+                                          loop: loop, metadata: metadata)
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
         let data = try encoder.encode(result)
@@ -153,6 +174,7 @@ private actor RenderWorkerState {
     private let session: LoopRenderSession
     private let revision: UInt64
     private let outputURL: URL
+    private let metadata: EditorSemanticMetadata?
     private let writer: RenderWorkerOutputWriter
     private var activeRender: (operationID: UInt64, generation: UInt64, task: Task<Void, Never>)?
     private var pendingRender: Request?
@@ -161,10 +183,17 @@ private actor RenderWorkerState {
     private var latestOperationID: UInt64 = 0
     private var stopping = false
 
-    init(session: LoopRenderSession, revision: UInt64, outputURL: URL, writer: RenderWorkerOutputWriter) {
+    init(
+        session: LoopRenderSession,
+        revision: UInt64,
+        outputURL: URL,
+        metadata: EditorSemanticMetadata?,
+        writer: RenderWorkerOutputWriter
+    ) {
         self.session = session
         self.revision = revision
         self.outputURL = outputURL
+        self.metadata = metadata
         self.writer = writer
     }
 
@@ -260,8 +289,9 @@ private actor RenderWorkerState {
         let writer = writer
         let outputURL = outputURL
         let revision = revision
+        let metadata = metadata
         let workspace = outputURL.deletingLastPathComponent().standardizedFileURL.path
-        let task = Task.detached(priority: .userInitiated) { [weak self] in
+        let task = Task.detached(priority: .userInitiated) { [weak self, metadata] in
             var committed = false
             do {
                 if let destination = request.destination {
@@ -283,7 +313,8 @@ private actor RenderWorkerState {
                 } else {
                     let loop = try session.render(overrides: request.overrides)
                     try Task.checkCancellation()
-                    try RenderWorker.publish(loop, revision: revision, generation: request.generation, to: outputURL)
+                    try RenderWorker.publish(loop, revision: revision, generation: request.generation,
+                                             metadata: metadata, to: outputURL)
                     try Task.checkCancellation()
                     try await writer.send(.rendered(revision: revision, generation: request.generation,
                                                     operationID: request.operationID))

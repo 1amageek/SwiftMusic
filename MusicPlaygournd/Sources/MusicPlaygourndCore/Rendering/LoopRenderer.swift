@@ -252,7 +252,8 @@ public struct LoopRenderer: Sendable {
             beatCount: beatCount,
             samples: samples,
             events: events,
-            rows: rows
+            rows: rows,
+            meters: context.meters
         )
         do {
             try prepared.validate()
@@ -414,6 +415,7 @@ private struct RenderContext {
     let sampleFrames: [Int: Int]
     let overlay: RenderControlOverlay?
     let captureTrackStems: Bool
+    var meters: [PreparedMeterEnvelope] = []
     var capturedStems: [Int: StereoBuffer] = [:]
     var scheduledSources: [StereoBuffer]?
 
@@ -795,8 +797,26 @@ private struct RenderContext {
                 sourceCount: sound.sources.count, frameCount: frameCount,
                 seamless: sound.playbackMode == .seamlessLoop)
         }
+        var meterBoundaries: [Int: PreparedMeterEnvelope.Target] = [:]
+        for (index, node) in sound.renderNodes.enumerated() {
+            switch node {
+            case .track(_, let id): meterBoundaries[index] = .track(id)
+            case .busReturn(let name, _): meterBoundaries[index] = .bus(name)
+            case .eventDuck(let input, _):
+                if let target = meterBoundaries.removeValue(forKey: input) { meterBoundaries[index] = target }
+            default: break
+            }
+        }
         for index in sound.renderNodes.indices where neededNodes[index] {
             let rendered = try renderNode(index)
+            if let target = meterBoundaries[index] {
+                let label: String
+                switch target {
+                case .track(let id): label = sound.tracks[id].name
+                case .bus(let name): label = name
+                }
+                meters.append(PreparedMeterEnvelope(target: target, label: label, peaks: peakEnvelope(for: rendered)))
+            }
             nodeBuffers[index] = rendered
         }
         guard let first = sound.rootNodeIDs.first else { return StereoBuffer(frameCount: frameCount) }
