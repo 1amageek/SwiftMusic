@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — Preview
 
 - Preserve builder structure with `TupleSound`, `EmptySound`, `ConditionalSound`, optional sounds and `ArraySound`.
 - Add explicit generic `SoundGroup` and `AnySound`; compile structural children without flattening them into `[any Sound]`.

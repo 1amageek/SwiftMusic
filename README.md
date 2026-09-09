@@ -49,10 +49,10 @@ To hear your code, use **[MusicPlaygournd](https://github.com/1amageek/MusicPlay
 
 ## Install
 
-SwiftMusic **0.4.0 Preview** requires Swift 6.4 and declares macOS 14 as its minimum deployment target. This release is verified on macOS 27, Apple silicon, with Swift 6.4.2-dev snapshot `2026-09-04-a`; older macOS runtime behavior is not verified. Preview APIs may change.
+SwiftMusic **0.5.0 Preview** requires Swift 6.4 and declares macOS 14 as its minimum deployment target. Verified on macOS 27 with Apple silicon; older macOS runtime behavior is not verified. Preview APIs may change.
 
 ```swift
-.package(url: "https://github.com/1amageek/SwiftMusic.git", exact: "0.4.0")
+.package(url: "https://github.com/1amageek/SwiftMusic.git", exact: "0.5.0")
 ```
 
 Add `.product(name: "SwiftMusic", package: "SwiftMusic")` to your target dependencies.
@@ -104,7 +104,7 @@ func prepareSession() throws {
 
 If the same file imports SwiftUI, use `@SwiftMusic.State` or `@SwiftUI.State` to disambiguate. SwiftMusic does not create UI buttons or automatically recompile on mutation; the host owns that connection. MusicPlaygournd supports preprepared switch variants for live selection.
 
-## Typed composition (unreleased)
+## Typed composition
 
 `SoundBuilder` preserves the types of declarations instead of collecting every expression into `[any Sound]`.
 
@@ -138,7 +138,7 @@ struct Layer: Sound {
 
 Existing `Track` and `ModifiedSound` types remain type-erasure boundaries. The compiler visits typed children directly without constructing an existential child array, then produces the same public event and render-plan model. This does not introduce persistent identity or state reconciliation for repeated children.
 
-**Source compatibility:** Explicit `SoundGroup` result annotations must become `SoundGroup<Content>` or `some Sound`. Builder-taking APIs should accept generic `Content: Sound` rather than requiring the former concrete `SoundGroup`. These additions are on the development branch and are not included in 0.4.0.
+**Source compatibility:** Explicit `SoundGroup` result annotations must become `SoundGroup<Content>` or `some Sound`. Builder-taking APIs should accept generic `Content: Sound` rather than requiring the former concrete `SoundGroup`. These structural types are available starting in 0.5.0.
 
 ## Patterns
 
