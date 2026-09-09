@@ -19,6 +19,12 @@ Quantization, accent, performance techniques, and mini-notation operators beyond
 
 The component owns protocols, builders, `Sample` and `Synthesizer`, modifiers, parameter values, exact-time operations, scoped compilation, deterministic IDs, track metadata, event transforms, source descriptors, render nodes, and bounds. It does not load samples, generate oscillator samples, execute effects, schedule a clock, or render audio.
 
+### Declaration-local State
+
+`SwiftMusic.State<Value: Sendable>` is a MainActor-isolated, native-Observation property-wrapper class whose `wrappedValue` owns a declaration-local value and whose `projectedValue` returns that same State reference. A nonisolated wrapped-value initializer admits ordinary Session construction; all subsequent reads/writes are MainActor-isolated. Copying a Session preserves State identity. The implementation imports Observation, not SwiftUI; clients importing both frameworks qualify the wrapper as `@SwiftMusic.State`.
+
+The owner that retains the initial Session determines its State lifetime. Repeated body evaluation reads the same value; switch evaluation does not own or initialize state. Immutable compiled Sound/PCM snapshots contain resolved values and never access State from an audio callback. State supplies neither persistence, generalized Binding nor an autonomous evaluation loop. `@Performance` remains explicit injection of an external Observable model and is not replaced by local State. `State(wrappedValue:)` creates independent storage; the host decides when to retain or reconstruct declarations. `SoundCompositionTests.localStateRetainsIdentityAndChangesCompiledBranch` verifies shared reference identity, independent initialization, Observation notification and the actual SoundCompiler branch selected after mutation. Qualified SwiftUI.State and SwiftMusic.State declarations may coexist in the same client; host audio switching is verified separately.
+
 ## Related Designs
 
 | Design | Relationship | Contract Used | Summary | Cautions |

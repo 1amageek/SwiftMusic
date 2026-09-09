@@ -1,115 +1,144 @@
 # SwiftMusic
 
-SwiftMusic is a declarative Swift library for immutable `Sound` trees, exact beat-domain events and ordered render plans. Sibling declarations play concurrently in musical time; modifiers apply to their own subtree in Swift call-chain order.
-
-SwiftMusic does not depend on SwiftUI. A host owns audio rendering, playback, source evaluation and UI. The companion [MusicPlaygournd](MusicPlaygournd/README.md) is a separate native host under development; its unfinished editor work is not a completed deliverable of this library release. See [PHILOSOPHY.md](PHILOSOPHY.md) for the intended live-editing experience.
-
-## Installation
-
-```swift
-.package(url: "https://github.com/1amageek/SwiftMusic.git", exact: "0.2.0")
-```
-
-Link `.product(name: "SwiftMusic", package: "SwiftMusic")` from your target.
-
-SwiftMusic 0.2.0 is a prerelease with no stable API promise. It requires Swift tools 6.4 and declares macOS 14 as its deployment target. Library tests were verified on macOS 27 arm64 with Swift 6.4.2-dev (2026-09-04, compiler `d2e983b81b18217`). Runtime behavior on macOS 14, Embedded Swift and WASM is not claimed.
-
-## Declare music
+**Compose music with Swift.** Declare sounds, patterns, and musical transformations using a SwiftUI-inspired API—without importing or depending on SwiftUI.
 
 ```swift
 import SwiftMusic
 
-struct Groove: Sound {
+struct Session: Music {
     var body: some Sound {
-        Sample("kick")
-            .rhythm("x [x x] ~ x")
-            .gain("1 [0.3 0.6] 0 0.8")
+        Track("Kick") {
+            Sample("kick")
+                .rhythm("x ~ x ~")
+                .gain("1 0.7")
+        }
 
-        Synthesizer(.saw)
-            .notes("C2 Eb2 G2 Bb2")
-            .pan("-1 1")
+        Track("Hi-hat") {
+            Sample("closedHat")
+                .rhythm("x [x x] x [x x]")
+                .gain("0.5 [0.2 0.4] 0.5 [0.2 0.3]")
+                .pan(0.2)
+        }
+
+        Track("Bass") {
+            Synthesizer(.saw)
+                .notes("C2 ~ [Eb2 G2] G2")
+                .gain(0.3)
+        }
     }
-}
-
-struct Song: Music {
-    var body: some Sound {
-        Track("groove") { Groove() }
-    }
-}
-
-@MainActor
-func prepareSong() throws -> CompiledSound {
-    try SoundCompiler().compile(Song())
 }
 ```
 
-`Music.body` is MainActor-isolated. Reusable `Sound` declarations and compiled values remain `Sendable`. `Track` is optional grouping and mix metadata. A compiled sound contains events and a render graph, not PCM audio.
+Sibling sounds play in parallel. `Track` groups and names sounds; it is optional. A modifier applies to the sound subtree above it, so placement and order matter.
 
-## Performance models
+To hear your code, use **[MusicPlaygournd](https://github.com/1amageek/MusicPlaygournd)**, the native macOS live editor with inline rhythms, pattern highlighting, waveform/spectrum monitoring, and interactive controls.
 
-Use native Observation for interactive state and explicitly inject it with `.performance(...)`:
+## Install
+
+SwiftMusic **0.3.0 Preview** requires Swift 6.4 and declares macOS 14 as its minimum deployment target. This release is verified on macOS 27, Apple silicon, with Swift 6.4.2-dev snapshot `2026-09-04-a`; older macOS runtime behavior is not verified. Preview APIs may change.
 
 ```swift
-import Observation
+.package(url: "https://github.com/1amageek/SwiftMusic.git", exact: "0.3.0")
+```
+
+Add `.product(name: "SwiftMusic", package: "SwiftMusic")` to your target dependencies.
+
+## Music, Sound, and state
+
+| API | Responsibility |
+|---|---|
+| `Music` | The composition entry point, with `@MainActor body: some Sound` |
+| `Sound` / `SoundBuilder` | Composable declarations and ordinary Swift control flow |
+| `Track`, `SoundGroup` | Grouping and modifier scope |
+| `@State` | Declaration-local observable state retained with your music value |
+| `@Performance(Model.self)` | An explicitly injected, observable performance model |
+| `SoundCompiler` | Validated beat-domain events and an ordered render plan |
+| `Tempo`, `LiveMusicState` | Time conversion and revision-aware plan adoption |
+
+`@State` is supplied by SwiftMusic. Its value is read and changed on the main actor. Copies of a music value share its state; creating a new instance creates fresh state. The host retains the instance for the session lifetime.
+
+```swift
 import SwiftMusic
 
-@MainActor @Observable
-final class Stage {
-    var level = 0.5
-    var position = SpatialPosition(x: 0, depth: 0)
-}
+enum Beat: Sendable { case steady, fill }
 
-struct PerformanceSong: Music {
-    @Performance(Stage.self) private var stage
+struct SwitchSession: Music {
+    @State var beat: Beat = .steady
 
     var body: some Sound {
-        Synthesizer(.sine)
-            .notes("C4 E4 G4")
-            .gain(stage.level)
-            .position(stage.position)
+        Track("Drums") {
+            switch beat {
+            case .steady:
+                Sample("kick").rhythm("x ~ x ~")
+            case .fill:
+                Sample("kick").rhythm("x x [x x] x")
+            }
+        }
     }
 }
 
 @MainActor
-func preparePerformance(stage: Stage) throws -> CompiledSound {
-    try SoundCompiler().compile(PerformanceSong().performance(stage))
+func prepareSession() throws {
+    let session = SwitchSession()
+    let compiler = SoundCompiler()
+    let steady = try compiler.compile(session)
+    session.beat = .fill
+    let fill = try compiler.compile(session)
+    print(steady.events.count, fill.events.count) // 2, 5
 }
 ```
 
-`PerformanceObservationSession` observes body reads and notifies the host when preparation is needed; it does not schedule audio. A missing model produces a typed error. Optional `PerformanceEntry` factories and `PerformanceControllable` mappings expose finite number controls, one BPM role and atomic XY position updates. UI bindings belong to the host.
+If the same file imports SwiftUI, use `@SwiftMusic.State` or `@SwiftUI.State` to disambiguate. SwiftMusic does not create UI buttons or automatically recompile on mutation; the host owns that connection. MusicPlaygournd supports preprepared switch variants for live selection.
 
-`SpatialPosition.x` ranges from -1 to 1; `depth` ranges from 0 to 1 and applies stylized attenuation, filtering and reverb. It does not represent physical 3D distance. Beat-domain plans remain separate from tempo; `Tempo.seconds(for:)` converts the same musical time at different BPM values.
+## Patterns
 
-## Patterns and processing
+Pattern arguments accept context-inferred string literals. Invalid literals produce typed errors during compilation; use a pattern's throwing validating initializer when immediate validation is needed.
 
-| Area | Included declarations and behavior |
-| --- | --- |
-| Patterns | Rhythm, notes, gain, pan, pitch, cutoff, envelopes and sample selection; string literals with deferred validation |
-| Timing | Bracket subdivisions, cycle alternatives, leaf repetition, rational fast/slow, phase, reversal, repetition, swing and Euclidean/event transforms |
-| Musical expression | Typed pitch, scales, chords, voicing, arpeggio, velocity, articulation, portamento and voice policy |
-| Sources | Named/file/bank sample descriptors, sample traversal and granular/stretch descriptors, oscillators, FM, noise and wavetable descriptors |
-| Processing | Ordered filter, dynamics, modulation and effect descriptors; automation and envelopes |
-| Mixing | Gain, pan, Track policy, ducking, sends, bus returns and output routing |
+| Notation | Meaning |
+|---|---|
+| `x ~ x ~` | Hits and rests in evenly divided slots |
+| `x [x x] ~ x` | Brackets subdivide a parent slot |
+| `x*8` | Repeat a leaf eight times |
+| `<C4 D4>` | Alternate across cycles |
+| `C4,E4,G4` | Simultaneous pitches in a note pattern |
+| `.gain("1 [0.3 0.6] 0.8")` | Gain sampled at each event onset |
+| `.pan("-1 1")` | Per-event stereo position |
 
-`[x x]` subdivides one step. `<a b>` alternates across cycles; `x*8` repeats a leaf. Rhythm and notes accept `~` rests. Note patterns accept simultaneous pitches such as `C4,E4,G4`. Domain patterns retain their own types and support context-inferred string literals.
+The default cycle is four quarter-note beats. C4 is MIDI 60. Rhythm, note, gain, and pan patterns support ordered speed, phase, reversal, and repetition transformations. Exact rational musical time avoids accumulating floating-point timing error. Expansion and live-loop windows are bounded and fail explicitly instead of truncating.
 
-Patterned gain/pan are sampled at event onsets; scalar gain/pan append ordered post-mix graph operations. They are different stages of processing. Invalid patterns fail during compilation with typed diagnostics and UTF-8 offsets; `compileDetailed` preserves source provenance for a host editor.
+## Musical vocabulary
 
-Finite compilation and `compile(_:liveLoop:)` are explicit alternatives. Live compilation respects independent pattern periods, retains crossing event durations and emits seamless-loop metadata. The host must implement the corresponding circular playback behavior. Expansion, graph and event limits reject oversized input rather than truncate it.
+| Category | Selected APIs |
+|---|---|
+| Rhythm and arrangement | `rhythm`, `fast`, `slow`, `offset`, `repeated`, `oneShot`, `swing`, `euclidean`, `ratchet`, `probability` |
+| Pitch and harmony | `notes`, `transpose`, `chord`, `voicing`, `inverted`, `arpeggiated`, `portamento` |
+| Expression | `dynamic`, `velocity`, `gate`, `humanize` |
+| Sources | Samples, oscillators, envelopes, filters, sample regions/slices, granular playback, unison and voice policies |
+| Effects and mixing | `effect`, `tremolo`, `vibrato`, `gain`, `pan`, `muted`, `duck`, buses, sends and outputs |
+| Automation | Typed gain, pan, pitch and cutoff automation; observable performance controls |
 
-## Live adoption
+These declarations describe musical events and rendering work. Actual audio support is the responsibility of the chosen renderer. See the [source API](Sources/SwiftMusic/SoundComposition) and [design contracts](Sources/SwiftMusic/SoundComposition/DESIGN.md) for supported values and failure semantics.
+
+## Library and player are separate
 
 ```text
-edit → beginUpdate → prepare → receive → pending → host boundary → current
-                         failure → diagnostic; current stays unchanged
+Music / Sound → SoundCompiler → beat events + ordered render plan
+                                          ↓
+                                  host renderer → audio
 ```
 
-`LiveMusicState` is a value owned and isolated by the host. Start a revision with `beginUpdate`, prepare with `LiveMusicUpdate.prepare`, and deliver its final result with `receive`. The host prepares audio resources before adopting through `adoptPendingAtBoundary`. Failed or stale edits cannot replace the current plan. The library does not start an audio device, evaluate Swift source or choose a playback boundary.
+SwiftMusic does not open an audio device, evaluate Swift source, or draw an editor. A host chooses its clock, prepares audio resources, and adopts successful changes at its chosen boundary. BPM is separate from the musical pattern: the same compiled beat-domain events can be interpreted at different tempos.
+
+`LiveMusicState` tracks revisions and preserves the last adopted plan when preparation fails or a stale result arrives. Audio continuity additionally requires the host to retain its last valid audio resources. [MusicPlaygournd](https://github.com/1amageek/MusicPlaygournd) implements the live editing experience.
 
 ## Development
 
-Run `swift test` from this package root. Tests use Swift Testing and cover actual compiler output, modifier order, validation failures, limits, Observation and revision transitions. Native audio behavior belongs to the separate host package.
+```sh
+swift test
+```
+
+Tests use Swift Testing. See [PHILOSOPHY.md](PHILOSOPHY.md) for product direction, [DESIGN.md](DESIGN.md) for ownership and invariants, and [CHANGELOG.md](CHANGELOG.md) for release changes.
 
 ## License
 
-[MIT License](LICENSE).
+[MIT](LICENSE) · Copyright 2026 1amageek.

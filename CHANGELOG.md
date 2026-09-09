@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 — Preview
+
+- Add SwiftUI-independent `@State` for declaration-local, main-actor observable music state.
+- Preserve state identity when copying a music value; initialize independent state for new instances.
+- Rewrite the README around composition, patterns, state, and the compiler/renderer boundary.
+- Move MusicPlaygournd development to its own public repository.
+
+
 ## 0.2.0 (Prerelease) — 2026-09-08
 
 - Extended the immutable `Sound`/`Music` compiler with bounded rhythm, note, gain, pan, pitch, cutoff, envelope and sample-selection patterns. Patterns support bracket subdivisions, cycle alternatives, leaf repetition and ordered `fast`, `slow`, `phase`, `reversed` and `repeated` transforms with checked rational rates and typed UTF-8 diagnostics.

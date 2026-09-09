@@ -4,17 +4,17 @@ Product direction and the intended live-editing experience are owned by [PHILOSO
 
 ## Purpose and Scope
 
-SwiftMusic declares immutable `Sound` trees, prepares them as deterministic beat-domain events plus an ordered render plan, and provides value-state transitions for adopting prepared updates at a host-selected musical boundary. This file is both system and package design because the roots are the same. The package contains one module, [`Sources/SwiftMusic/DESIGN.md`](Sources/SwiftMusic/DESIGN.md).
+SwiftMusic provides declaration-local MainActor state through the [SoundComposition State contract](Sources/SwiftMusic/SoundComposition/DESIGN.md#declaration-local-state), declares immutable `Sound` trees, prepares them as deterministic beat-domain events plus an ordered render plan, and provides value-state transitions for adopting prepared updates at a host-selected musical boundary. This file is both system and package design because the roots are the same. The package contains one module, [`Sources/SwiftMusic/DESIGN.md`](Sources/SwiftMusic/DESIGN.md).
 
 This task provides one working set in each of six modifier categories: rhythm, pitch and harmony, expression, source settings, audio effects, and mix and routing. Render-plan data describes audio work; this package does not synthesize PCM or prove that an effect was heard.
 
-Playback, an audio backend, editor UI, persistence, hardware MIDI I/O, playback clock automation, and notation import/export are outside this package. Pattern syntax and parameter automation are compiled into bounded events and render-plan descriptors; hosts execute those descriptors. The package does not create a playback clock or choose when a musical boundary occurs. It preserves compiler call-site provenance for rhythm and note-pattern source rows; clients own layout and edit mapping.
+Playback, an audio backend, editor UI, persistence, MIDI I/O, meter, tempo automation, broad pattern syntax, parameter automation, and notation import/export are outside this package. The package does not create a playback clock or choose when a musical boundary occurs. It preserves compiler call-site provenance for rhythm and note-pattern source rows; clients own layout and edit mapping.
 
 ## Responsibilities and Boundaries
 
 SwiftMusic owns `Music`, composable `Sound`, `SoundBuilder`, source declarations, modifier values, exact musical time, bounded preparation, observable render-plan order, separate tempo conversion, and state rules that preserve the last adopted sound across invalid or stale updates. Clients own audio rendering, scheduling, isolation of each mutable `LiveMusicState`, musical-boundary detection, revision allocation, and editor presentation.
 
-The unreleased `Score` API is replaced. `Score`, `ScoreBuilder`, `CompiledScore`, `ScoreCompiler`, `Note`, and `Rest` are removed instead of retained as aliases; the replacement occurred before the 0.1.0 preview tag. SwiftMusic 0.2.0 releases the library product under the library verification and external-consumer contract in `PROGRESS.md`. The separately versioned MusicPlaygournd host uses the published library URL. Its pending editor changes and full native UI acceptance remain tracked independently and are not prerequisites or completed claims of the library-only release.
+The unreleased `Score` API is replaced. `Score`, `ScoreBuilder`, `CompiledScore`, `ScoreCompiler`, `Note`, and `Rest` are removed instead of retained as aliases; the replacement occurred before the 0.1.0 preview tag. MusicPlaygournd is a separate [host repository](https://github.com/1amageek/MusicPlaygournd), pinned to the public SwiftMusic release. SwiftMusic 0.3.0 adds declaration-local State; audio, editor and release lifecycles remain host responsibilities.
 
 ## Related Designs
 

@@ -2,3 +2,6 @@
 .swiftpm/
 xcuserdata/
 DerivedData/
+
+# The editor now has its own repository.
+/MusicPlaygournd/
