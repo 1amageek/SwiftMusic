@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import MusicPlaygourndCore
 import Testing
 @testable import MusicPlaygourndApp
@@ -42,6 +43,47 @@ extension NativeHostTests {
             #expect(undo.canUndo)
             undo.undo()
             #expect(editor.string == original)
+        }
+
+        @Test(.timeLimit(.minutes(1)))
+        func testEditorCommandsUseTheFocusedDocumentHistory() throws {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200),
+                styleMask: [.titled], backing: .buffered, defer: false)
+            let editor = CompletionTextView(frame: window.contentView!.bounds)
+            editor.allowsUndo = true
+            editor.isRichText = false
+            window.contentView = editor
+            window.makeFirstResponder(editor)
+            var source = ""
+            let view = CodeEditor(text: Binding(get: { source }, set: { source = $0 }),
+                inlineLoop: nil, inlineEnabled: false, resultLines: [:], beatPosition: 0,
+                isPlaying: false, selectionLine: nil, selectionToken: 0, rhythmLines: [],
+                rowLines: [:], patternTexts: [:], activeTokens: [:], scrollDelta: 0,
+                onLayout: { _ in }, beforeEdit: { _, _ in }, onEdit: {},
+                completions: { _, _ in [] }, onCompletionStatus: { _ in })
+            let coordinator = view.makeCoordinator()
+            editor.delegate = coordinator
+            let first = UndoManager()
+            editor.useUndoManager(first)
+            editor.insertText("first", replacementRange: NSRange(location: 0, length: 0))
+            editor.breakUndoCoalescing()
+            #expect(editor.undoManager === first)
+            #expect(editor.validateMenuItem(NSMenuItem(title: "Undo", action: #selector(CompletionTextView.undo(_:)), keyEquivalent: "z")))
+            editor.undo(nil)
+            #expect(editor.string.isEmpty)
+            editor.redo(nil)
+            #expect(editor.string == "first")
+            let second = UndoManager()
+            editor.useUndoManager(second)
+            editor.string = ""
+            editor.insertText("second", replacementRange: NSRange(location: 0, length: 0))
+            editor.breakUndoCoalescing()
+            #expect(editor.undoManager === second)
+            editor.undo(nil)
+            #expect(editor.string.isEmpty)
+            editor.redo(nil)
+            #expect(editor.string == "second")
+            #expect(first.canUndo)
         }
 
         @Test(.timeLimit(.minutes(3)))

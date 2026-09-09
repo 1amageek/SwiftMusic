@@ -173,3 +173,5 @@ CompletionTextView owns an NSPopover with an NSTableView. Arrow keys change sele
 ### Header signal and side timeline alignment
 
 The master waveform draws both stereo channels in distinct colors around one shared center line. Waveform and spectrum receive equal widths. The document tab strip spans the code and side timeline together; both content viewports start below the same divider. The side timeline has no independent title-row offset or bottom inspector; renderer traces remain in Controls and the existing inline/bottom result presentations. Row positions continue to come exclusively from the NSTextView viewport geometry. Verify with existing AppKit alignment checks and the native Release view; do not add tests for these presentation corrections.
+
+CompletionTextView owns the standard undo: and redo: responder actions and validates Edit-menu availability against its current document UndoManager. Text edits, menu actions and keyboard equivalents share that history. Document switching changes the same manager reference; no window-level or secondary history is introduced.

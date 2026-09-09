@@ -15,6 +15,24 @@ final class CompletionTextView: NSTextView, NSTableViewDataSource, NSTableViewDe
 
     override var undoManager: UndoManager? { documentUndoManager }
 
+    @objc func undo(_ sender: Any?) {
+        breakUndoCoalescing()
+        documentUndoManager.undo()
+    }
+
+    @objc func redo(_ sender: Any?) {
+        breakUndoCoalescing()
+        documentUndoManager.redo()
+    }
+
+    override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(undo(_:)): return documentUndoManager.canUndo
+        case #selector(redo(_:)): return documentUndoManager.canRedo
+        default: return super.validateMenuItem(menuItem)
+        }
+    }
+
     func useUndoManager(_ manager: UndoManager) { documentUndoManager = manager }
 
     override func layout() {
