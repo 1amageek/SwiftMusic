@@ -1,20 +1,10 @@
-/// The immutable package-owned value produced by `SoundBuilder`.
-public struct SoundGroup: Sound, Sendable {
-    public typealias Body = Never
+/// An explicit parallel scope for shared modifiers, without track metadata.
+public struct SoundGroup<Content: Sound>: Sound {
+    public let content: Content
 
-    internal let elements: [any Sound]
-
-    internal init(elements: [any Sound]) {
-        self.elements = elements
+    public init(@SoundBuilder content: () -> Content) {
+        self.content = content()
     }
 
-    public var body: Never {
-        fatalError("SoundGroup is a compiler terminal")
-    }
-}
-
-extension SoundGroup: _SoundPrimitive {
-    internal var _node: _SoundNode {
-        .group(elements)
-    }
+    public var body: Content { content }
 }

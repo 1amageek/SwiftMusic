@@ -41,3 +41,5 @@ The module preserves typed component failures, including missing performance inj
 Tests import only `SwiftMusic`. A future audio or editor module consumes `CompiledSound` and its render plan rather than component internals.
 
 Nested bracket subdivisions and per-event gain patterns are owned by [SoundComposition](SoundComposition/DESIGN.md#nested-mini-notation-and-gain-patterns). Clients render event gain before the existing ordered audio graph; scalar gain remains post-mix.
+
+Typed declaration structure and builder source compatibility are owned by the [structural sound contract](SoundComposition/DESIGN.md#typed-structural-sounds). Compiled event and render-plan interfaces remain unchanged.

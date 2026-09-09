@@ -3,16 +3,16 @@ public struct Track: Sound, Sendable {
     public typealias Body = Never
 
     public let name: String
-    internal let content: SoundGroup
+    internal let content: any Sound
     internal var level = 1.0
     internal var pan: Double?
     internal var isMuted = false
     internal var isSoloed = false
     internal var sends: [_TrackSend] = []
 
-    public init(
+    public init<Content: Sound>(
         _ name: String,
-        @SoundBuilder content: () -> SoundGroup
+        @SoundBuilder content: () -> Content
     ) {
         self.name = name
         self.content = content()

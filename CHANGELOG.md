@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Preserve builder structure with `TupleSound`, `EmptySound`, `ConditionalSound`, optional sounds and `ArraySound`.
+- Add explicit generic `SoundGroup` and `AnySound`; compile structural children without flattening them into `[any Sound]`.
+- Keep Track call syntax, parallel timing, modifier scope, bounded preparation and live event compilation.
+- Source migration: explicitly annotated builder results now use generic structural types or `some Sound`.
+
 ## 0.4.0 — Preview
 
 - Add nonthrowing scalar overloads for `envelope`, `filterEnvelope`, `pitchEnvelope`, `unison` and `duck`. Musical parameters can be declared directly inside `body` without `try!`.

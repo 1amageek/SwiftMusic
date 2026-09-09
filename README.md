@@ -104,6 +104,42 @@ func prepareSession() throws {
 
 If the same file imports SwiftUI, use `@SwiftMusic.State` or `@SwiftUI.State` to disambiguate. SwiftMusic does not create UI buttons or automatically recompile on mutation; the host owns that connection. MusicPlaygournd supports preprepared switch variants for live selection.
 
+## Typed composition (unreleased)
+
+`SoundBuilder` preserves the types of declarations instead of collecting every expression into `[any Sound]`.
+
+| Swift declaration | Result |
+| --- | --- |
+| Empty body | `EmptySound` |
+| One sound | The original sound type |
+| Multiple sounds | `TupleSound<(A, B, ...)>` |
+| `if` / `else`, `switch` | `ConditionalSound<First, Second>` |
+| `if` without `else`, `if let` | Optional sound content |
+| Finite `for` loop | `ArraySound<Content>` |
+| `if #available` | `AnySound` at the availability boundary |
+
+```swift
+struct Layer: Sound {
+    let includeBass: Bool
+
+    var body: some Sound {
+        SoundGroup {
+            Sample("kick").rhythm("x ~ x ~")
+            if includeBass {
+                Synthesizer(.sine).notes("C2 ~ Eb2 ~")
+            }
+        }
+        .gain(0.4)
+    }
+}
+```
+
+`SoundGroup` groups parallel sounds and scopes shared modifiers without introducing track metadata. `EmptySound` contributes neither events nor duration; it is not a timed rest. `AnySound` explicitly erases one sound's type when needed. Ordinary declarations should use `body: some Sound` and let the builder infer their structure.
+
+Existing `Track` and `ModifiedSound` types remain type-erasure boundaries. The compiler visits typed children directly without constructing an existential child array, then produces the same public event and render-plan model. This does not introduce persistent identity or state reconciliation for repeated children.
+
+**Source compatibility:** Explicit `SoundGroup` result annotations must become `SoundGroup<Content>` or `some Sound`. Builder-taking APIs should accept generic `Content: Sound` rather than requiring the former concrete `SoundGroup`. These additions are on the development branch and are not included in 0.4.0.
+
 ## Patterns
 
 Pattern arguments accept context-inferred string literals. Invalid literals produce typed errors during compilation; use a pattern's throwing validating initializer when immediate validation is needed.

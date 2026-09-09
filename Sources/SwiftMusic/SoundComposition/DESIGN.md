@@ -72,6 +72,18 @@ Sources are `Sample(_ name: String)` and `Synthesizer(_ waveform: Waveform)`. Ea
 
 Migration is complete in this task: only `Music.body: some Sound`, `Sound`, `SoundBuilder`, `CompiledSound`, and `SoundCompiler` remain; no Score aliases or `Music.score` entry remain.
 
+### Typed structural sounds
+
+SoundBuilder preserves each expression's concrete Sound type. Empty blocks produce EmptySound; single expressions remain unchanged; sibling blocks produce TupleSound<(repeat each Content)> using Swift 6 parameter packs. TupleSound owns the typed tuple and a Sendable child visitor specialized by its initializer. It does not construct an existential child array. The visitor borrows the tuple while synchronously submitting children to the compiler; no reference escapes its scope.
+
+ConditionalSound<TrueContent, FalseContent> stores only the selected enum case. Optional<Wrapped> conforms to Sound when Wrapped does; nil compiles as empty. ArraySound<Content> stores the homogeneous finite for-loop results. SoundGroup<Content> provides an explicit builder scope, and AnySound erases a single value only where explicitly requested or needed by buildLimitedAvailability. Each structural declaration exposes its children through the internal _SoundChildren contract; the compiler recognizes this before evaluating the terminal Never body. Child traversal preserves source order, parallel origins, typed failures, depth/event/source/node limits and captured live programs. Empty composites allocate no sources or tracks.
+
+Track keeps its existing concrete public type and owns one existential content value, preserving the typed structure inside that value instead of flattening a SoundGroup array. ModifiedSound remains an existing type-erasure boundary. This increment does not make all modifier types generic, introduce identity reconciliation, cache by structural type, or promise allocation-free compilation.
+
+This changes explicit builder result annotations: use some Sound for reusable bodies and generic Content: Sound builder parameters. SoundGroup is now generic and explicitly constructible. Existing source written with inferred Track closures and body: some Sound retains its syntax. Compiled event and render-plan APIs are unchanged; structural grouping may change equivalent mix-node topology and depth consumption, so clients must not assume exact compiler-generated node indices across source changes.
+
+Verification belongs to TypedSoundBuilderTests and existing SoundComposition/live compiler tests: compile-time concrete result assertions accompany real selected-branch events, optional/empty behavior, finite loops, group modifier scope, track nesting, source anchors, typed invalid inputs, depth limits and live-loop compilation. The host consumer must compile against the changed library; no PCM backend behavior is claimed by these tests.
+
 ### Exact time and rhythm
 
 `MusicalTime` retains normalized non-negative `UInt64` rational storage and adds checked `multiplied(by: UInt64)` and `divided(by: UInt64)`. Multiplication throws overflow; zero division throws `MusicalTimeError.divisionByZero`. Successful results are exact.

@@ -15,6 +15,20 @@ internal struct _SoundCompilationContext {
         guard depth <= limits.maximumDepth else {
             throw SoundCompilationError.maximumDepthExceeded(limit: limits.maximumDepth)
         }
+        if let children = sound as? any _SoundChildren {
+            var result = _SoundFragment()
+            var programs: [_LiveEventProgram] = []
+            try children._forEachChild { child in
+                let fragment = try visit(child, depth: childDepth(depth))
+                result.events.append(contentsOf: fragment.events)
+                result.roots.append(contentsOf: fragment.roots)
+                result.extent = max(result.extent, fragment.extent)
+                if let program = fragment.liveProgram { programs.append(program) }
+            }
+            result.roots = try mixedRoots(result.roots)
+            if capturesLiveProgram { result.liveProgram = try .group(programs) }
+            return result
+        }
         if let primitive = sound as? any _SoundPrimitive {
             return try visit(primitive._node, depth: depth)
         }
@@ -39,19 +53,6 @@ internal struct _SoundCompilationContext {
             var fragment = _SoundFragment(roots: [root])
             if capturesLiveProgram { fragment.liveProgram = .finite(fragment) }
             return fragment
-        case .group(let children):
-            var result = _SoundFragment()
-            var programs: [_LiveEventProgram] = []
-            for child in children {
-                let fragment = try visit(child, depth: childDepth(depth))
-                result.events.append(contentsOf: fragment.events)
-                result.roots.append(contentsOf: fragment.roots)
-                result.extent = max(result.extent, fragment.extent)
-                if let program = fragment.liveProgram { programs.append(program) }
-            }
-            result.roots = try mixedRoots(result.roots)
-            if capturesLiveProgram { result.liveProgram = try .group(programs) }
-            return result
         case .track(let track):
             guard tracks.count < limits.maximumTracks else {
                 throw SoundCompilationError.maximumTracksExceeded(limit: limits.maximumTracks)

@@ -57,3 +57,6 @@
 - [x] DECL-1 Nonthrowing scalar declaration modifiers; focused success/failure and live compilation checks verified in development `depends:none` `parallel:none`
 - [x] REL-04 SwiftMusic 0.4.0 README/changelog prepared; 202 existing Swift Testing checks passed on macOS; published manifest contains no local dependencies `depends:DECL-1` `parallel:none`
 - [ ] REL-04-INT Publish 0.4.0 and verify remote main/tag identity plus an exact-version external consumer `depends:REL-04` `parallel:none`
+
+- [x] STRUCT-1 Typed tuple, empty, conditional, optional, array and explicit group declarations compile through synchronous child visitation; source migration and existing type-erasure boundaries documented `depends:none` `parallel:none`
+- [x] STRUCT-INT All 205 library tests passed; Playground built with a verified edited dependency and changed TupleSound object, 7 control/rendering/metadata tests passed; override removed `depends:STRUCT-1` `parallel:none`
