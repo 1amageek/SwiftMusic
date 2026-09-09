@@ -6,7 +6,7 @@ This module exports one declarative sound and render-plan model, including optio
 
 ## Responsibilities and Boundaries
 
-The module exports the component contract without an adapter layer or second representation. It owns neither PCM nor editor or playback state.
+The module exports the component contract, including declaration-local State as owned by SoundComposition, without an adapter layer or second representation. It owns neither PCM nor editor or playback state.
 
 ## Related Designs
 

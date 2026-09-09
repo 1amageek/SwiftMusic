@@ -4,7 +4,7 @@ Product direction and the intended live-editing experience are owned by [PHILOSO
 
 ## Purpose and Scope
 
-SwiftMusic declares immutable `Sound` trees, prepares them as deterministic beat-domain events plus an ordered render plan, and provides value-state transitions for adopting prepared updates at a host-selected musical boundary. This file is both system and package design because the roots are the same. The package contains one module, [`Sources/SwiftMusic/DESIGN.md`](Sources/SwiftMusic/DESIGN.md).
+SwiftMusic provides declaration-local MainActor state through the [SoundComposition State contract](Sources/SwiftMusic/SoundComposition/DESIGN.md#declaration-local-state), declares immutable `Sound` trees, prepares them as deterministic beat-domain events plus an ordered render plan, and provides value-state transitions for adopting prepared updates at a host-selected musical boundary. This file is both system and package design because the roots are the same. The package contains one module, [`Sources/SwiftMusic/DESIGN.md`](Sources/SwiftMusic/DESIGN.md).
 
 This task provides one working set in each of six modifier categories: rhythm, pitch and harmony, expression, source settings, audio effects, and mix and routing. Render-plan data describes audio work; this package does not synthesize PCM or prove that an effect was heard.
 

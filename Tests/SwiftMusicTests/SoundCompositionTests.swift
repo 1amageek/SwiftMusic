@@ -1,9 +1,43 @@
 import Foundation
+import Observation
 import Testing
 import SwiftMusic
 
 @MainActor
 struct SoundCompositionTests {
+    @Test(.timeLimit(.minutes(1)))
+    func localStateRetainsIdentityAndChangesCompiledBranch() async throws {
+        enum Section: Sendable { case intro, groove }
+        struct Session: Music {
+            @SwiftMusic.State private var section = Section.intro
+            @MainActor var selection: SwiftMusic.State<Section> { $section }
+            var body: some Sound {
+                switch section {
+                case .intro: Sample("intro")
+                case .groove: Sample("groove")
+                }
+            }
+        }
+        let session = Session()
+        let copy = session
+        let other = Session()
+        let compiler = SoundCompiler()
+        #expect(try compiler.compile(session).sources.map(\.kind) == [.sample("intro")])
+        #expect(session.selection === copy.selection)
+        let (changes, continuation) = AsyncStream<Void>.makeStream()
+        defer { continuation.finish() }
+        withObservationTracking {
+            _ = session.selection.wrappedValue
+        } onChange: {
+            continuation.yield(())
+        }
+        copy.selection.wrappedValue = .groove
+        var notifications = changes.makeAsyncIterator()
+        #expect(await notifications.next() != nil)
+        #expect(try compiler.compile(session).sources.map(\.kind) == [.sample("groove")])
+        #expect(other.selection.wrappedValue == .intro)
+    }
+
     private func pitch(_ value: UInt8) throws -> Pitch {
         try Pitch(midiNote: value)
     }
