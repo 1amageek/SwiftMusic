@@ -1,8 +1,16 @@
 # Changelog
 
-## 0.1.0 (Preview) — 2026-09-07
+## 0.3.0 — Preview
 
-- Preview release of the declarative `Sound` and `Music` DSL with immutable beat events and render plans.
-- Includes six modifier categories (rhythm, pitch and harmony, expression, source settings, audio effects, and mix and routing), rhythm and note patterns, and revision-safe live plan preparation and adoption through `LiveMusicState`.
-- Verified by the native Swift 6.4 Debug and Release suites (30 tests) and an external client using the README flow.
-- This preview makes no claims for DSP, audio playback, the MusicPlaygournd Editor, or WASM support.
+- Add SwiftUI-independent `@State` for declaration-local, main-actor observable music state.
+- Preserve state identity when copying a music value; initialize independent state for new instances.
+- Rewrite the README around composition, patterns, state, and the compiler/renderer boundary.
+- Move MusicPlaygournd development to its own public repository.
+
+## 0.2.0 — Preview
+
+Expanded musical patterns, source/effect/routing declarations, automation and observable performance integration. See the [0.2.0 release](https://github.com/1amageek/SwiftMusic/releases/tag/0.2.0).
+
+## 0.1.0 — Preview
+
+Initial declarative music library.

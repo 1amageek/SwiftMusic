@@ -14,7 +14,7 @@ Playback, an audio backend, editor UI, persistence, MIDI I/O, meter, tempo autom
 
 SwiftMusic owns `Music`, composable `Sound`, `SoundBuilder`, source declarations, modifier values, exact musical time, bounded preparation, observable render-plan order, separate tempo conversion, and state rules that preserve the last adopted sound across invalid or stale updates. Clients own audio rendering, scheduling, isolation of each mutable `LiveMusicState`, musical-boundary detection, revision allocation, and editor presentation.
 
-The unreleased `Score` API is replaced. `Score`, `ScoreBuilder`, `CompiledScore`, `ScoreCompiler`, `Note`, and `Rest` are removed instead of retained as aliases; the replacement occurred before the 0.1.0 preview tag. MusicPlaygournd uses the local workspace during implementation so compiler provenance and native rendering are verified against the same snapshot. After every accepted sprint and integrated native path passes, the reviewed release snapshot replaces local package references and is published as SwiftMusic 0.2.0 under the release contract in `PROGRESS.md`.
+The unreleased `Score` API is replaced. `Score`, `ScoreBuilder`, `CompiledScore`, `ScoreCompiler`, `Note`, and `Rest` are removed instead of retained as aliases; the replacement occurred before the 0.1.0 preview tag. MusicPlaygournd is a separate [host repository](https://github.com/1amageek/MusicPlaygournd), pinned to the public SwiftMusic release. SwiftMusic 0.3.0 adds declaration-local State; audio, editor and release lifecycles remain host responsibilities.
 
 ## Related Designs
 
