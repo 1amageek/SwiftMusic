@@ -29,16 +29,30 @@ struct Session: Music {
 }
 ```
 
+Declare envelopes and unison directly in `body`, without `try!`:
+
+```swift
+Synthesizer(.bandLimitedSaw)
+    .notes("C2 Eb2 G2 Bb2")
+    .envelope(
+        attack: .milliseconds(2), decay: .milliseconds(95),
+        sustainLevel: 0.35, release: .milliseconds(30)
+    )
+    .unison(voices: 5, detuneCents: 32)
+```
+
+Scalar `envelope`, `filterEnvelope`, `pitchEnvelope`, `unison` and `duck` modifiers validate during compilation. Invalid values produce located compilation errors; the host can retain the previously adopted music. Existing throwing value initializers remain available for explicit validation.
+
 Sibling sounds play in parallel. `Track` groups and names sounds; it is optional. A modifier applies to the sound subtree above it, so placement and order matter.
 
 To hear your code, use **[MusicPlaygournd](https://github.com/1amageek/MusicPlaygournd)**, the native macOS live editor with inline rhythms, pattern highlighting, waveform/spectrum monitoring, and interactive controls.
 
 ## Install
 
-SwiftMusic **0.3.0 Preview** requires Swift 6.4 and declares macOS 14 as its minimum deployment target. This release is verified on macOS 27, Apple silicon, with Swift 6.4.2-dev snapshot `2026-09-04-a`; older macOS runtime behavior is not verified. Preview APIs may change.
+SwiftMusic **0.4.0 Preview** requires Swift 6.4 and declares macOS 14 as its minimum deployment target. This release is verified on macOS 27, Apple silicon, with Swift 6.4.2-dev snapshot `2026-09-04-a`; older macOS runtime behavior is not verified. Preview APIs may change.
 
 ```swift
-.package(url: "https://github.com/1amageek/SwiftMusic.git", exact: "0.3.0")
+.package(url: "https://github.com/1amageek/SwiftMusic.git", exact: "0.4.0")
 ```
 
 Add `.product(name: "SwiftMusic", package: "SwiftMusic")` to your target dependencies.

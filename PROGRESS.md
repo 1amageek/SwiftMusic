@@ -55,5 +55,5 @@
 
 
 - [x] DECL-1 Nonthrowing scalar declaration modifiers; focused success/failure and live compilation checks verified in development `depends:none` `parallel:none`
-- [ ] REL-04 Prepare SwiftMusic 0.4.0 release documentation and verify the release candidate `depends:DECL-1` `parallel:none`
+- [x] REL-04 SwiftMusic 0.4.0 README/changelog prepared; 202 existing Swift Testing checks passed on macOS; published manifest contains no local dependencies `depends:DECL-1` `parallel:none`
 - [ ] REL-04-INT Publish 0.4.0 and verify remote main/tag identity plus an exact-version external consumer `depends:REL-04` `parallel:none`

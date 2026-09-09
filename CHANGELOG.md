@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 — Preview
+
+- Add nonthrowing scalar overloads for `envelope`, `filterEnvelope`, `pitchEnvelope`, `unison` and `duck`. Musical parameters can be declared directly inside `body` without `try!`.
+- Validate these declarations during finite/live compilation and report invalid parameters with source locations.
+- Preserve existing typed value initializers and successful compiled event semantics.
+- SwiftMusic remains independent of SwiftUI and audio rendering.
+
 ## 0.3.0 — Preview
 
 - Add SwiftUI-independent `@State` for declaration-local, main-actor observable music state.
