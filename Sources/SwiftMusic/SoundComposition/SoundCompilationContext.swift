@@ -200,6 +200,12 @@ internal struct _SoundCompilationContext {
         sourceIDs: Set<Int>? = nil
     ) throws {
         switch modifier {
+        case .parameterDeclaration(let resolve, _):
+            do {
+                try apply(resolve(), to: &fragment, sourceRange: sourceRange, sourceIDs: sourceIDs)
+            } catch let error as SoundParameterError {
+                throw SoundCompilationError.invalidParameter(String(describing: error))
+            }
         case .swing, .euclidean, .ratchet, .probability, .humanize, .periodically:
             var period = eventTransformPeriod ?? (capturesLiveProgram ? fragment.liveProgram?.period : nil)
             do {

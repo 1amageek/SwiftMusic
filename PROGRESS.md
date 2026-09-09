@@ -53,3 +53,7 @@
 - [ ] RELEASE-INT Verify both public repositories, tags, releases and URL-only consumer graphs; preserve original uncommitted workspace data `depends:REL-03,MP-REL-02` `parallel:none`
 
 
+
+- [x] DECL-1 Nonthrowing scalar declaration modifiers; focused success/failure and live compilation checks verified in development `depends:none` `parallel:none`
+- [ ] REL-04 Prepare SwiftMusic 0.4.0 release documentation and verify the release candidate `depends:DECL-1` `parallel:none`
+- [ ] REL-04-INT Publish 0.4.0 and verify remote main/tag identity plus an exact-version external consumer `depends:REL-04` `parallel:none`

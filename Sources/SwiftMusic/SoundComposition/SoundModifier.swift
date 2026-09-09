@@ -1,4 +1,5 @@
 internal enum _SoundModifier: Sendable {
+    case parameterDeclaration(@Sendable () throws -> _SoundModifier, SoundSourceAnchor)
     case swing(Swing)
     case euclidean(EuclideanRhythm)
     case ratchet(Int)
@@ -63,7 +64,7 @@ internal enum _SoundModifier: Sendable {
 
     var sourceAnchor: SoundSourceAnchor? {
         switch self {
-        case .rhythm(_, _, let anchor), .notes(_, let anchor),
+        case .parameterDeclaration(_, let anchor), .rhythm(_, _, let anchor), .notes(_, let anchor),
              .notePattern(_, _, let anchor), .scaleNotes(_, _, let anchor),
              .gainPattern(_, _, let anchor), .panPattern(_, _, let anchor),
              .pitchPattern(_, _, let anchor),
