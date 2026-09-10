@@ -60,3 +60,6 @@
 
 - [x] STRUCT-1 Typed tuple, empty, conditional, optional, array and explicit group declarations compile through synchronous child visitation; source migration and existing type-erasure boundaries documented `depends:none` `parallel:none`
 - [x] STRUCT-INT All 205 library tests passed; Playground built with a verified edited dependency and changed TupleSound object, 7 control/rendering/metadata tests passed; override removed `depends:STRUCT-1` `parallel:none`
+
+- [x] LAYOUT-1 Reorganize 0.5.0 source into responsibility directories with unchanged Swift content and updated design ownership `depends:none` `parallel:none`
+- [x] LAYOUT-INT 157 source files byte-identical and discovered by SwiftPM; design paths/anchors verified; 205 tests passed `depends:LAYOUT-1` `parallel:none`

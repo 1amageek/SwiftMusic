@@ -2,18 +2,18 @@
 
 ## Purpose and Scope
 
-This module exports one declarative sound and render-plan model, including optional compiler source provenance for pattern-generated rows and MainActor-resolved performance-model declarations. Its parent is the [package design](../../DESIGN.md); its components are [`SoundComposition`](SoundComposition/DESIGN.md) and [`LiveUpdates`](LiveUpdates/DESIGN.md).
+This module exports one declarative sound and render-plan model, including optional compiler source provenance for pattern-generated rows and MainActor-resolved performance-model declarations. Its parent is the [package design](../../DESIGN.md); its components are listed in the [Component Index](#component-index).
 
 ## Responsibilities and Boundaries
 
-The module exports the component contract, including declaration-local State as owned by SoundComposition, without an adapter layer or second representation. It owns neither PCM nor editor or playback state.
+The module exports the component contract, including declaration-local State as owned by Performance, without an adapter layer or second representation. It owns neither PCM nor editor or playback state.
 
 ## Related Designs
 
 | Design | Relationship | Contract Used | Summary | Cautions |
 |---|---|---|---|---|
 | [`../../DESIGN.md`](../../DESIGN.md) | parent | package invariants | Defines outcome and client boundaries | Public changes affect the package contract |
-| [`SoundComposition/DESIGN.md`](SoundComposition/DESIGN.md) | child | declaration, compilation, and render-plan contract | Owns musical declarations and plans | Modifier semantics live only there |
+| [`SoundComposition/DESIGN.md`](SoundComposition/DESIGN.md) | child | declaration and builder contract | Owns sound structure and its source/modifier children | Compiler and output contracts live in sibling components |
 | [`LiveUpdates/DESIGN.md`](LiveUpdates/DESIGN.md) | child | preparation and revision state | Preserves adopted plans across failed edits | The host supplies isolation and musical boundaries |
 
 ## Architecture
@@ -22,7 +22,7 @@ The module exports the component contract, including declaration-local State as 
 MainActor Music.body -> SoundBuilder -> SoundComposition -> SoundCompiler -> CompiledSound
 ```
 
-Composition source belongs to `SoundComposition/`; live update value-state source belongs to `LiveUpdates/`. LiveUpdates depends only on the public composition contract.
+The directory hierarchy is organizational within one SwiftMusic target. Compilation consumes composition declarations and produces RenderPlan values. LiveUpdates consumes preparation results; source files and isolation contracts are unchanged.
 
 ## Contracts and Invariants
 
@@ -40,6 +40,17 @@ The module preserves typed component failures, including missing performance inj
 
 Tests import only `SwiftMusic`. A future audio or editor module consumes `CompiledSound` and its render plan rather than component internals.
 
-Nested bracket subdivisions and per-event gain patterns are owned by [SoundComposition](SoundComposition/DESIGN.md#nested-mini-notation-and-gain-patterns). Clients render event gain before the existing ordered audio graph; scalar gain remains post-mix.
+Nested bracket subdivisions and per-event gain patterns are owned by [Patterns](Patterns/DESIGN.md#nested-mini-notation-and-gain-patterns). Clients render event gain before the existing ordered audio graph; scalar gain remains post-mix.
 
 Typed declaration structure and builder source compatibility are owned by the [structural sound contract](SoundComposition/DESIGN.md#typed-structural-sounds). Compiled event and render-plan interfaces remain unchanged.
+
+## Component Index
+
+- [SoundComposition](SoundComposition/DESIGN.md)
+- [MusicalValues](MusicalValues/DESIGN.md)
+- [Patterns](Patterns/DESIGN.md)
+- [Automation](Automation/DESIGN.md)
+- [Compilation](Compilation/DESIGN.md)
+- [RenderPlan](RenderPlan/DESIGN.md)
+- [Performance](Performance/DESIGN.md)
+- [LiveUpdates](LiveUpdates/DESIGN.md)

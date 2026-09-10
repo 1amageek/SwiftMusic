@@ -12,6 +12,8 @@ For an audio host, resource preparation belongs between `LiveMusicUpdate.prepare
 
 ## Related Designs
 
+Preparation depends on [Compilation](../Compilation/DESIGN.md), adopted values use [RenderPlan](../RenderPlan/DESIGN.md), and observation uses [Performance](../Performance/DESIGN.md). These remain components of the same module.
+
 | Design | Relationship | Contract Used | Summary | Cautions |
 |---|---|---|---|---|
 | [Module](../DESIGN.md) | parent | public exports | Exports live update values | No shared storage |
