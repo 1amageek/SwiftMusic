@@ -37,5 +37,10 @@ struct PatternParseCacheTests {
         #expect(throws: _PatternParserError.self) { try cache.parse("[") }
         #expect(throws: _PatternParserError.self) { try cache.parse("[") }
         #expect(cache.parseCount == 6)
+        let composed = try cache.parse("é x")
+        let decomposed = try cache.parse("e\u{301} x")
+        #expect(composed.leaves[1].offset == 3)
+        #expect(decomposed.leaves[1].offset == 4)
+        #expect(cache.parseCount == 8)
     }
 }
