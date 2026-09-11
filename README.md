@@ -49,10 +49,10 @@ To hear your code, use **[MusicPlaygournd](https://github.com/1amageek/MusicPlay
 
 ## Install
 
-SwiftMusic **0.5.0 Preview** requires Swift 6.4 and declares macOS 14 as its minimum deployment target. Verified on macOS 27 with Apple silicon; older macOS runtime behavior is not verified. Preview APIs may change.
+SwiftMusic **0.5.1 Preview** requires Swift 6.4 and declares macOS 14 as its minimum deployment target. Verified on macOS 27 with Apple silicon; older macOS runtime behavior is not verified. Preview APIs may change.
 
 ```swift
-.package(url: "https://github.com/1amageek/SwiftMusic.git", exact: "0.5.0")
+.package(url: "https://github.com/1amageek/SwiftMusic.git", exact: "0.5.1")
 ```
 
 Add `.product(name: "SwiftMusic", package: "SwiftMusic")` to your target dependencies.

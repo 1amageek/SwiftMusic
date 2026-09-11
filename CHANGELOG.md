@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1 — Preview
+
+- Reuse bounded pattern syntax within each compilation while preserving exact UTF-8 diagnostic offsets.
+- Correct reducible overflow in musical-time addition.
+- Organize implementation sources by responsibility without changing the public API.
+- Verify the library with 208 Debug and Release tests on macOS.
+
 ## 0.5.0 — Preview
 
 - Preserve builder structure with `TupleSound`, `EmptySound`, `ConditionalSound`, optional sounds and `ArraySound`.
