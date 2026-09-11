@@ -63,13 +63,22 @@ public struct MusicalTime: Sendable, Hashable, Comparable, CustomStringConvertib
         let leftDenominator = denominator / denominatorDivisor
         let rightDenominator = other.denominator / denominatorDivisor
 
-        let leftProduct = try Self.checkedMultiply(numerator, rightDenominator)
-        let rightProduct = try Self.checkedMultiply(other.numerator, leftDenominator)
-        let sum = try Self.checkedAdd(leftProduct, rightProduct)
+        let leftProduct = numerator.multipliedFullWidth(by: rightDenominator)
+        let rightProduct = other.numerator.multipliedFullWidth(by: leftDenominator)
+        let (low, carry) = leftProduct.low.addingReportingOverflow(rightProduct.low)
+        let (partialHigh, highOverflow) = leftProduct.high.addingReportingOverflow(rightProduct.high)
+        let (high, carryOverflow) = partialHigh.addingReportingOverflow(carry ? 1 : 0)
+        // A shared denominator factor >= 2 bounds the sum to 128 bits.
+        // Otherwise no reduction is possible, so overflow cannot fit UInt64 storage.
+        guard !highOverflow, !carryOverflow else { throw MusicalTimeError.overflow }
 
-        // Reduce the shared denominator factor before the final multiplication.
-        let numeratorDivisor = Self.greatestCommonDivisor(sum, denominatorDivisor)
-        let reducedSum = sum / numeratorDivisor
+        // Reduce the high word first so full-width division has a fitting quotient.
+        let remainder = denominatorDivisor.dividingFullWidth(
+            (high: high % denominatorDivisor, low: low)
+        ).remainder
+        let numeratorDivisor = Self.greatestCommonDivisor(remainder, denominatorDivisor)
+        guard high < numeratorDivisor else { throw MusicalTimeError.overflow }
+        let reducedSum = numeratorDivisor.dividingFullWidth((high: high, low: low)).quotient
         let resultDenominator = try Self.checkedMultiply(
             leftDenominator,
             other.denominator / numeratorDivisor

@@ -3,6 +3,34 @@ import SwiftMusic
 
 struct MusicalTimeArithmeticTests {
     @Test(.timeLimit(.minutes(3)))
+    func testAdditionReducesBeforeCheckingStorageBounds() throws {
+        let nearOne = try MusicalTime(numerator: .max, denominator: UInt64.max - 1)
+        #expect(try nearOne.adding(nearOne) == nearOne.multiplied(by: 2))
+        let halfMaximum = try MusicalTime(numerator: .max, denominator: 2)
+        #expect(try halfMaximum.adding(halfMaximum) == .beats(.max))
+        let left = try MusicalTime(numerator: UInt64.max / 2, denominator: 6)
+        let right = try MusicalTime(numerator: 2, denominator: 15)
+        let expected = try MusicalTime(numerator: 15_372_286_728_091_293_013, denominator: 10)
+        #expect(try left.adding(right) == expected)
+        #expect(try right.adding(left) == expected)
+        #expect(try MusicalTime.zero.adding(nearOne) == nearOne)
+        #expect(try nearOne.adding(.zero) == nearOne)
+    }
+
+    @Test(.timeLimit(.minutes(3)))
+    func testAdditionRejectsUnrepresentableResults() throws {
+        let pairs: [(MusicalTime, MusicalTime)] = [
+            (.beats(.max), .quarter),
+            (try MusicalTime(numerator: 1, denominator: .max), .eighth),
+            (try MusicalTime(numerator: .max, denominator: UInt64.max - 1),
+             try MusicalTime(numerator: UInt64.max - 1, denominator: .max))
+        ]
+        for (left, right) in pairs {
+            #expect(throws: MusicalTimeError.overflow) { try left.adding(right) }
+        }
+    }
+
+    @Test(.timeLimit(.minutes(3)))
     func testScalingIsExactAndCancelsBeforeMultiplication() throws {
         let multipliedEighth = try MusicalTime.eighth.multiplied(by: 3)
         let expectedMultipliedEighth = try MusicalTime(numerator: 3, denominator: 2)
