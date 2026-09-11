@@ -67,5 +67,5 @@
 - [x] REVIEW-1 Reviewed compiler, time arithmetic and live-update paths at e99b786; source unchanged `depends:none` `parallel:none`
 - [x] REVIEW-INT Reproduced representable rational addition failing with overflow; all 205 existing tests passed; finding reported without source edits `depends:REVIEW-1` `parallel:none`
 
-- [x] ADD-1 Fix exact rational addition with macOS 14 full-width arithmetic; reproduced red then 5 focused tests passed; reviewed storage bounds and compiler callers `depends:none` `parallel:none`
-- [ ] ADD-INT Run the full SwiftMusic behavioral suite and push the verified task commit to the configured upstream `depends:ADD-1` `parallel:none`
+- [x] ADD-1 Fix exact rational addition with macOS 14 full-width arithmetic; 5 focused tests passed; commit 47f969e `depends:none` `parallel:none`
+- [x] ADD-INT Full SwiftMusic suite passed: 207 tests in 38 suites; source/API storage unchanged; integration evidence recorded `depends:ADD-1` `parallel:none`
