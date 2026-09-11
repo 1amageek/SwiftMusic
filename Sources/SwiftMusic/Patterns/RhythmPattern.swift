@@ -88,8 +88,13 @@ public struct RhythmPattern: Sendable, Equatable, ExpressibleByStringLiteral {
 
     /// Resolves the source and its deferred domain transforms for the compiler.
     internal func resolvedTransform(cycle: MusicalTime) throws -> _PatternResolvedTransform {
+        var cache = _PatternParseCache()
+        return try resolvedTransform(cycle: cycle, cache: &cache)
+    }
+
+    internal func resolvedTransform(cycle: MusicalTime, cache: inout _PatternParseCache) throws -> _PatternResolvedTransform {
         do {
-            let result = try transform.resolve(try Self.parseTimedProgram(rawValue), cycle: cycle)
+            let result = try transform.resolve(try Self.parseTimedProgram(rawValue, cache: &cache), cycle: cycle)
             _ = try result.period
             return result
         } catch let error as _PatternPhaseFailure {
@@ -111,9 +116,13 @@ public struct RhythmPattern: Sendable, Equatable, ExpressibleByStringLiteral {
     }
 
     private static func parseTimedProgram(_ value: String) throws -> _PatternTimedProgram {
+        var cache = _PatternParseCache()
+        return try parseTimedProgram(value, cache: &cache)
+    }
+
+    private static func parseTimedProgram(_ value: String, cache: inout _PatternParseCache) throws -> _PatternTimedProgram {
         do {
-            var parser = try _MiniPatternParser(value)
-            let program = try parser.parse()
+            let program = try cache.parse(value)
             for leaf in program.leaves {
                 guard leaf.token == "x" || leaf.token == "~" else {
                     throw RhythmPatternError.invalidToken(token: leaf.token, index: leaf.index, offset: leaf.offset)

@@ -10,6 +10,7 @@ internal struct _SoundCompilationContext {
     var sidechainBuses: [Int: String] = [:]
     var currentTrackID: Int?
     var eventCount = 0
+    var patternCache = _PatternParseCache()
 
     mutating func visit(_ sound: any Sound, depth: Int) throws -> _SoundFragment {
         guard depth <= limits.maximumDepth else {
@@ -152,7 +153,7 @@ internal struct _SoundCompilationContext {
                     let childProgram = fragment.liveProgram
                     try apply(modifier, to: &fragment, sourceRange: firstSource..<sources.count)
                     if let childProgram {
-                        fragment.liveProgram = try childProgram.applying(modifier, finite: fragment)
+                        fragment.liveProgram = try childProgram.applying(modifier, finite: fragment, cache: &patternCache)
                     }
                 } catch let failure as _LocatedCompilationFailure {
                     throw failure
@@ -261,7 +262,7 @@ internal struct _SoundCompilationContext {
         case .rhythm(let pattern, let cycle, let anchor):
             guard cycle > .zero else { throw invalid("Rhythm cycle must be positive") }
             do {
-                let resolved = try pattern.resolvedTransform(cycle: cycle)
+                let resolved = try pattern.resolvedTransform(cycle: cycle, cache: &patternCache)
                 let leaves = resolved.program.leaves
                 let period = try resolved.period
                 applyPatternProvenance(anchor, text: pattern.rawValue, to: sourceRange)
@@ -291,7 +292,7 @@ internal struct _SoundCompilationContext {
         case .notePattern(let pattern, let cycle, let anchor):
             guard cycle > .zero else { throw invalid("Note cycle must be positive") }
             do {
-                let resolved = try pattern.resolvedTransform(cycle: cycle)
+                let resolved = try pattern.resolvedTransform(cycle: cycle, cache: &patternCache)
                 let leaves = resolved.program.leaves
                 let period = try resolved.period
                 applyPatternProvenance(anchor, text: pattern.rawValue, to: sourceRange)
@@ -388,7 +389,7 @@ internal struct _SoundCompilationContext {
             }
         case .pitchPattern(let pattern, let cycle, _):
             guard cycle > .zero else { throw invalid("Pitch pattern cycle must be positive") }
-            let resolved = try pattern.resolvedTransform(cycle: cycle)
+            let resolved = try pattern.resolvedTransform(cycle: cycle, cache: &patternCache)
             let period = try resolved.period
             for index in fragment.events.indices {
                 let leaf = try sampledLeaf(resolved, period: period, at: fragment.events[index].start)
@@ -430,7 +431,7 @@ internal struct _SoundCompilationContext {
         case .cutoffPattern(let kind, let pattern, let cycle, let resonanceQ, let slope, _):
             guard cycle > .zero else { throw invalid("Cutoff pattern cycle must be positive") }
             let filter = try SourceFilter(kind: kind, resonanceQ: resonanceQ, slope: slope)
-            let resolved = try pattern.resolvedTransform(cycle: cycle)
+            let resolved = try pattern.resolvedTransform(cycle: cycle, cache: &patternCache)
             let period = try resolved.period
             for index in sourceRange {
                 sources[index].filter = filter
@@ -455,7 +456,7 @@ internal struct _SoundCompilationContext {
             }
         case .envelopePattern(let pattern, let cycle, _):
             guard cycle > .zero else { throw invalid("Envelope pattern cycle must be positive") }
-            let resolved = try pattern.resolvedTransform(cycle: cycle)
+            let resolved = try pattern.resolvedTransform(cycle: cycle, cache: &patternCache)
             let period = try resolved.period
             for index in fragment.events.indices {
                 let leaf = try sampledLeaf(resolved, period: period, at: fragment.events[index].start)
@@ -463,7 +464,7 @@ internal struct _SoundCompilationContext {
             }
         case .sampleSelection(let pattern, let cycle, let anchor):
             guard cycle > .zero else { throw invalid("Sample selection cycle must be positive") }
-            let resolved = try pattern.resolvedTransform(cycle: cycle)
+            let resolved = try pattern.resolvedTransform(cycle: cycle, cache: &patternCache)
             let leaves = resolved.program.leaves
             let resolvedCycle = try resolved.period
             let keys = try leaves.map { try pattern.value(at: $0) }
@@ -776,7 +777,7 @@ internal struct _SoundCompilationContext {
             }
         case .gainPattern(let pattern, let cycle, _):
             guard cycle > .zero else { throw invalid("Gain pattern cycle must be positive") }
-            let resolved = try pattern.resolvedTransform(cycle: cycle)
+            let resolved = try pattern.resolvedTransform(cycle: cycle, cache: &patternCache)
             let leaves = resolved.program.leaves
             let resolvedCycle = try resolved.period
             for index in fragment.events.indices {
@@ -809,7 +810,7 @@ internal struct _SoundCompilationContext {
             }
         case .panPattern(let pattern, let cycle, _):
             guard cycle > .zero else { throw invalid("Pan pattern cycle must be positive") }
-            let resolved = try pattern.resolvedTransform(cycle: cycle)
+            let resolved = try pattern.resolvedTransform(cycle: cycle, cache: &patternCache)
             let leaves = resolved.program.leaves
             let resolvedCycle = try resolved.period
             for index in fragment.events.indices {
@@ -876,9 +877,12 @@ internal struct _SoundCompilationContext {
         limits: SoundCompiler.Limits,
         sources: [CompiledSource] = [],
         sourceIDs: Set<Int>? = nil,
-        livePeriod: MusicalTime? = nil
+        livePeriod: MusicalTime? = nil,
+        cache: inout _PatternParseCache
     ) throws -> _SoundFragment {
         var context = Self(limits: limits, eventTransformPeriod: livePeriod, sources: sources)
+        swap(&context.patternCache, &cache)
+        defer { swap(&context.patternCache, &cache) }
         context.eventCount = events.count
         var fragment = _SoundFragment(events: events, extent: extent)
         do {
@@ -895,14 +899,14 @@ internal struct _SoundCompilationContext {
         return fragment
     }
 
-    func finishLive(_ fragment: _SoundFragment, policy: LiveLoopPolicy) throws -> CompiledSound {
+    mutating func finishLive(_ fragment: _SoundFragment, policy: LiveLoopPolicy) throws -> CompiledSound {
         guard let program = fragment.liveProgram else {
             throw SoundCompilationError.invalidParameter("Live program was not captured")
         }
         let automationPeriod = try continuousAutomationPeriod()
         let window = try program.window(policy: policy, additionalPeriod: automationPeriod)
         var rendered = fragment
-        rendered.events = try program.emit(through: window, limits: limits, sources: sources)
+        rendered.events = try program.emit(through: window, limits: limits, sources: sources, cache: &patternCache)
         rendered.extent = window
         let beats = Double(window.numerator) / Double(window.denominator)
         for (index, event) in rendered.events.enumerated() {

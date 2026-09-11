@@ -78,12 +78,17 @@ public struct EnvelopePattern: Sendable, Equatable {
     /// Resolves the source notation into its bounded natural-period program.
     internal var timedProgram: _PatternTimedProgram {
         get throws {
-            switch storage {
-            case .notation(let notation, let values):
-                return try Self.parseTimedProgram(notation, values: values)
-            case .typed(let values):
-                return try Self.typedProgram(count: values.count)
-            }
+            var cache = _PatternParseCache()
+            return try timedProgram(cache: &cache)
+        }
+    }
+
+    private func timedProgram(cache: inout _PatternParseCache) throws -> _PatternTimedProgram {
+        switch storage {
+        case .notation(let notation, let values):
+            return try Self.parseTimedProgram(notation, values: values, cache: &cache)
+        case .typed(let values):
+            return try Self.typedProgram(count: values.count)
         }
     }
 
@@ -94,9 +99,14 @@ public struct EnvelopePattern: Sendable, Equatable {
 
     /// Resolves source notation and deferred transforms for compiler consumers.
     internal func resolvedTransform(cycle: MusicalTime) throws -> _PatternResolvedTransform {
+        var cache = _PatternParseCache()
+        return try resolvedTransform(cycle: cycle, cache: &cache)
+    }
+
+    internal func resolvedTransform(cycle: MusicalTime, cache: inout _PatternParseCache) throws -> _PatternResolvedTransform {
         do {
             let result = try transform.resolve(
-                try timedProgram,
+                try timedProgram(cache: &cache),
                 cycle: cycle,
                 splitWrappedLeaves: true
             )
@@ -156,9 +166,14 @@ public struct EnvelopePattern: Sendable, Equatable {
         _ notation: String,
         values: [String: Envelope]
     ) throws -> _PatternTimedProgram {
+        var cache = _PatternParseCache()
+        return try parseTimedProgram(notation, values: values, cache: &cache)
+    }
+
+    private static func parseTimedProgram(_ notation: String, values: [String: Envelope],
+                                          cache: inout _PatternParseCache) throws -> _PatternTimedProgram {
         do {
-            var parser = try _MiniPatternParser(notation)
-            let program = try parser.parse()
+            let program = try cache.parse(notation)
             for leaf in program.leaves {
                 guard leaf.token != "~" else {
                     throw EnvelopePatternError.invalidToken(token: leaf.token, index: leaf.index, offset: leaf.offset)

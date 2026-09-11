@@ -34,9 +34,9 @@ internal struct _LiveEventProgram {
                     sourceIDs: sources, recurringSourceIDs: recurring)
     }
 
-    func applying(_ modifier: _SoundModifier, finite: _SoundFragment) throws -> Self {
+    func applying(_ modifier: _SoundModifier, finite: _SoundFragment, cache: inout _PatternParseCache) throws -> Self {
         do {
-            return try applyingUnlocated(modifier, finite: finite)
+            return try applyingUnlocated(modifier, finite: finite, cache: &cache)
         } catch let failure as _LocatedCompilationFailure {
             throw failure
         } catch {
@@ -48,16 +48,16 @@ internal struct _LiveEventProgram {
         }
     }
 
-    private func applyingUnlocated(_ modifier: _SoundModifier, finite: _SoundFragment) throws -> Self {
+    private func applyingUnlocated(_ modifier: _SoundModifier, finite: _SoundFragment, cache: inout _PatternParseCache) throws -> Self {
         switch modifier {
         case .oneShot:
             return .finite(finite)
         case .euclidean(let value):
             return try generator(modifier, period: value.cycle)
         case .rhythm(let pattern, let cycle, _):
-            return try generator(modifier, period: pattern.resolvedTransform(cycle: cycle).period)
+            return try generator(modifier, period: pattern.resolvedTransform(cycle: cycle, cache: &cache).period)
         case .notePattern(let pattern, let cycle, _):
-            return try generator(modifier, period: pattern.resolvedTransform(cycle: cycle).period)
+            return try generator(modifier, period: pattern.resolvedTransform(cycle: cycle, cache: &cache).period)
         case .repeated:
             guard period != nil else { return .finite(finite) }
             return Self(operation: .seeds(finite.events), period: finite.extent,
@@ -80,22 +80,22 @@ internal struct _LiveEventProgram {
                 period = try Self.commonPeriod(period, value.cycle.multiplied(by: value.every))
             case .gainPattern(let pattern, let cycle, _):
                 guard period != nil else { return .finite(finite) }
-                period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
+                period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle, cache: &cache).period)!
             case .panPattern(let pattern, let cycle, _):
                 guard period != nil else { return .finite(finite) }
-                period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
+                period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle, cache: &cache).period)!
             case .pitchPattern(let pattern, let cycle, _):
                 guard period != nil else { return .finite(finite) }
-                period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
+                period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle, cache: &cache).period)!
             case .cutoffPattern(_, let pattern, let cycle, _, _, _):
                 guard period != nil else { return .finite(finite) }
-                period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
+                period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle, cache: &cache).period)!
             case .envelopePattern(let pattern, let cycle, _):
                 guard period != nil else { return .finite(finite) }
-                period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
+                period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle, cache: &cache).period)!
             case .sampleSelection(let pattern, let cycle, _):
                 guard period != nil else { return .finite(finite) }
-                period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle).period)!
+                period = try Self.commonPeriod(period, pattern.resolvedTransform(cycle: cycle, cache: &cache).period)!
             case .fast(let factor):
                 period = try period?.divided(by: factor)
                 extent = try extent?.divided(by: factor)
@@ -144,9 +144,10 @@ internal struct _LiveEventProgram {
     func emit(
         through horizon: MusicalTime,
         limits: SoundCompiler.Limits,
-        sources: [CompiledSource]
+        sources: [CompiledSource],
+        cache: inout _PatternParseCache
     ) throws -> [CompiledSoundEvent] {
-        let events = try canonical(limits: limits, sources: sources)
+        let events = try canonical(limits: limits, sources: sources, cache: &cache)
         guard let period, !events.isEmpty else { return events }
         let ratio = try _scalePatternTime(horizon, by: MusicalTime(
             numerator: period.denominator, denominator: period.numerator))
@@ -195,7 +196,8 @@ internal struct _LiveEventProgram {
 
     private func canonical(
         limits: SoundCompiler.Limits,
-        sources: [CompiledSource]
+        sources: [CompiledSource],
+        cache: inout _PatternParseCache
     ) throws -> [CompiledSoundEvent] {
         switch operation {
         case .seeds(let events): return events
@@ -203,7 +205,7 @@ internal struct _LiveEventProgram {
             var events: [CompiledSoundEvent] = []
             for child in children {
                 let next = try child.emit(
-                    through: period ?? .quarter, limits: limits, sources: sources
+                    through: period ?? .quarter, limits: limits, sources: sources, cache: &cache
                 )
                 guard next.count <= limits.maximumEvents - events.count else {
                     throw SoundCompilationError.maximumEventsExceeded(limit: limits.maximumEvents)
@@ -220,7 +222,7 @@ internal struct _LiveEventProgram {
             return events
         case .generator(let child, let modifier):
             let events = try child.emit(
-                through: period ?? .quarter, limits: limits, sources: sources
+                through: period ?? .quarter, limits: limits, sources: sources, cache: &cache
             )
             return try _SoundCompilationContext.applyEvents(
                 modifier,
@@ -229,15 +231,16 @@ internal struct _LiveEventProgram {
                 limits: limits,
                 sources: sources,
                 sourceIDs: sourceIDs,
-                livePeriod: period
+                livePeriod: period,
+                cache: &cache
             ).events
         case .modifier(let child, let modifier):
             switch modifier {
             case .gainAutomation, .panAutomation, .pitchAutomation, .tremolo, .vibrato,
                  .sampleSlice, .granular, .sampleStretch:
-                return try child.emit(through: period ?? .quarter, limits: limits, sources: sources)
+                return try child.emit(through: period ?? .quarter, limits: limits, sources: sources, cache: &cache)
             case .cutoffAutomation(_, let automation, _, _):
-                var events = try child.emit(through: period ?? .quarter, limits: limits, sources: sources)
+                var events = try child.emit(through: period ?? .quarter, limits: limits, sources: sources, cache: &cache)
                 let cutoff = automation.from.hertz
                 for index in events.indices {
                     events[index].cutoffHz = cutoff
@@ -251,7 +254,7 @@ internal struct _LiveEventProgram {
             case .fast, .slow: horizon = child.period ?? .quarter
             default: horizon = period ?? .quarter
             }
-            let events = try child.emit(through: horizon, limits: limits, sources: sources)
+            let events = try child.emit(through: horizon, limits: limits, sources: sources, cache: &cache)
             return try _SoundCompilationContext.applyEvents(
                 modifier,
                 events: events,
@@ -259,7 +262,8 @@ internal struct _LiveEventProgram {
                 limits: limits,
                 sources: sources,
                 sourceIDs: sourceIDs,
-                livePeriod: period
+                livePeriod: period,
+                cache: &cache
             ).events
         }
     }
